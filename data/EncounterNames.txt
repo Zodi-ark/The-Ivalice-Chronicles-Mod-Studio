@@ -1,0 +1,531 @@
+# Encounter names for The Ivalice Chronicles Mod Studio
+# =====================================================
+#
+# Format: one encounter per line, "<decimal id>|<name>". Blank lines and
+# lines starting with # are ignored. Edit freely - this is your file.
+#
+#     460|Chapter 4 - Mullonde Cathedral
+#
+# The Encounters tab shows these as "460 Chapter 4 - Mullonde Cathedral".
+#
+# ---------------------------------------------------------------------------
+# WHERE THESE NAMES CAME FROM
+# ---------------------------------------------------------------------------
+#
+# From FFTPatcher's ENTD event-name lists:
+#   https://github.com/Glain/FFTPatcher
+#   PatcherLib.Resources/Resources/PSP/EventNames.xml
+#   PatcherLib.Resources/Resources/PSX-US/EventNames.xml
+#   Copyright 2007 Joe Davidson and the FFTPatcher contributors.
+#   Licensed GNU GPL v3 or later - see LICENSE in the project root, which is
+#   why Mod Studio itself is GPL-3.0.
+#
+# FFTPatcher lists these ids in HEX; they are converted to decimal here,
+# because that is what the .nxd files and this tool use. FFTPatcher's 1CC is
+# this file's 460.
+#
+# Two lists are merged. The PSP (War of the Lions) names are used wherever
+# they exist, because The Ivalice Chronicles uses that translation's naming
+# - its own item list says "Wizard's Rod" and "Thief's Cap", not the PSX
+# "Wizard Rod" and "Thief Hat". Where PSP has no entry, the older PSX-US
+# name is used instead. Those 106 entries may read differently from the
+# game's own wording (PSX-US calls 460 "St Murond Temple" where the game and
+# PSP call it Mullonde Cathedral). They are listed at the bottom of this
+# file under their own heading rather than marked on each line.
+#
+# These names describe the original Final Fantasy Tactics. The Ivalice
+# Chronicles is a remaster and its own wording may differ, and any entry not
+# in either list simply isn't named. Corrections are welcome - just edit the
+# line.
+#
+# 377 PSP names, 106 PSX-US names, 483 total.
+
+# --- War of the Lions names (preferred) ---
+
+1|Dorvauldar Marsh East 1
+2|Dorvauldar Marsh East 2
+3|Dorvauldar Marsh East 3
+4|Dorvauldar Marsh East 4
+5|Dorvauldar Marsh West 1
+6|Dorvauldar Marsh West 2
+7|Dorvauldar Marsh West 3
+8|Dorvauldar Marsh West 4
+13|Fovoham Windflats South 1
+14|Fovoham Windflats South 2
+15|Fovoham Windflats South 3
+16|Fovoham Windflats South 4
+17|Fovoham Windflats West 1
+18|Fovoham Windflats West 2
+19|Fovoham Windflats West 3
+20|Fovoham Windflats West 4
+21|Fovoham Windflats East 1
+22|Fovoham Windflats East 2
+23|Fovoham Windflats East 3
+24|Fovoham Windflats East 4
+25|The Siedge Weald East 1
+26|The Siedge Weald East 2
+27|The Siedge Weald East 3
+28|The Siedge Weald East 4
+29|The Siedge Weald West 1
+30|The Siedge Weald West 2
+31|The Siedge Weald West 3
+32|The Siedge Weald West 4
+37|Mount Bervenia North 1
+38|Mount Bervenia North 2
+39|Mount Bervenia North 3
+40|Mount Bervenia North 4
+41|Mount Bervenia South 1
+42|Mount Bervenia South 2
+43|Mount Bervenia South 3
+44|Mount Bervenia South 4
+49|Zeklaus Desert North 1
+50|Zeklaus Desert North 2
+51|Zeklaus Desert North 3
+52|Zeklaus Desert North 4
+53|Zeklaus Desert South 1
+54|Zeklaus Desert South 2
+55|Zeklaus Desert South 3
+56|Zeklaus Desert South 4
+57|Zeklaus Desert East 1
+58|Zeklaus Desert East 2
+59|Zeklaus Desert East 3
+60|Zeklaus Desert East 4
+61|Lenalian Plateau South 1
+62|Lenalian Plateau South 2
+63|Lenalian Plateau South 3
+64|Lenalian Plateau South 4
+65|Lenalian Plateau North 1
+66|Lenalian Plateau North 2
+67|Lenalian Plateau North 3
+68|Lenalian Plateau North 4
+73|Tchigolith Fenlands East 1
+74|Tchigolith Fenlands East 2
+75|Tchigolith Fenlands East 3
+76|Tchigolith Fenlands East 4
+77|Tchigolith Fenlands West 1
+78|Tchigolith Fenlands West 2
+79|Tchigolith Fenlands West 3
+80|Tchigolith Fenlands West 4
+82|Zeirchele Falls East 5
+83|Balias Tor South 5
+84|Lenalian Plateau South 5
+85|The Yuguewood West 1
+86|The Yuguewood West 2
+87|The Yuguewood West 3
+88|The Yuguewood West 4
+89|The Yuguewood East 1
+90|The Yuguewood East 2
+91|The Yuguewood East 3
+92|The Yuguewood East 4
+93|Dorvauldar Marsh West 5
+94|Grogh Heights South 5
+95|Mount Bervenia North 5
+96|Balias Swale South 5
+97|Araguay Woods West 1
+98|Araguay Woods West 2
+99|Araguay Woods West 3
+100|Araguay Woods West 4
+101|Araguay Woods East 1
+102|Araguay Woods East 2
+103|Araguay Woods East 3
+104|Araguay Woods East 4
+105|Finnath Creek East 5
+106|Mount Germinas North 5
+107|Araguay Woods South 5
+108|The Yuguewood East 5
+109|Grogh Heights West 1
+110|Grogh Heights West 2
+111|Grogh Heights West 3
+112|Grogh Heights West 4
+113|Grogh Heights South 1
+114|Grogh Heights South 2
+115|Grogh Heights South 3
+116|Grogh Heights South 4
+117|Grogh Heights East 1
+118|Grogh Heights East 2
+119|Grogh Heights East 3
+120|Grogh Heights East 4
+121|Beddha Sandwaste South 1
+122|Beddha Sandwaste South 2
+123|Beddha Sandwaste South 3
+124|Beddha Sandwaste South 4
+125|Beddha Sandwaste North 1
+126|Beddha Sandwaste North 2
+127|Beddha Sandwaste North 3
+128|Beddha Sandwaste North 4
+129|Beddha Sandwaste North 5
+130|Fovoham Windflats West 5
+131|Dugeura Pass West 5
+132|The Siedge Weald East 5
+133|Zeirchele Falls West 1
+134|Zeirchele Falls West 2
+135|Zeirchele Falls West 3
+136|Zeirchele Falls West 4
+137|Zeirchele Falls East 1
+138|Zeirchele Falls East 2
+139|Zeirchele Falls East 3
+140|Zeirchele Falls East 4
+141|Zeirchele Falls South 1
+142|Zeirchele Falls South 2
+143|Zeirchele Falls South 3
+144|Zeirchele Falls South 4
+145|Balias Tor North 1
+146|Balias Tor North 2
+147|Balias Tor North 3
+148|Balias Tor North 4
+149|Balias Tor South 1
+150|Balias Tor South 2
+151|Balias Tor South 3
+152|Balias Tor South 4
+153|Lake Poescas North 5
+154|Tchigolith Fenlands West 5
+155|Mandalia Plains South 5
+156|Zeklaus Desert South 5
+157|Mandalia Plains North 1
+158|Mandalia Plains North 2
+159|Mandalia Plains North 3
+160|Mandalia Plains North 4
+161|Mandalia Plains South 1
+162|Mandalia Plains South 2
+163|Mandalia Plains South 3
+164|Mandalia Plains South 4
+165|Mandalia Plains West 1
+166|Mandalia Plains West 2
+167|Mandalia Plains West 3
+168|Mandalia Plains West 4
+169|Dugeura Pass East 1
+170|Dugeura Pass East 2
+171|Dugeura Pass East 3
+172|Dugeura Pass East 4
+173|Dugeura Pass West 1
+174|Dugeura Pass West 2
+175|Dugeura Pass West 3
+176|Dugeura Pass West 4
+177|Terminus 1
+178|Terminus 2
+179|Terminus 3
+180|Terminus 4
+181|Balias Swale West 1
+182|Balias Swale West 2
+183|Balias Swale West 3
+184|Balias Swale West 4
+185|Balias Swale East 1
+186|Balias Swale East 2
+187|Balias Swale East 3
+188|Balias Swale East 4
+189|Balias Swale South 1
+190|Balias Swale South 2
+191|Balias Swale South 3
+192|Balias Swale South 4
+193|Finnath Creek West 1
+194|Finnath Creek West 2
+195|Finnath Creek West 3
+196|Finnath Creek West 4
+197|Finnath Creek East 1
+198|Finnath Creek East 2
+199|Finnath Creek East 3
+200|Finnath Creek East 4
+201|The Interstice 1
+202|The Interstice 2
+203|The Interstice 3
+204|The Interstice 4
+205|Lake Poescas North 1
+206|Lake Poescas North 2
+207|Lake Poescas North 3
+208|Lake Poescas North 4
+209|Lake Poescas South 1
+210|Lake Poescas South 2
+211|Lake Poescas South 3
+212|Lake Poescas South 4
+213|Voyage 1
+214|Voyage 2
+215|Voyage 3
+216|Voyage 4
+217|Mount Germinas North 1
+218|Mount Germinas North 2
+219|Mount Germinas North 3
+220|Mount Germinas North 4
+221|Mount Germinas South 1
+222|Mount Germinas South 2
+223|Mount Germinas South 3
+224|Mount Germinas South 4
+225|The Switchback 1
+226|The Switchback 2
+227|The Switchback 3
+228|The Switchback 4
+229|The Palings 1
+230|The Palings 2
+231|The Palings 3
+232|The Palings 4
+233|The Oubliette 1
+234|The Oubliette 2
+235|The Oubliette 3
+236|The Oubliette 4
+237|The Catacombs 1
+238|The Catacombs 2
+239|The Catacombs 3
+240|The Catacombs 4
+241|The Hollow 1
+242|The Hollow 2
+243|The Hollow 3
+244|The Hollow 4
+245|The Stair 1
+246|The Stair 2
+247|The Stair 3
+248|The Stair 4
+249|The Crevasse 1
+250|The Crevasse 2
+251|The Crevasse 3
+252|The Crevasse 4
+384|Chapter 1 - The Siedge Weald
+385|Chapter 1 - Dorter Slums
+386|Chapter 1 - Sand Rat's Sietch
+387|Chapter 1 - Orbonne Monastery (Opening Battle)
+388|Chapter 1 - Magick City of Gariland
+389|Chapter 1 - Mandalia Plains
+390|Chapter 1 - Eagrose Castle
+395|Chapter 1 - Brigands' Den
+399|Chapter 1 - Lenalian Plateau
+400|Chapter 1 - Windmill Shed
+401|Chapter 1 - Ziekden Fortress
+402|End
+403|Chapter 2 - Merchant City of Dorter
+404|Chapter 2 - Araguay Woods
+405|Chapter 2 - Zeirchele Falls
+407|Chapter 2 - Castled City of Zaland
+409|Chapter 2 - Balias Tor
+410|Chapter 2 - Tchigolith Fenlands
+411|Chapter 2 - Goug Lowtown
+413|Chapter 2 - Balias Swale
+414|Chapter 2 - Golgollada Gallows
+415|Chapter 2 - Lionel Castle Gate
+416|Chapter 2 - Lional Castle Oratory
+417|Chapter 3 - Mining Town of Gollund
+419|Trade City of Sal Ghidos
+420|Chapter 3 - Lesalia Castle Postern
+422|Chapter 3 - Monastery Vaults: Second Level
+423|Chapter 3 - Monastery Vaults: Third Level
+424|Chapter 3 - Monastery Vaults: First Level
+426|Chapter 3 - Grogh Heights
+428|Chapter 3 - The Walled City of Yardrow
+430|Chapter 3 - The Yuguewood
+431|Chapter 3 - Riovanes Castle Gate
+432|Chapter 3 - Riovanes Castle Keep
+433|Chapter 3 - Riovanes Castle Roof
+435|Chapter 4 - Monastery Vaults: Fourth Level
+436|Chapter 4 - Monastery Vaults: Fifth Level
+438|Chapter 4 - Necrohol of Mullonde
+439|Chapter 4 - Lost Halidom
+440|Chapter 4 - Airship Graveyard 1
+441|Chapter 4 - Airship Graveyard 2
+442|Chapter 4 - Dugeura Pass
+443|Chapter 4 - Free City of Bervenia
+444|Chapter 4 - Finnath Creek
+445|Chapter 4 - Outlying Church
+447|Chapter 4 - Beddha Sandwaste
+448|Chapter 4 - Fort Besselat: South Wall
+449|Chapter 4 - Fort Besselat: North Wall
+450|Chapter 4 - Fort Besselat Sluice
+452|Chapter 4 - Mount Germinas
+453|Chapter 4 - Lake Poescas
+454|Chapter 4 - Limberry Castle Gate
+456|Chapter 4 - Limberry Castle Keep
+457|Chapter 4 - Limberry Castle Undercroft
+459|Chapter 4 - Eagrose Castle Keep
+460|Chapter 4 - Mullonde Cathedral
+461|Chapter 4 - Mullonde Cathedral Nave
+462|Chapter 4 - Mullonde Cathedral Sanctuary
+463|Collierry Underground Third Floor
+464|Collierry Underground Second Floor
+465|Collierry Underground First Floor
+466|Underground Passage in Gollund
+468|Nelveska Temple
+472|Nelveska Temple
+473|End
+475|Test
+476|Test
+477|Test
+478|Test
+479|Test
+480|Test
+481|Test
+482|Test
+483|Test
+484|Test
+485|Test
+486|Test
+487|Test
+488|Test
+489|Test
+490|Test
+491|Test
+492|Test
+493|Test
+494|Test
+495|Test
+496|Test
+497|Test
+498|Test
+499|Test
+500|Test
+501|Test
+502|Test
+503|Test
+504|Test
+505|Test
+506|Test
+507|Test
+508|Test
+509|Test
+510|Test
+511|Test
+512|Chapter 2 - Zeirchele Falls
+513|Loffrey Recruiting Wiegraf
+514|Balthier Battle
+515|Chapter 3 - Protect Luso (Zeklaus Desert)
+516|Battle 30
+517|Recruiting Luso
+519|Chapter 4 - Limberry Castle Inner Court
+520|He Who Knows The Answers - Dorter
+521|Reunion With Ovelia
+523|A Voice From The Past - Lionel Castle Gate
+524|A Voice From The Past - Lionel Castle
+526|After the Storm - Brigands' Den
+529|Rendezvous: Introduction
+550|Rendezvous: Chocobo Defense
+551|Rendezvous: Chicken Race
+552|Rendezvous: Treasure Hunt
+553|Rendezvous: Teioh
+554|Rendezvous: Lost Heirloom
+555|Rendezvous: The Fete
+556|Rendezvous: Littering
+557|Rendezvous: Desert Minefield
+558|Rendezvous: Shades of the Past
+559|Rendezvous: The Knights Templar - Part 1
+560|Rendezvous: The Knights Templar - Part 2
+561|Rendezvous: The Knights Templar - Part 3
+562|Rendezvous: The Knights Templar - Part 4
+563|Rendezvous: All-Star Melee
+564|Rendezvous: The Guarded Temple
+565|Rendezvous: Nightmares
+566|Rendezvous: Brave Story - Part 1
+567|Rendezvous: Brave Story - Part 2
+568|Rendezvous: Brave Story - Part 3
+569|Rendezvous: Brave Story - Part 4
+570|Rendezvous: Brave Story - Part 5
+571|Rendezvous: Brave Story - Part 6
+572|Rendezvous: Brave Story - Part 7
+573|Rendezvous: Brave Story - Part 8
+574|Rendezvous: Brave Story - Part 9
+575|Rendezvous: Brave Story - Part 10
+585|Rendezvous: An Ill Wind
+
+
+# --- PSX-US names (no War of the Lions equivalent; wording may differ) ---
+
+9|Tutorial (Charge Time Battle)
+10|Tutorial (How to Cast Spells)
+11|Tutorial (Move and Act)
+12|Tutorial (Online Help)
+33|Tutorial (Battle)
+45|Tutorial (Battlefield Control)
+46|Tutorial (Abnormal Status)
+47|Tutorial (Options)
+256|Orbonne Prayer and BS
+257|Larg's Praise and BS
+258|Military Academy BS
+259|Family Meeting BS
+260|Balbanes Death and BS
+261|Releasing Miluda BS
+262|Introducing Algus BS
+263|Returning to Igros and BS
+264|Attack on the Beoulves BS
+265|Interrogation BS
+266|Gustav vs Wiegraf
+267|Bedridden Dycedarg and BS
+268|Reed Whistle
+269|Wiegraf berating Golagros
+270|Finding Teta Missing
+271|Partings
+272|Ch2 Start Orbonne Monastery
+273|Ovelia Joins BS
+274|Ramza Mustadio Agrias Ovelia Meeting BS
+275|Ruins of Zaland and BS
+276|Dycedarg and Gafgarion Reunion and BS
+277|Besrodio Kidnapped BS
+278|Gate of Lionel Castle and BS
+279|Meet Draclau and BS
+280|Goug Machine City Town
+281|Besrodio Saved BS
+282|Warjilis Port and BS
+283|Draclau hires Gafgarion and BS
+284|Substitute and BS
+285|Gelwan's Death and BS
+286|Ch2 Start Orbonne Monastery BS
+287|Chapter 3 Start
+288|Chapter 3 Start BS
+289|Goland Coal City Post Battle
+290|Steel Ball Found and BS
+291|Worker 8 Activated and BS
+292|Summoning Machine Found and BS
+293|Cloud Summoned and BS
+294|Talk with Zalbag in Lesalia and BS
+295|Lesalia Gate Talk with Alma BS
+296|Orbonne Monastery (Ch3) and BS
+297|Meet Velius BS
+298|Malak and the Scriptures
+299|Delitas allegiance to Ovelia and BS
+300|Meet Again with Olan BS
+301|Exploding Frog BS
+302|Barinten threatens Vormav and BS
+303|Escaping Alma and BS
+304|Ajora's vessel and BS
+305|Reviving Malak BS
+306|Searching for Alma and BS
+307|Things Obtained and BS
+308|Reunion and Beyond and BS
+309|Those Who Squirm In Darkness
+310|Those Who Squirm In Darkness BS
+311|A Man with the Holy Stone and BS
+312|Delita's Thoughts
+313|Delita's Thoughts BS
+314|Unstoppable Cog BS
+315|Seized TG Cid and BS
+316|Assassination of Prince Larg and BS
+317|Rescue of Cid and BS
+318|Entrance to the other world
+319|Prince Goltanas Final Moments BS
+320|Ambition of Dycedarg and BS
+321|Men of Odd Appearance BS
+322|The Mystery of Lucavi BS
+323|Delitas Betrayal and BS
+324|Mosfungus and BS
+325|At the Gate of the Beoulve Castle
+326|Funerals Final Moments and BS
+327|Requiem and BS
+328|Zarghidas Aeris and BS
+329|Bar Deep Dungeon
+330|Bar Goland Coal City
+391|Interrogation
+392|Military Academy
+393|Introducing Algus
+394|Gustav vs Wiegraf
+396|Releasing Miluda
+397|Attack on the Beoulves
+398|Expelling Algus and BS
+406|Ovelia Joins
+408|Ramza Mustadio Agrias Ovelia Meeting
+412|Besrodio Saved
+418|Goland Coal City Post Battle
+421|Outside Lesalia Gate Talk with Alma
+425|Meet Velius
+427|Meet Again with Olan
+429|Exploding Frog
+434|Reviving Malak
+437|Entrance to the other world
+446|Unstoppable Cog
+451|Prince Goltana's Final Moments
+455|Men of Odd Appearance
+458|The Mystery of Lucavi
+467|Underground Passage in Goland Post Battle
+469|Reis Curse

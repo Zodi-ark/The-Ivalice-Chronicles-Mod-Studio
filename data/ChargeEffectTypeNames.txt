@@ -1,0 +1,65 @@
+# Charge effect type names for The Ivalice Chronicles Mod Studio
+# ============================================================
+#
+# Format: "<decimal id>|<name>". Blank lines and # lines are ignored.
+# Edit freely - this is your file. Shown on Abilities -> Unit Animations.
+#
+# From the FFHacktics wiki, which lists these ids in HEX; they are decimal
+# here, because that is what the .xml tables and this tool use.
+#   https://ffhacktics.com/wiki/Animations_(Tab)
+#
+# Several entries note that the game freezes or hangs on animation 2.
+# Those notes are kept verbatim - they are exactly what you want to see
+# before picking one.
+#
+# 49 names.
+
+0|Crouch Charging
+1|Spell Charging
+2|Summon Charging (bubble effect at end)
+3|Spell Charging
+4|Crouch Charging
+5|Spell Charging
+6|Crouch Charging
+7|Crouch Charging
+8|Crouch Charging
+9|Spell Charging
+10|Crouch Charging
+11|Spell Charging
+12|Crouch Charging
+13|Sing Charging
+14|Dance Charging
+15|Spell Charging
+16|Spell Charging
+17|Kneeling
+18|Crouch Charging
+19|Crouch Charging
+20|Spell Cast (game freezes upon animation 2)
+21|Walk (normal speed) (game freezes upon animation 2)
+22|Walk (haste speed) (game freezes upon animation 2)
+23|Spinning Clockwise (game hangs upon animation 2)
+24|Kneeling(poison trap, the actual graphical effect of the poison rising appears wherever the skill was targeted)(game hangs upon animation 2)
+25|Walk (haste speed) (game hangs upon animation 2)
+26|Defending (game hangs on animation 2)
+27|Dodge (game hangs upon animation 2)
+28|Walk (haste speed) (game hangs upon animation 2)
+29|Struck Animation (game hangs upon animation 2)
+30|Unconcious (game freezes upon animation 2)
+31|Walk (haste speed) (game freezes upon animation 2)
+32|Spell Cast (game hangs upon animation 2)
+33|Similar to 2nd part of speechcraft but it looks like he's reading from a book. (No visible book)(game hangs upon animation 2)
+34|Spell Cast with Poison needle trap effect (game hangs on animation 2)
+35|Dance Charging switches to cast animation though if your turn comes up again before the spell/attack resolves (game freezes upon animation 2)
+36|Raises arm like charging spell but then the animation keeps looping (game freezes upon animation 2)
+37|Spell Cast (game freezes upon animation 2)
+38|Spell Cast (game hangs upon animation 2)
+39|Spell Cast (game hangs upon animation 2)
+40|Spell Cast (game hangs upon animation 2)
+41|Spell Cast (game hangs upon animation 2)
+42|Freezes in place in whatever part of the walk animation they were in (game hangs upon animation 2)
+43|Spell Cast (game hangs upon animation 2)
+44|Spell Cast (game hangs upon animation 2)
+45|Standing (game hangs upon animation 2)
+46|Spell Cast (game hangs upon animation 2)
+47|Spell Cast (loop)
+48|Standing

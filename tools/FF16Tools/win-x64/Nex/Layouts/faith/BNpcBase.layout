@@ -1,0 +1,1865 @@
+table_name|BNpcBase
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+add_column|DLCFlags|int
+add_column|UnkType|int             // 1 = eikon or boss? note that BossDamage will be used in difficultylevel if this not 2|0|0| 2 = regular enemy? -  Interesting check here|0|0| something gets multiplied by 0.25 if this is 2 and ultimaniac: 83 78 ? ? 75 ? C5 CA 59 35
+add_column|UnkType2|int            // 1 = can use paramgrow? aka can level?|0|0| 2 = enemy?
+add_column|ModelId|int
+add_column|ModelIdKey2|int
+add_column|WeaponBaseId1|int       // Right hand
+add_column|WeaponBaseId2|int       // Left hand
+add_column|ParamGrowIdForLevel|int
+add_column|Unk9|int
+add_column|HPMultiplierPercent|int // Combine with paramgrow|0|0| applied before equipments - ref: 48 89 5C 24 ? 57 48 83 EC ? 48 8D 99 ? ? ? ? E8
+add_column|Unk11|float
+add_column|Unk12|float
+add_column|Unk13|float
+add_column|BattleAiId|int
+add_column|PlayerModeId|int
+add_column|MoveTypeId|int
+add_column|Unk17|int
+add_column|Unk18|int
+add_column|Unk19|int
+add_column|MonStatIdDefault|int
+add_column|MonStatIds|int[]
+add_column|Unk23|int
+add_column|Unk24|int
+add_column|PartParamSetId|int
+add_column|Unk26|int
+add_column|Unk27_1|byte
+add_column|Unk27_2|byte
+add_column|Unk27_3|byte
+add_column|Unk27_4|byte
+add_column|Unk28|float
+add_column|SpeakerId|int
+add_column|Unk30|int
+add_column|Unk31|int
+add_column|Unk32|float
+add_column|Unk33|int
+add_column|Unk34|int
+add_column|Unk35|float
+add_column|UseCameraAdjustParam|byte    // cameraadjustparam id 8? - ref: 44 38 A0 ? ? ? ? 0F 84 ? ? ? ? 48 8B 05
+// <implciit 3 bytes padding>
+
+add_column|SpreadDropTableId|int
+add_column|ColorCoordinateId|int
+add_column|Unk39|int
+add_column|Unk40|int
+add_column|Unk41|int
+add_column|Unk42|int               // training related? - ref: 48 83 EC ? 8B 51 ? 48 8D 4C 24 ? E8 ? ? ? ? 48 8B 4C 24 ? 33 C0
+add_column|Unk43|float
+add_column|Unk44|float
+add_column|StreamingObjectSizeId|int
+add_column|Unk46|int               // hardcoded types? ref: 8B 80 ? ? ? ? 3B C7 74 ? 83 F8
+add_column|Unk47|int
+add_column|SummonPartsId|int
+add_column|Unk49_1|byte
+add_column|Unk49_2|byte
+add_column|Unk49_3|byte            // Flag, only used for max target tracking number/DifficultyLevel->MaxSimultaneousEnemiesAttacking2? Assigned to structure - ref: 88 87 ? ? ? ? 49 8B 4D ? 48 85 C9 75 ? 49 8B C6 EB ? 4C 39 31 7C ? E8 ? ? ? ? EB ? 48 8B C6 8B 40 ? 89 87 ? ? ? ? 49 8B 4D ? 48 85 C9 75 ? 49 8B C6 EB ? 4C 39 31 7C ? E8 ? ? ? ? EB ? 48 8B C6 8B 80
+add_column|Unk49_4|byte
+add_column|BNpcExtrudedLayerId|int
+add_column|Unk51|int
+add_column|Unk52|int
+add_column|UnkActionId|int
+add_column|AutoAttackPackId|int    // ref: 48 89 5C 24 ? 57 48 83 EC ? 8B 81 ? ? ? ? 85 C0
+add_column|UnkBool55_1|byte
+add_column|Unk55_2|byte
+add_column|Unk55_3|byte
+add_column|Unk55_4|byte
+add_column|Unk56|string
+add_column|EmCorrectionParamId|int
+add_column|Comment|string
+add_column|Comment2|string
+add_column|Unk60|int
+add_column|Unk61|int
+add_column|UnkBNpcBaseId|int       // partymember related
+add_column|Unk63_1|byte
+add_column|Unk63_2|byte
+add_column|Unk63_3|byte
+add_column|Unk63_4|byte
+add_column|GuardDataId|int         // ref: 44 8B B8 ? ? ? ? 48 8B FB
+add_column|Unk65|int
+add_column|Unk66|int
+add_column|Unk67|int
+add_column|Unk68|int
+add_column|Unk69_1|byte
+add_column|Unk69_2|byte
+add_column|Unk69_3|byte
+add_column|Unk69_4|byte
+add_column|BNpcParamRateId|int     // difficultylevel->IsIncreaseEnemyLevel must be enabled?
+add_column|UnkBool71|byte          // use BattleVoiceCategory id 1301? - ref: 80 B8 ? ? ? ? ? 74 ? 48 8B 43 ? 48 8B 0D
+// <implicit 3 bytes padding>
+
+add_column|LoreDictionaryEnemyCategoryId|int   // This is what is used to store bits in the save's LoreDictionaryEnemyData - UnkType2 must be 2!! ref: 09 04 8A 4C 8B 6C 24
+// LoreDictionaryEnemyData[(LoreDictionaryEnemyCategoryId - 1000) / 32] |= 1 << (((byte)LoreDictionaryEnemyCategoryId + 24) & 0x1F);
+
+add_column|Unk73|int
+add_column|Unk74_1|byte
+add_column|Unk74_2|byte
+add_column|Unk74_3|byte
+add_column|Unk74_4|byte
+add_column|Unk75|int
+
+/////////////////////////////////////////////////////
+// Comments
+/////////////////////////////////////////////////////
+set_comment|1|0|0|Clive
+set_comment|2|0|0|Clive
+set_comment|3|0|0|Clive
+set_comment|4|0|0|Clive
+set_comment|5|0|0|Joshua
+set_comment|6|0|0|Clive
+set_comment|7|0|0|Joshua
+set_comment|8|0|0|Clive
+set_comment|9|0|0|Clive
+set_comment|10|0|0|Clive
+set_comment|100|0|0|Torgal
+set_comment|101|0|0|Torgal
+set_comment|110|0|0|Joshua
+set_comment|111|0|0|Joshua
+set_comment|120|0|0|Jill
+set_comment|121|0|0|Jill
+set_comment|130|0|0|Cid
+set_comment|200|0|0|Gav
+set_comment|201|0|0|Byron
+set_comment|202|0|0|Tyler
+set_comment|203|0|0|Wade
+set_comment|204|0|0|Lord Commander Murdoch
+set_comment|205|0|0|Tiamat
+set_comment|206|0|0|Aevis
+set_comment|208|0|0|Theodore
+set_comment|209|0|0|Wade
+set_comment|220|0|0|Shula
+set_comment|301|0|0|Ambrosia
+set_comment|901|0|0|Virtual Mugger
+set_comment|902|0|0|Virtual Weaver
+set_comment|903|0|0|Virtual Gigas
+set_comment|904|0|0|Virtual Aevis
+set_comment|905|0|0|Virtual Tognvaldr
+set_comment|906|0|0|Virtual Minotaur
+set_comment|907|0|0|Virtual Lich
+set_comment|908|0|0|Virtual Guardian
+set_comment|909|0|0|Virtual Champion
+set_comment|910|0|0|Virtual Mousse
+set_comment|911|0|0|Virtual Undertaker
+set_comment|912|0|0|Virtual Warlord
+set_comment|913|0|0|Virtual Wolf
+set_comment|914|0|0|Virtual Hornet
+set_comment|915|0|0|Virtual Elemental
+set_comment|916|0|0|Virtual Iron Giant
+set_comment|917|0|0|Virtual Cannonier
+set_comment|918|0|0|Virtual Salamander
+set_comment|919|0|0|Virtual Fanatic
+set_comment|920|0|0|Virtual Reaper
+set_comment|921|0|0|Virtual Coeurl
+set_comment|922|0|0|Virtual Marshal
+set_comment|923|0|0|Virtual Lancer
+set_comment|924|0|0|Virtual Sveithvaldr
+set_comment|925|0|0|Virtual Bavarois
+set_comment|926|0|0|Virtual Node
+set_comment|927|0|0|Virtual Aurum Giant
+set_comment|950|0|0|Virtual Domovikha
+set_comment|951|0|0|Virtual Domovoi
+set_comment|952|0|0|Virtual Omicron
+set_comment|953|0|0|Virtual Asterios
+set_comment|960|0|0|Virtual Creeper
+set_comment|961|0|0|Virtual Hexer
+set_comment|962|0|0|Virtual Master
+set_comment|963|0|0|Virtual Wolf Trap
+set_comment|964|0|0|Virtual Temple Coeurl
+set_comment|965|0|0|Virtual Frost Bomb
+set_comment|966|0|0|Virtual Egi
+set_comment|1101|0|0|Lord Commander Murdoch
+set_comment|1203|0|0|Goblin Mugger
+set_comment|1204|0|0|Goblin Mugger
+set_comment|1205|0|0|Goblin Mugger
+set_comment|1206|0|0|Goblin Weaver
+set_comment|1207|0|0|Gigas
+set_comment|1208|0|0|Goblin Mugger
+set_comment|1209|0|0|Goblin Mugger
+set_comment|1210|0|0|Goblin Mugger
+set_comment|1211|0|0|Goblin Weaver
+set_comment|1212|0|0|Morbol
+set_comment|1214|0|0|Goblin Weaver
+set_comment|1215|0|0|Goblin Mugger
+set_comment|1216|0|0|Goblin Mugger
+set_comment|1301|0|0|Armored Interloper
+set_comment|1302|0|0|Imperial Legionnaire
+set_comment|1303|0|0|Imperial Captain
+set_comment|1304|0|0|Imperial Legionnaire
+set_comment|1305|0|0|Imperial Astrologer
+set_comment|1306|0|0|Knight of the Blinding Dawn
+set_comment|1307|0|0|Imperial Captain
+set_comment|1308|0|0|Imperial Legionnaire
+set_comment|1309|0|0|Imperial Astrologer
+set_comment|1401|0|0|Phoenix
+set_comment|1402|0|0|Eikon of Fire
+set_comment|1403|0|0|Eikon of Fire
+set_comment|1501|0|0|Shiva's Dominant
+set_comment|1502|0|0|Ironblood Commander
+set_comment|1503|0|0|Ironblood Crusader
+set_comment|1504|0|0|Ironblood Crusader
+set_comment|1510|0|0|Ironblood Commander
+set_comment|1511|0|0|Tiamat
+set_comment|1512|0|0|Ironblood Crusader
+set_comment|1513|0|0|Ironblood Crusader
+set_comment|1601|0|0|Vampire Thorn
+set_comment|1602|0|0|Vampire Thorn
+set_comment|1603|0|0|Vampire Thorn
+set_comment|1605|0|0|Hornet
+set_comment|1606|0|0|Worgen
+set_comment|1607|0|0|Dragon Aevis
+set_comment|1608|0|0|Minotaur
+set_comment|1609|0|0|Fafnir
+set_comment|1610|0|0|Midnight Raven
+set_comment|1611|0|0|Royal Sigfreyr
+set_comment|1612|0|0|Silver Lobo
+set_comment|1613|0|0|Dragon Aevis
+set_comment|1614|0|0|Worgen
+set_comment|1615|0|0|Worgen
+set_comment|1618|0|0|Dragonet
+set_comment|1620|0|0|Green Fool
+set_comment|1622|0|0|Chimera
+set_comment|1623|0|0|Raptor
+set_comment|1624|0|0|Raptor
+set_comment|1632|0|0|Royal Osfreyr
+set_comment|1633|0|0|Royal Osfreyr
+set_comment|1651|0|0|Chirada
+set_comment|1661|0|0|Royal Folkstaf
+set_comment|1662|0|0|Royal Osfreyr
+set_comment|1663|0|0|Royal Osfreyr
+set_comment|1664|0|0|Royal Sigfreyr
+set_comment|1665|0|0|Royal Gandfreyr
+set_comment|1666|0|0|Royal Mastiff
+set_comment|1702|0|0|Royal Folkstaf
+set_comment|1703|0|0|Royal Osfreyr
+set_comment|1704|0|0|Royal Osfreyr
+set_comment|1705|0|0|Royal Sigfreyr
+set_comment|1706|0|0|Royal Gandfreyr
+set_comment|1707|0|0|Royal Mastiff
+set_comment|1708|0|0|Royal Tognvaldr
+set_comment|1709|0|0|Suparna
+set_comment|1710|0|0|Chirada
+set_comment|1711|0|0|Benedikta
+set_comment|1712|0|0|Benedikta
+set_comment|1719|0|0|Royal Gandfreyr
+set_comment|1720|0|0|Royal Folkstaf
+set_comment|1721|0|0|Royal Osfreyr
+set_comment|1722|0|0|Royal Osfreyr
+set_comment|1723|0|0|Royal Sigfreyr
+set_comment|1724|0|0|Royal Gandfreyr
+set_comment|1725|0|0|Royal Mastiff
+set_comment|1726|0|0|Royal Tognvaldr
+set_comment|1730|0|0|Royal Gandfreyr
+set_comment|1731|0|0|Royal Gunnvaldr
+set_comment|1732|0|0|Royal War Aevis
+set_comment|1733|0|0|Royal Sveithvaldr
+set_comment|1735|0|0|Royal Tognvaldr
+set_comment|1771|0|0|Imperial Captain
+set_comment|1772|0|0|Imperial Legionnaire
+set_comment|1773|0|0|Imperial Legionnaire
+set_comment|1774|0|0|Imperial Astrologer
+set_comment|1776|0|0|Imperial War Wyrm
+set_comment|1777|0|0|Imperial War Wyrm
+set_comment|1778|0|0|Imperial Captain
+set_comment|1779|0|0|Imperial Legionnaire
+set_comment|1780|0|0|Imperial Legionnaire
+set_comment|1785|0|0|Imperial Legionnaire
+set_comment|1786|0|0|Imperial Legionnaire
+set_comment|1789|0|0|Imperial War Aevis
+set_comment|1791|0|0|Wind Elemental
+set_comment|1801|0|0|Ifrit
+set_comment|1802|0|0|Garuda
+set_comment|1803|0|0|Garuda
+set_comment|1804|0|0|Garuda
+set_comment|1901|0|0|Arachne
+set_comment|1904|0|0|Hornet
+set_comment|1905|0|0|Minotaur
+set_comment|1906|0|0|Imperial Captain
+set_comment|1907|0|0|Imperial Legionnaire
+set_comment|1908|0|0|Imperial Astrologer
+set_comment|1909|0|0|Minotaur
+set_comment|1911|0|0|Imperial War Aevis
+set_comment|1912|0|0|Knight of the Dying Sun
+set_comment|1913|0|0|Black Widow
+set_comment|1917|0|0|Griffin
+set_comment|1918|0|0|River Huntress
+set_comment|2001|0|0|Fallen Bug
+set_comment|2002|0|0|Fallen Hunter
+set_comment|2003|0|0|Defense Node
+set_comment|2004|0|0|Bomb
+set_comment|2005|0|0|Fallen Guardian
+set_comment|2006|0|0|Wraith
+set_comment|2007|0|0|Specter
+set_comment|2008|0|0|Lich
+set_comment|2009|0|0|Iron Giant
+set_comment|2010|0|0|Infernal Eikon
+set_comment|2011|0|0|Infernal Shadow
+set_comment|2012|0|0|Infernal Eikon
+set_comment|2013|0|0|Ifrit
+set_comment|2017|0|0|Blue Trifle
+set_comment|2018|0|0|Fallen Guardian
+set_comment|2020|0|0|Akashic Warlord
+set_comment|2021|0|0|Specter
+set_comment|2022|0|0|Undertaker
+set_comment|2051|0|0|Imperial Legionnaire
+set_comment|2052|0|0|Imperial Legionnaire
+set_comment|2053|0|0|Imperial Legionnaire
+set_comment|2054|0|0|Imperial Legionnaire
+set_comment|2055|0|0|Imperial Astrologer
+set_comment|2056|0|0|Imperial Astrologer
+set_comment|2057|0|0|Imperial Captain
+set_comment|2058|0|0|Imperial Captain
+set_comment|2059|0|0|Imperial War Wyrm
+set_comment|2060|0|0|Imperial War Wyrm
+set_comment|2061|0|0|Imperial Champion
+set_comment|2062|0|0|Imperial Champion
+set_comment|2101|0|0|Imperial Captain
+set_comment|2102|0|0|Imperial Legionnaire
+set_comment|2103|0|0|Imperial Legionnaire
+set_comment|2104|0|0|Imperial Astrologer
+set_comment|2105|0|0|Imperial War Wyrm
+set_comment|2107|0|0|Imperial Cannonier
+set_comment|2108|0|0|Imperial Cannonier
+set_comment|2111|0|0|Akashic Captain
+set_comment|2112|0|0|Akashic Legionnaire
+set_comment|2113|0|0|Akashic Legionnaire
+set_comment|2115|0|0|Akashic War Wyrm
+set_comment|2116|0|0|Akashic Miner
+set_comment|2117|0|0|Akashic Champion
+set_comment|2118|0|0|Wraith
+set_comment|2119|0|0|Specter
+set_comment|2120|0|0|Lich
+set_comment|2121|0|0|Akashic Dragon
+set_comment|2122|0|0|Typhon
+set_comment|2123|0|0|Ifrit
+set_comment|2124|0|0|Typhon the Transgressor
+set_comment|2127|0|0|Typhon
+set_comment|2128|0|0|Wraith
+set_comment|2129|0|0|Revenant
+set_comment|2130|0|0|Specter
+set_comment|2138|0|0|Akashic Miner
+set_comment|2139|0|0|Akashic Miner
+set_comment|2140|0|0|Akashic Miner
+set_comment|2141|0|0|Akashic Miner
+set_comment|2142|0|0|Akashic Miner
+set_comment|2143|0|0|Specter
+set_comment|2148|0|0|Imperial War Aevis
+set_comment|2149|0|0|Akashic Coeurl
+set_comment|2152|0|0|Lich
+set_comment|2153|0|0|Undertaker
+set_comment|2154|0|0|Purobolos
+set_comment|2155|0|0|Specter
+set_comment|2156|0|0|Akashic Widow
+set_comment|2157|0|0|Imperial War Wyrm
+set_comment|2158|0|0|Akashic Champion
+set_comment|2201|0|0|Stone Commandant
+set_comment|2202|0|0|Stone Scimitar
+set_comment|2203|0|0|Stone Scimitar
+set_comment|2204|0|0|Stone Scimitar
+set_comment|2205|0|0|Stone Scepter
+set_comment|2206|0|0|Republican War Panther
+set_comment|2207|0|0|Stone Commandant
+set_comment|2208|0|0|Stone Scimitar
+set_comment|2301|0|0|Dragonet
+set_comment|2302|0|0|Akashic Thorn
+set_comment|2303|0|0|Akashic Worgen
+set_comment|2304|0|0|Akashic Hornet
+set_comment|2306|0|0|Akashic Morbol
+set_comment|2308|0|0|Scarlet Scorpion
+set_comment|2309|0|0|Bomb
+set_comment|2310|0|0|Red Mousse
+set_comment|2311|0|0|Flame Lizard
+set_comment|2312|0|0|Ironblood Commander
+set_comment|2314|0|0|Ironblood Crusader
+set_comment|2316|0|0|Ironblood Crusader
+set_comment|2318|0|0|Ironblood Fanatic
+set_comment|2320|0|0|Liquid Flame
+set_comment|2324|0|0|Salamander
+set_comment|2325|0|0|Akashic Minotaur
+set_comment|2327|0|0|Ironblood Commander
+set_comment|2328|0|0|Ironblood Crusader
+set_comment|2329|0|0|Ironblood Crusader
+set_comment|2335|0|0|Akashic Dragonet
+set_comment|2336|0|0|Dragonet
+set_comment|2339|0|0|Chimera
+set_comment|2340|0|0|Red Mousse
+set_comment|2341|0|0|Yellow Jelly
+set_comment|2342|0|0|Ironblood Fanatic
+set_comment|2343|0|0|Iron Giant
+set_comment|2344|0|0|Akashic Raptor
+set_comment|2345|0|0|Akashic Plague
+set_comment|2401|0|0|Republican Battlehound
+set_comment|2402|0|0|Stone Commandant
+set_comment|2403|0|0|Stone Scimitar
+set_comment|2404|0|0|Stone Scimitar
+set_comment|2405|0|0|Stone Scimitar
+set_comment|2406|0|0|Stone Scepter
+set_comment|2407|0|0|Stone Gaoler
+set_comment|2408|0|0|Stone Headsman
+set_comment|2409|0|0|Coeurl
+set_comment|2410|0|0|Hugo
+set_comment|2414|0|0|Stone Scepter
+set_comment|2415|0|0|Stone Scepter
+set_comment|2417|0|0|Republican War Panther
+set_comment|2420|0|0|Stone Gaoler
+set_comment|2421|0|0|Stone Headsman
+set_comment|2422|0|0|Stone Commandant
+set_comment|2423|0|0|Stone Scimitar
+set_comment|2424|0|0|Stone Scimitar
+set_comment|2425|0|0|Stone Scimitar
+set_comment|2426|0|0|Republican Battlehound
+set_comment|2427|0|0|Stone Scepter
+set_comment|2428|0|0|Stone Headsman
+set_comment|2429|0|0|Stone Scimitar
+set_comment|2430|0|0|Stone Scimitar
+set_comment|2431|0|0|Stone Scimitar
+set_comment|2432|0|0|Stone Scimitar
+set_comment|2451|0|0|Royal Osfreyr
+set_comment|2452|0|0|Royal Osfreyr
+set_comment|2453|0|0|Royal Osfreyr
+set_comment|2454|0|0|Royal Osfreyr
+set_comment|2455|0|0|Desert Raider
+set_comment|2456|0|0|Desert Raider
+set_comment|2457|0|0|Desert Raider
+set_comment|2458|0|0|Desert Djinn
+set_comment|2459|0|0|Desert Raider
+set_comment|2501|0|0|Orcish Fodder
+set_comment|2502|0|0|Orcish Fodder
+set_comment|2503|0|0|Orcish Mesmerizer
+set_comment|2504|0|0|Orcish Warlord
+set_comment|2505|0|0|Wraith
+set_comment|2506|0|0|Revenant
+set_comment|2507|0|0|Specter
+set_comment|2508|0|0|Lich
+set_comment|2509|0|0|Undertaker
+set_comment|2510|0|0|Orcish Mesmerizer
+set_comment|2511|0|0|Black Mastiff
+set_comment|2512|0|0|Specter
+set_comment|2513|0|0|Wraith
+set_comment|2514|0|0|Revenant
+set_comment|2515|0|0|Specter
+set_comment|2521|0|0|Orcish Mesmerizer
+set_comment|2522|0|0|Yellow Jelly
+set_comment|2523|0|0|Purobolos
+set_comment|2524|0|0|Lich
+set_comment|2527|0|0|Akashic Plague
+set_comment|2550|0|0|Titan
+set_comment|2551|0|0|Titan Lost
+set_comment|2552|0|0|Ifrit
+set_comment|2556|0|0|Titan
+set_comment|2701|0|0|Dragoon Knight Captain
+set_comment|2702|0|0|Dragoon Knight
+set_comment|2703|0|0|Dragoon Knight
+set_comment|2704|0|0|Dragoon Astrologer
+set_comment|2705|0|0|Dragoon Astrologer
+set_comment|2706|0|0|Elite War Wyrm
+set_comment|2707|0|0|Elite War Aevis
+set_comment|2708|0|0|Dragoon Lancer
+set_comment|2709|0|0|White Dragon
+set_comment|2710|0|0|Akashic Dragoon
+set_comment|2711|0|0|Akashic Dragoon
+set_comment|2712|0|0|Akashic Captain
+set_comment|2713|0|0|Akashic Astrologer
+set_comment|2714|0|0|Megalocrab
+set_comment|2715|0|0|Wraith
+set_comment|2716|0|0|Revenant
+set_comment|2717|0|0|Specter
+set_comment|2718|0|0|Lich
+set_comment|2719|0|0|Undertaker
+set_comment|2720|0|0|Necrophobe
+set_comment|2722|0|0|Ifrit
+set_comment|2723|0|0|Phoenix
+set_comment|2724|0|0|Ifrit Risen
+set_comment|2725|0|0|Bahamut
+set_comment|2726|0|0|Bahamut
+set_comment|2738|0|0|Specter
+set_comment|2739|0|0|Elite War Wyrm
+set_comment|2740|0|0|Akashic Chocobo
+set_comment|2741|0|0|Purobolos
+set_comment|2744|0|0|Elite War Aevis
+set_comment|2745|0|0|Imperial Bombardier
+set_comment|2746|0|0|Imperial Champion
+set_comment|2748|0|0|Akashic Griffin
+set_comment|2809|0|0|Sleipnir
+set_comment|2810|0|0|Sleipnir
+set_comment|2812|0|0|Sleipnir
+set_comment|2813|0|0|Orcish Fodder
+set_comment|2814|0|0|Orcish Fodder
+set_comment|2815|0|0|Orcish Mesmerizer
+set_comment|2816|0|0|Orcish Warlord
+set_comment|2817|0|0|Akashic Osfreyr
+set_comment|2818|0|0|Akashic Osfreyr
+set_comment|2820|0|0|Akashic Sigfreyr
+set_comment|2821|0|0|Akashic Gandfreyr
+set_comment|2822|0|0|Akashic Folkstaf
+set_comment|2823|0|0|Royal Mastiff
+set_comment|2824|0|0|Akashic Tognvaldr
+set_comment|2825|0|0|Akashic Sveithvaldr
+set_comment|2826|0|0|Wraith
+set_comment|2827|0|0|Revenant
+set_comment|2828|0|0|Specter
+set_comment|2831|0|0|Orcish Fodder
+set_comment|2832|0|0|Orcish Fodder
+set_comment|2833|0|0|Orcish Mesmerizer
+set_comment|2834|0|0|Akashic Gandfreyr
+set_comment|2835|0|0|Specter
+set_comment|2836|0|0|Specter
+set_comment|2841|0|0|Akashic Chocobo
+set_comment|2842|0|0|Akashic Coeurl
+set_comment|2845|0|0|Akashic Sveithvaldr
+set_comment|2860|0|0|Akashic Gandfreyr
+set_comment|2861|0|0|Akashic Osfreyr
+set_comment|2862|0|0|Akashic Osfreyr
+set_comment|2863|0|0|Akashic Sigfreyr
+set_comment|2864|0|0|Akashic Gandfreyr
+set_comment|2865|0|0|Akashic Folkstaf
+set_comment|2866|0|0|Akashic Sveithvaldr
+set_comment|2868|0|0|Sleipnir
+set_comment|2901|0|0|Royal Folkstaf
+set_comment|2902|0|0|Royal Osfreyr
+set_comment|2903|0|0|Royal Osfreyr
+set_comment|2904|0|0|Royal Sigfreyr
+set_comment|2905|0|0|Royal Gandfreyr
+set_comment|2906|0|0|Royal Tognvaldr
+set_comment|2907|0|0|Barnabas
+set_comment|2908|0|0|Royal Sveithvaldr
+set_comment|2909|0|0|Royal Gandfreyr
+set_comment|2910|0|0|Royal Gandfreyr
+set_comment|2911|0|0|Royal Tognvaldr
+set_comment|2918|0|0|Royal Gunnvaldr
+set_comment|2920|0|0|Royal War Wyrm
+set_comment|2922|0|0|Royal War Aevis
+set_comment|2951|0|0|Akashic Folkstaf
+set_comment|2952|0|0|Akashic Osfreyr
+set_comment|2953|0|0|Akashic Osfreyr
+set_comment|2954|0|0|Akashic Sigfreyr
+set_comment|2955|0|0|Akashic Gandfreyr
+set_comment|2957|0|0|Akashic Sveithvaldr
+set_comment|2958|0|0|Akashic Mastiff
+set_comment|2959|0|0|Akashic War Aevis
+set_comment|2960|0|0|Akashic Gandfreyr
+set_comment|2971|0|0|Orcish Fodder
+set_comment|2972|0|0|Orcish Fodder
+set_comment|2973|0|0|Orcish Mesmerizer
+set_comment|2974|0|0|Orcish Warlord
+set_comment|2975|0|0|Akashic Osfreyr
+set_comment|2976|0|0|Akashic Osfreyr
+set_comment|2977|0|0|Akashic Sigfreyr
+set_comment|2979|0|0|Akashic Folkstaf
+set_comment|2980|0|0|Akashic Tognvaldr
+set_comment|2982|0|0|Akashic Mastiff
+set_comment|2984|0|0|Akashic Courser
+set_comment|2985|0|0|Akashic Mastiff
+set_comment|2986|0|0|Orcish Fodder
+set_comment|2987|0|0|Orcish Fodder
+set_comment|2988|0|0|Orcish Mesmerizer
+set_comment|3001|0|0|Fallen Bug
+set_comment|3002|0|0|Fallen Hunter
+set_comment|3003|0|0|Defense Node
+set_comment|3005|0|0|Purobolos
+set_comment|3006|0|0|Fallen Guardian
+set_comment|3007|0|0|Purple Bavarois
+set_comment|3008|0|0|Control Node
+set_comment|3018|0|0|Aurum Giant
+set_comment|3019|0|0|Barnabas
+set_comment|3020|0|0|Soultaker
+set_comment|3025|0|0|Odin
+set_comment|3027|0|0|Fallen Hunter
+set_comment|3029|0|0|Defense Node
+set_comment|3030|0|0|Defense Node
+set_comment|3031|0|0|Purobolos
+set_comment|3033|0|0|Defense Node
+set_comment|3034|0|0|Purobolos
+set_comment|3038|0|0|Akashic Griffin
+set_comment|3039|0|0|Fallen Guardian
+set_comment|3101|0|0|Akashic Folkstaf
+set_comment|3102|0|0|Akashic Osfreyr
+set_comment|3103|0|0|Akashic Osfreyr
+set_comment|3104|0|0|Akashic Sigfreyr
+set_comment|3105|0|0|Akashic Gandfreyr
+set_comment|3108|0|0|Akashic Gunnvaldr
+set_comment|3109|0|0|Orcish Fodder
+set_comment|3110|0|0|Orcish Fodder
+set_comment|3111|0|0|Orcish Mesmerizer
+set_comment|3113|0|0|Behemoth
+set_comment|3114|0|0|Ultima
+set_comment|3138|0|0|Akashic Vulture
+set_comment|3139|0|0|Akashic Worgen
+set_comment|3140|0|0|Akashic Coeurl
+set_comment|3142|0|0|Wraith
+set_comment|3143|0|0|Revenant
+set_comment|3144|0|0|Lich
+set_comment|3145|0|0|Undertaker
+set_comment|3146|0|0|Specter
+set_comment|3150|0|0|Orcish Mesmerizer
+set_comment|3151|0|0|Akashic Folkstaf
+set_comment|3152|0|0|Akashic Osfreyr
+set_comment|3153|0|0|Akashic Osfreyr
+set_comment|3154|0|0|Akashic Sigfreyr
+set_comment|3155|0|0|Akashic Gandfreyr
+set_comment|3156|0|0|Akashic Worgen
+set_comment|3161|0|0|Akashic Salamander
+set_comment|3162|0|0|Iron Giant
+set_comment|3163|0|0|Akashic Plague
+set_comment|3164|0|0|Akashic Gunnvaldr
+set_comment|3171|0|0|Akashic Osfreyr
+set_comment|3172|0|0|Akashic Osfreyr
+set_comment|3173|0|0|Akashic Sigfreyr
+set_comment|3174|0|0|Akashic Gandfreyr
+set_comment|3175|0|0|Akashic Fodder
+set_comment|3176|0|0|Akashic Fodder
+set_comment|3177|0|0|Revenant
+set_comment|3179|0|0|Akashic Tognvaldr
+set_comment|3182|0|0|Akashic Warlord
+set_comment|3183|0|0|Wraith
+set_comment|3184|0|0|Akashic Gandfreyr
+set_comment|3185|0|0|Akashic Tognvaldr
+set_comment|3201|0|0|"Ifrit|0|0| Phoenix|0|0| & Bahamut"
+set_comment|3202|0|0|Ultima Prime
+set_comment|3203|0|0|Ultima
+set_comment|3204|0|0|Ultima Prime
+set_comment|3205|0|0|Ultima Risen
+set_comment|3206|0|0|Ultimalius
+set_comment|3207|0|0|Ultimalius
+set_comment|3208|0|0|Ultimalius
+set_comment|3209|0|0|Ultimalius
+set_comment|3301|0|0|Automation Unit MRN
+set_comment|3302|0|0|Patrol Unit MEG
+set_comment|3303|0|0|Surveillance Unit MMC
+set_comment|3304|0|0|Domovikha
+set_comment|3305|0|0|Domovikha
+set_comment|3306|0|0|Domovoi
+set_comment|3307|0|0|Spire Mousse
+set_comment|3311|0|0|Prototype Unit EVL
+set_comment|3312|0|0|Pacification Unit MEG
+set_comment|3321|0|0|Sigma
+set_comment|3331|0|0|Spire Wolf
+set_comment|3332|0|0|Spire Dragonet
+set_comment|3333|0|0|Spire Dragonet
+set_comment|3334|0|0|Spire Dragonet
+set_comment|3335|0|0|Spire Scorpion
+set_comment|3336|0|0|Spire Raptor
+set_comment|3339|0|0|Spire Chocobo
+set_comment|3340|0|0|Domovoi
+set_comment|3341|0|0|Assault Unit OGR
+set_comment|3344|0|0|Spire Griffin
+set_comment|3345|0|0|Omicron
+set_comment|3346|0|0|Spire Wyvern
+set_comment|3347|0|0|Spire Chimera
+set_comment|3348|0|0|Pacification Unit MEG
+set_comment|3351|0|0|Angra Mainyu
+set_comment|3352|0|0|Angra Mainyu
+set_comment|3362|0|0|Spire Purboros
+set_comment|3363|0|0|Spire Purboros
+set_comment|3371|0|0|Asterios
+set_comment|3372|0|0|Omicron
+set_comment|3373|0|0|Spire Panther
+set_comment|3375|0|0|Spire Bavarois
+set_comment|3376|0|0|Omicron
+set_comment|3381|0|0|Omega
+set_comment|3382|0|0|Omega Aionios
+set_comment|3401|0|0|Perykos
+set_comment|3402|0|0|Eddy
+set_comment|3411|0|0|Northern Wolf
+set_comment|3412|0|0|Wolf Trap
+set_comment|3413|0|0|Tonberry Creeper
+set_comment|3414|0|0|Chronoraptor
+set_comment|3416|0|0|Temple Dragonet
+set_comment|3417|0|0|Wolf Trap
+set_comment|3418|0|0|Chronoraptor
+set_comment|3421|0|0|Temple Coeurl
+set_comment|3422|0|0|Master Tonberry
+set_comment|3423|0|0|Comfiture
+set_comment|3424|0|0|Appulmoy
+set_comment|3425|0|0|Temple Coeurl
+set_comment|3429|0|0|Master Tonberry
+set_comment|3430|0|0|Comfiture
+set_comment|3431|0|0|Hreidmar
+set_comment|3441|0|0|Frost Bomb
+set_comment|3443|0|0|Tonberry Hexer
+set_comment|3444|0|0|Deathstalker
+set_comment|3445|0|0|Frost Bomb
+set_comment|3446|0|0|Grey Widow
+set_comment|3447|0|0|Tonberry Creeper
+set_comment|3448|0|0|Tonberry Hexer
+set_comment|3449|0|0|Bird of Paradise
+set_comment|3450|0|0|Temple Dhole
+set_comment|3451|0|0|Wolf Trap
+set_comment|3456|0|0|Master Tonberry
+set_comment|3457|0|0|Seer
+set_comment|3461|0|0|Timekeeper
+set_comment|3501|0|0|Leviathan Egi
+set_comment|3502|0|0|Eddy
+set_comment|3511|0|0|Leviathan
+set_comment|3512|0|0|Leviathan
+set_comment|3514|0|0|Ifrit
+set_comment|3515|0|0|Ifrit
+set_comment|3602|0|0|Kairos Wraith
+set_comment|3603|0|0|Kairos Revenant
+set_comment|3605|0|0|Kairos Undertaker
+set_comment|4041|0|0|Goblin Gardener
+set_comment|4042|0|0|Gigas Ploughswain
+set_comment|4043|0|0|Goblin Gardener
+set_comment|4081|0|0|The Innkeeper
+set_comment|4082|0|0|Bedmaker
+set_comment|4123|0|0|Desert Salamander
+set_comment|4141|0|0|Woken Bug
+set_comment|4142|0|0|Woken Guardian
+set_comment|4143|0|0|Woken Hunter
+set_comment|4145|0|0|Bomb Errant
+set_comment|4146|0|0|Woken Node
+set_comment|4147|0|0|Woken Node
+set_comment|4148|0|0|Woken Bug
+set_comment|4164|0|0|Canyon Chimera
+set_comment|4165|0|0|Akashic Wolf
+set_comment|4166|0|0|Akashic Scorpion
+set_comment|4167|0|0|Akashic Leg Eater
+set_comment|4168|0|0|Akashic Bighorn
+set_comment|4169|0|0|Akashic Griffin
+set_comment|4181|0|0|Chocobo Poacher
+set_comment|4182|0|0|Chocobo Poacher
+set_comment|4183|0|0|Chocobo Poacher
+set_comment|4185|0|0|Chocobo Poacher
+set_comment|4186|0|0|Chocobo Poacher
+set_comment|4187|0|0|Huntsman
+set_comment|4188|0|0|Harrier Hound
+set_comment|4300|0|0|Tot Aevis
+set_comment|4321|0|0|Killer
+set_comment|4341|0|0|Elder Antelope
+set_comment|4361|0|0|Republican Scepter
+set_comment|4362|0|0|Republican Scimitar
+set_comment|4363|0|0|Roughshod Rustic
+set_comment|4364|0|0|Spring-heeled Jacques
+set_comment|4365|0|0|Republican Scimitar
+set_comment|4366|0|0|Roughshod Rustic
+set_comment|4367|0|0|Roughshod Rustic
+set_comment|4382|0|0|Hired Muscle
+set_comment|4383|0|0|Hired Muscle
+set_comment|4384|0|0|Hired Muscle
+set_comment|4385|0|0|Mangy Cur
+set_comment|4401|0|0|Akashic Gigas
+set_comment|4405|0|0|Akashic Weaver
+set_comment|4421|0|0|Simurgh
+set_comment|4443|0|0|Dragonet
+set_comment|4444|0|0|Dragonet
+set_comment|4445|0|0|Worgen
+set_comment|4446|0|0|Oillepheist Bull
+set_comment|4461|0|0|Desert Tor
+set_comment|4481|0|0|Bannerless Commandant
+set_comment|4484|0|0|Bannerless Scimitar
+set_comment|4485|0|0|Bannerless Scimitar
+set_comment|4486|0|0|Bannerless Scepter
+set_comment|4487|0|0|Bannerless Commandant
+set_comment|4488|0|0|Bannerless Scepter
+set_comment|4522|0|0|Executor Aide
+set_comment|4524|0|0|Executor Aide
+set_comment|4525|0|0|Executor Aide
+set_comment|4526|0|0|Inquisitor
+set_comment|4601|0|0|Cray Claw
+set_comment|4622|0|0|Mud Dauber
+set_comment|4623|0|0|Worgen
+set_comment|4641|0|0|Bloated Wolf
+set_comment|4642|0|0|Bloated Alpha
+set_comment|4661|0|0|Black Shield
+set_comment|4662|0|0|Black Shield
+set_comment|4663|0|0|Black Shield
+set_comment|4664|0|0|Provincial Guard
+set_comment|4665|0|0|Provincial Guard
+set_comment|4671|0|0|Black Shield
+set_comment|4672|0|0|Black Shield
+set_comment|4673|0|0|Black Shield
+set_comment|4674|0|0|Black Shield
+set_comment|4675|0|0|Black Shield
+set_comment|4681|0|0|Lazarus Bandit
+set_comment|4682|0|0|Lazarus Bandit
+set_comment|4683|0|0|Lazarus Bandit
+set_comment|4684|0|0|Lazarus Bandit
+set_comment|4685|0|0|Lazarus Bandit
+set_comment|4686|0|0|Lazarus Bandit
+set_comment|4687|0|0|Lazarus Bandit
+set_comment|4691|0|0|Black Shield Captain
+set_comment|4692|0|0|Black Shield
+set_comment|4693|0|0|Black Shield
+set_comment|4694|0|0|Imperial War Wyvern
+set_comment|4696|0|0|Imperial War Wyrm
+set_comment|4697|0|0|Knight of the Lasting Dark
+set_comment|4701|0|0|Vampire Thorn
+set_comment|4705|0|0|Cray Claw
+set_comment|4707|0|0|Vampire Thorn
+set_comment|4708|0|0|Wivre
+set_comment|4709|0|0|Vulture
+set_comment|4711|0|0|Back-alley Bruiser
+set_comment|4712|0|0|Back-alley Bruiser
+set_comment|4713|0|0|Back-alley Bruiser
+set_comment|4714|0|0|Back-alley Bruiser
+set_comment|4715|0|0|Back-alley Bruiser
+set_comment|4716|0|0|Back-alley Bruiser
+set_comment|4717|0|0|Back-alley Bruiser
+set_comment|4718|0|0|Back-alley Bruiser
+set_comment|4721|0|0|Kupka's Private Guard
+set_comment|4722|0|0|Kupka's Private Guard
+set_comment|4723|0|0|Kupka's Private Guard
+set_comment|4724|0|0|Royal Knight Captain
+set_comment|4725|0|0|Royal Knight
+set_comment|4726|0|0|Royal Knight
+set_comment|4727|0|0|Royal Chaplain
+set_comment|4728|0|0|Royal Courser
+set_comment|4756|0|0|Unwanted Visitor
+set_comment|4761|0|0|Cast Stone
+set_comment|4762|0|0|Cast Stone
+set_comment|4763|0|0|Cast Stone
+set_comment|4764|0|0|Cast Stone
+set_comment|4765|0|0|Cast Stone
+set_comment|4766|0|0|Cast Stone
+set_comment|4767|0|0|Cast Stone
+set_comment|4768|0|0|Cast Stone
+set_comment|4769|0|0|Cast Stone
+set_comment|4770|0|0|Cast Stone
+set_comment|4781|0|0|Thrall Specter
+set_comment|4782|0|0|Thrall Wraith
+set_comment|4783|0|0|Thrall Revenant
+set_comment|4784|0|0|Thrall Lich
+set_comment|4785|0|0|Thrall Revenant
+set_comment|4786|0|0|Thrall Specter
+set_comment|4801|0|0|Horde Goblin
+set_comment|4802|0|0|Akashic Thistle
+set_comment|4803|0|0|Horde Crab
+set_comment|4804|0|0|Horde Adamantoise
+set_comment|4806|0|0|Akashic Plague
+set_comment|4807|0|0|Akashic Dragonet
+set_comment|4808|0|0|Akashic Dragonet
+set_comment|4809|0|0|Horde Goblin
+set_comment|4810|0|0|Horde Wolf
+set_comment|4811|0|0|Akashic Claw
+set_comment|4812|0|0|Akashic Recluse
+set_comment|4813|0|0|Akashic Vulture
+set_comment|4814|0|0|Akashic Chocobo
+set_comment|4860|0|0|Desert Bandit
+set_comment|4861|0|0|Desert Bandit
+set_comment|4862|0|0|Desert Bandit
+set_comment|4864|0|0|The Sultan
+set_comment|4865|0|0|Desert Bandit
+set_comment|4866|0|0|Desert Bandit
+set_comment|4869|0|0|Desert Bandit
+set_comment|4901|0|0|Black Shield Sergeant
+set_comment|4902|0|0|Black Shield
+set_comment|4903|0|0|Black Shield
+set_comment|4904|0|0|Black Shield
+set_comment|4906|0|0|Black Shield
+set_comment|4921|0|0|Minas
+set_comment|4931|0|0|Akashic Shield
+set_comment|4932|0|0|Akashic Shield
+set_comment|4933|0|0|Akashic Shield
+set_comment|4934|0|0|Akashic Shield
+set_comment|4937|0|0|Akashic Shield
+set_comment|4938|0|0|Akashic Shield
+set_comment|4939|0|0|Akashic Shield
+set_comment|4961|0|0|Encroaching Wraith
+set_comment|4962|0|0|Encroaching Revenant
+set_comment|4963|0|0|Encroaching Wraith
+set_comment|4964|0|0|Encroaching Revenant
+set_comment|4966|0|0|Encroaching Undertaker
+set_comment|4967|0|0|Encroaching Specter
+set_comment|4968|0|0|Encroaching Specter
+set_comment|5001|0|0|Unsavory Settler
+set_comment|5002|0|0|Unsavory Settler
+set_comment|5003|0|0|Unsavory Settler
+set_comment|5004|0|0|Two Scoops
+set_comment|5022|0|0|Akashic Bandercoeurl
+set_comment|5023|0|0|Akashic Goblin
+set_comment|5029|0|0|Akashic Thistle
+set_comment|5030|0|0|Akashic Claw
+set_comment|5031|0|0|Akashic Raptor
+set_comment|5032|0|0|Akashic Dragonet
+set_comment|5033|0|0|Akashic Dragonet
+set_comment|5034|0|0|Akashic Wolf
+set_comment|5035|0|0|Akashic Goblin
+set_comment|5060|0|0|League Footpad
+set_comment|5061|0|0|Unleashed Hound
+set_comment|5062|0|0|League Cunning-man
+set_comment|5063|0|0|League Cunning-man
+set_comment|5081|0|0|Akashic Gentleman
+set_comment|5082|0|0|Akashic Footpad
+set_comment|5083|0|0|Akashic Footpad
+set_comment|5084|0|0|Akashic Cunning-man
+set_comment|5088|0|0|Akashic Footpad
+set_comment|5089|0|0|Akashic Footpad
+set_comment|5121|0|0|Feral Hound
+set_comment|5122|0|0|Helldiver
+set_comment|5141|0|0|Herensuge
+set_comment|5142|0|0|Akashic Hound
+set_comment|5143|0|0|Akashic Leg Eater
+set_comment|5144|0|0|Helldiver
+set_comment|5145|0|0|Akashic Scorpion
+set_comment|5181|0|0|Fallen Echo
+set_comment|5183|0|0|Fallen Echo
+set_comment|5184|0|0|Fool's Gold
+set_comment|5185|0|0|Fallen Echo
+set_comment|5201|0|0|Titus
+set_comment|5202|0|0|Fallen Echo
+set_comment|5203|0|0|Fallen Echo
+set_comment|5300|0|0|Vintner Wasp
+set_comment|5310|0|0|Vine Spinner
+set_comment|5330|0|0|Bog Crab
+set_comment|5341|0|0|Uninvited Guest
+set_comment|5342|0|0|Uninvited Guest
+set_comment|5350|0|0|Starving Wolf
+set_comment|5351|0|0|Starving Alpha
+set_comment|5360|0|0|Hill Gigas
+set_comment|5361|0|0|Hill Goblin
+set_comment|5370|0|0|"Leon|0|0| Garrison Soldier"
+set_comment|5371|0|0|"Robin|0|0| Garrison Soldier"
+set_comment|5380|0|0|Rabid Wolf
+set_comment|5400|0|0|Thorny Thistle
+set_comment|5402|0|0|Thorny Thistle
+set_comment|5410|0|0|Lowland Scorpion
+set_comment|5440|0|0|Agitated Hornet
+set_comment|5441|0|0|Riled Raptor
+set_comment|5450|0|0|Gigas Bruiser
+set_comment|5451|0|0|Goblin Leecher
+set_comment|5461|0|0|Old Faithful
+set_comment|5462|0|0|Bath Bomb
+set_comment|5463|0|0|Bath Bomb
+set_comment|5500|0|0|Ne'er-do-well
+set_comment|5501|0|0|Ne'er-do-well
+set_comment|5502|0|0|Goblin Roughhouser
+set_comment|5503|0|0|Wandering Echo
+set_comment|5505|0|0|Goblin Roughhouser
+set_comment|5506|0|0|Goblin Rabblerouser
+set_comment|5507|0|0|Ne'er-do-well
+set_comment|5509|0|0|Wailing Echo
+set_comment|5510|0|0|Goblin Prince
+set_comment|5521|0|0|Blueback Wyvern
+set_comment|5530|0|0|Imperial Legionnaire
+set_comment|5531|0|0|Imperial Legionnaire
+set_comment|5532|0|0|Imperial Legionnaire
+set_comment|5533|0|0|Imperial Astrologer
+set_comment|5535|0|0|Imperial Legionnaire
+set_comment|5536|0|0|Imperial Legionnaire
+set_comment|5537|0|0|Imperial Astrologer
+set_comment|5541|0|0|Akashic Scimitar
+set_comment|5542|0|0|Akashic Scimitar
+set_comment|5543|0|0|Akashic Scimitar
+set_comment|5545|0|0|Akashic Steed
+set_comment|5551|0|0|Dread Aevis
+set_comment|5570|0|0|Akashic Clergyman
+set_comment|5571|0|0|Akashic Gunnvaldr
+set_comment|5574|0|0|Akashic Sigfreyr
+set_comment|5590|0|0|Akashic Osfreyr
+set_comment|5591|0|0|Akashic Sigfreyr
+set_comment|5592|0|0|Akashic Gandfreyr
+set_comment|5594|0|0|Akashic Gandfreyr
+set_comment|5595|0|0|Akashic Guard Hound
+set_comment|5600|0|0|Miteling
+set_comment|5620|0|0|Pincher Crab
+set_comment|5621|0|0|Muddy Quindim
+set_comment|5640|0|0|Wily Wolf Trap
+set_comment|5641|0|0|Wily Widowmaker
+set_comment|5660|0|0|Angry Gryps
+set_comment|5661|0|0|Angry Chronoraptor
+set_comment|5680|0|0|Tonberry Chopper
+set_comment|5682|0|0|Tonberry Chopper
+set_comment|5700|0|0|Ibex
+set_comment|5701|0|0|Guivre
+set_comment|5720|0|0|Torama
+set_comment|5721|0|0|Frost Bomb
+set_comment|5741|0|0|Archelon
+set_comment|5761|0|0|Tonberry Creeper
+set_comment|5762|0|0|Tonberry Hexer
+set_comment|5763|0|0|Tonberry Creeper
+set_comment|5764|0|0|Tonberry Creeper
+set_comment|5765|0|0|Tonberry Hexer
+set_comment|5766|0|0|Tonberry Creeper
+set_comment|5767|0|0|Tonberry Creeper
+set_comment|5768|0|0|Tonberry Hexer
+set_comment|5769|0|0|Tonberry Creeper
+set_comment|5780|0|0|Lesser Archelon
+set_comment|5781|0|0|Quindim
+set_comment|5821|0|0|Goblin Mugger
+set_comment|5822|0|0|Goblin Weaver
+set_comment|5901|0|0|Nine of Knives
+set_comment|5902|0|0|Ten of Clubs
+set_comment|5903|0|0|Grimalkin
+set_comment|5904|0|0|Wild Nakk
+set_comment|5905|0|0|Gorgimera
+set_comment|5906|0|0|Fastitocalon
+set_comment|5907|0|0|Dread Comet
+set_comment|5908|0|0|Thanatos
+set_comment|5909|0|0|Pack Wolf
+set_comment|5910|0|0|Soul Stinger
+set_comment|5915|0|0|Svarog
+set_comment|5916|0|0|Knight of the Splendent Heart
+set_comment|5917|0|0|Holy Trumpitour
+set_comment|5918|0|0|Prince of Death
+set_comment|5919|0|0|Aruna
+set_comment|5920|0|0|Dozmare
+set_comment|5921|0|0|Bomb King
+set_comment|5922|0|0|Bomb Babe
+set_comment|5923|0|0|Petit Purobolos
+set_comment|5924|0|0|Terminus
+set_comment|5930|0|0|Carrot
+set_comment|5931|0|0|Sekhret
+set_comment|5932|0|0|Atlas
+set_comment|5933|0|0|Sandwydd
+set_comment|5934|0|0|Belphegor
+set_comment|5935|0|0|Flan Prince
+set_comment|5936|0|0|Severian
+set_comment|5937|0|0|Ahriman
+set_comment|5938|0|0|Mindwydd
+set_comment|5939|0|0|Cindwydd
+set_comment|5945|0|0|Behemoth King
+set_comment|5946|0|0|Agni
+set_comment|5947|0|0|Pandemonium
+set_comment|5948|0|0|Bygul
+set_comment|5949|0|0|Gizamaluk
+set_comment|5950|0|0|Gobermouch
+set_comment|5951|0|0|Kuza Beast
+set_comment|5961|0|0|Tonberry King
+set_comment|5962|0|0|Thalaos
+set_comment|5963|0|0|Tonberry Shadower
+set_comment|6080|0|0|Footpad
+set_comment|6081|0|0|Footpad
+set_comment|6082|0|0|Footpad
+set_comment|6100|0|0|Footpad
+set_comment|6101|0|0|Footpad
+set_comment|6105|0|0|Footpad
+set_comment|6160|0|0|Footpad
+set_comment|6161|0|0|Footpad
+set_comment|6180|0|0|Footpad
+set_comment|6181|0|0|Footpad
+set_comment|6220|0|0|Hedge Wizard
+set_comment|6221|0|0|Hedge Wizard
+set_comment|6222|0|0|Hedge Wizard
+set_comment|6240|0|0|Goblin Mugger
+set_comment|6241|0|0|Goblin Mugger
+set_comment|6280|0|0|Goblin Mugger
+set_comment|6282|0|0|Goblin Mugger
+set_comment|6320|0|0|Goblin Mugger
+set_comment|6322|0|0|Goblin Mugger
+set_comment|6360|0|0|Goblin Weaver
+set_comment|6361|0|0|Goblin Weaver
+set_comment|6362|0|0|Goblin Weaver
+set_comment|6400|0|0|Hill Gigas
+set_comment|6440|0|0|Orcish Fodder
+set_comment|6460|0|0|Orcish Fodder
+set_comment|6480|0|0|Orcish Mesmerizer
+set_comment|6500|0|0|Wild Chocobo
+set_comment|6501|0|0|Wild Chocobo
+set_comment|6502|0|0|Wild Chocobo
+set_comment|6520|0|0|Akashic Chocobo
+set_comment|6540|0|0|Leg Eater
+set_comment|6541|0|0|Leg Eater
+set_comment|6542|0|0|Leg Eater
+set_comment|6560|0|0|Leg Eater
+set_comment|6562|0|0|Leg Eater
+set_comment|6580|0|0|Akashic Leg Eater
+set_comment|6600|0|0|Anak
+set_comment|6601|0|0|Anak
+set_comment|6620|0|0|Scorpion
+set_comment|6621|0|0|Scorpion
+set_comment|6640|0|0|Akashic Scorpion
+set_comment|6660|0|0|Scarlet Scorpion
+set_comment|6661|0|0|Scarlet Scorpion
+set_comment|6681|0|0|Bloodfang
+set_comment|6682|0|0|Bloodfang
+set_comment|6700|0|0|Wild Nakk
+set_comment|6701|0|0|Wild Nakk
+set_comment|6702|0|0|Wild Nakk
+set_comment|6720|0|0|Akashic Nakk
+set_comment|6740|0|0|Sunhound
+set_comment|6741|0|0|Sunhound
+set_comment|6742|0|0|Sunhound
+set_comment|6760|0|0|Royal Mastiff
+set_comment|6780|0|0|Helldiver
+set_comment|6781|0|0|Helldiver
+set_comment|6782|0|0|Helldiver
+set_comment|6800|0|0|Akashic Eagle
+set_comment|6820|0|0|Salamander
+set_comment|6822|0|0|Salamander
+set_comment|6840|0|0|Akashic Salamander
+set_comment|6860|0|0|Hellgaroo
+set_comment|6861|0|0|Hellgaroo
+set_comment|6880|0|0|Storm Panther
+set_comment|6882|0|0|Storm Panther
+set_comment|6900|0|0|Republican War Panther
+set_comment|6920|0|0|Coeurl
+set_comment|6921|0|0|Coeurl
+set_comment|6940|0|0|Akashic Coeurl
+set_comment|6960|0|0|Bighorn
+set_comment|6961|0|0|Bighorn
+set_comment|6980|0|0|Fallen Hunter
+set_comment|6981|0|0|Fallen Hunter
+set_comment|6983|0|0|Fallen Hunter
+set_comment|7000|0|0|Fallen Bug
+set_comment|7020|0|0|Defense Node
+set_comment|7021|0|0|Defense Node
+set_comment|7040|0|0|Fallen Guardian
+set_comment|7041|0|0|Fallen Guardian
+set_comment|7061|0|0|Bomb
+set_comment|7081|0|0|Yellow Jelly
+set_comment|7120|0|0|Wraith
+set_comment|7140|0|0|Revenant
+set_comment|7160|0|0|Specter
+set_comment|7180|0|0|Lich
+set_comment|7200|0|0|Antares
+set_comment|7201|0|0|Antares
+set_comment|7600|0|0|Imperial Captain
+set_comment|7601|0|0|Imperial Captain
+set_comment|7602|0|0|Imperial Captain
+set_comment|7620|0|0|Imperial Legionnaire
+set_comment|7621|0|0|Imperial Legionnaire
+set_comment|7622|0|0|Imperial Legionnaire
+set_comment|7623|0|0|Imperial Legionnaire
+set_comment|7640|0|0|Akashic Legionnaire
+set_comment|7660|0|0|Imperial Legionnaire
+set_comment|7661|0|0|Imperial Legionnaire
+set_comment|7662|0|0|Imperial Legionnaire
+set_comment|7663|0|0|Imperial Legionnaire
+set_comment|7680|0|0|Imperial Legionnaire
+set_comment|7681|0|0|Imperial Legionnaire
+set_comment|7700|0|0|Imperial Astrologer
+set_comment|7701|0|0|Imperial Astrologer
+set_comment|7702|0|0|Imperial Astrologer
+set_comment|7703|0|0|Imperial Astrologer
+set_comment|7720|0|0|Akashic Bombardier
+set_comment|7740|0|0|Footpad
+set_comment|7760|0|0|Footpad
+set_comment|7780|0|0|Hedge Wizard
+set_comment|7800|0|0|Akashic Serf
+set_comment|7801|0|0|Akashic Serf
+set_comment|7820|0|0|Akashic Friar
+set_comment|7840|0|0|Akashic Miner
+set_comment|7860|0|0|Goblin Mugger
+set_comment|7880|0|0|Akashic Mugger
+set_comment|7900|0|0|Goblin Mugger
+set_comment|7940|0|0|Goblin Weaver
+set_comment|7960|0|0|Akashic Weaver
+set_comment|7980|0|0|Gigas
+set_comment|8000|0|0|Akashic Gigas
+set_comment|8020|0|0|Bluebird
+set_comment|8040|0|0|Wild Chocobo
+set_comment|8060|0|0|Akashic Chocobo
+set_comment|8080|0|0|Silver Lobo
+set_comment|8081|0|0|Silver Lobo
+set_comment|8100|0|0|Worgen
+set_comment|8101|0|0|Worgen
+set_comment|8102|0|0|Worgen
+set_comment|8103|0|0|Worgen
+set_comment|8120|0|0|Akashic Worgen
+set_comment|8140|0|0|Woldhound
+set_comment|8141|0|0|Woldhound
+set_comment|8142|0|0|Woldhound
+set_comment|8143|0|0|Woldhound
+set_comment|8161|0|0|Vampire Thorn
+set_comment|8162|0|0|Vampire Thorn
+set_comment|8163|0|0|Vampire Thorn
+set_comment|8180|0|0|Black Widow
+set_comment|8181|0|0|Black Widow
+set_comment|8182|0|0|Black Widow
+set_comment|8200|0|0|Arachne
+set_comment|8201|0|0|Arachne
+set_comment|8202|0|0|Arachne
+set_comment|8203|0|0|Arachne
+set_comment|8220|0|0|Karlabos
+set_comment|8221|0|0|Karlabos
+set_comment|8222|0|0|Karlabos
+set_comment|8223|0|0|Karlabos
+set_comment|8240|0|0|Vulture
+set_comment|8260|0|0|Dragonet
+set_comment|8261|0|0|Dragonet
+set_comment|8262|0|0|Dragonet
+set_comment|8280|0|0|Akashic Dragonet
+set_comment|8300|0|0|Imperial War Wyrm
+set_comment|8320|0|0|Imperial War Wyrm
+set_comment|8321|0|0|Imperial War Wyrm
+set_comment|8360|0|0|Antelope
+set_comment|8361|0|0|Antelope
+set_comment|8362|0|0|Antelope
+set_comment|8380|0|0|Raptor
+set_comment|8381|0|0|Raptor
+set_comment|8382|0|0|Raptor
+set_comment|8400|0|0|Akashic Raptor
+set_comment|8420|0|0|Dragon Aevis
+set_comment|8421|0|0|Dragon Aevis
+set_comment|8422|0|0|Dragon Aevis
+set_comment|8423|0|0|Dragon Aevis
+set_comment|8441|0|0|Imperial War Aevis
+set_comment|8460|0|0|Akashic Aevis
+set_comment|8480|0|0|Matagot
+set_comment|8520|0|0|Fallen Bug
+set_comment|8521|0|0|Fallen Bug
+set_comment|8540|0|0|Fallen Hunter
+set_comment|8541|0|0|Fallen Hunter
+set_comment|8560|0|0|Bomb
+set_comment|8580|0|0|Green Fool
+set_comment|8581|0|0|Green Fool
+set_comment|8600|0|0|Wraith
+set_comment|8620|0|0|Revenant
+set_comment|8640|0|0|Specter
+set_comment|8641|0|0|Specter
+set_comment|8660|0|0|Lich
+set_comment|9080|0|0|Black Shield
+set_comment|9100|0|0|Black Shield
+set_comment|9120|0|0|Footpad
+set_comment|9121|0|0|Footpad
+set_comment|9122|0|0|Footpad
+set_comment|9160|0|0|Footpad
+set_comment|9161|0|0|Footpad
+set_comment|9162|0|0|Footpad
+set_comment|9163|0|0|Footpad
+set_comment|9180|0|0|Footpad
+set_comment|9181|0|0|Footpad
+set_comment|9182|0|0|Footpad
+set_comment|9220|0|0|Footpad
+set_comment|9261|0|0|Hedge Wizard
+set_comment|9262|0|0|Hedge Wizard
+set_comment|9280|0|0|Footpad
+set_comment|9282|0|0|Footpad
+set_comment|9283|0|0|Footpad
+set_comment|9320|0|0|Footpad
+set_comment|9340|0|0|Akashic Serf
+set_comment|9360|0|0|Akashic Serf
+set_comment|9380|0|0|Akashic Miner
+set_comment|9400|0|0|Akashic Miner
+set_comment|9420|0|0|Goblin Mugger
+set_comment|9422|0|0|Goblin Mugger
+set_comment|9440|0|0|Akashic Mugger
+set_comment|9460|0|0|Goblin Mugger
+set_comment|9462|0|0|Goblin Mugger
+set_comment|9480|0|0|Akashic Mugger
+set_comment|9501|0|0|Goblin Mugger
+set_comment|9520|0|0|Goblin Weaver
+set_comment|9522|0|0|Goblin Weaver
+set_comment|9540|0|0|Akashic Weaver
+set_comment|9560|0|0|Gigas
+set_comment|9561|0|0|Gigas
+set_comment|9580|0|0|Akashic Gigas
+set_comment|9600|0|0|Bluebird
+set_comment|9601|0|0|Bluebird
+set_comment|9602|0|0|Bluebird
+set_comment|9620|0|0|Wild Chocobo
+set_comment|9621|0|0|Wild Chocobo
+set_comment|9622|0|0|Wild Chocobo
+set_comment|9640|0|0|Akashic Chocobo
+set_comment|9660|0|0|Antelope
+set_comment|9681|0|0|Death Blossom
+set_comment|9683|0|0|Death Blossom
+set_comment|9684|0|0|Death Blossom
+set_comment|9685|0|0|Death Blossom
+set_comment|9686|0|0|Death Blossom
+set_comment|9687|0|0|Death Blossom
+set_comment|9721|0|0|Akashic Blossom
+set_comment|9723|0|0|Akashic Blossom
+set_comment|9740|0|0|Gloom Widow
+set_comment|9741|0|0|Gloom Widow
+set_comment|9742|0|0|Gloom Widow
+set_comment|9743|0|0|Gloom Widow
+set_comment|9763|0|0|Akashic Recluse
+set_comment|9780|0|0|Arachne
+set_comment|9781|0|0|Arachne
+set_comment|9782|0|0|Arachne
+set_comment|9783|0|0|Arachne
+set_comment|9820|0|0|Megalocrab
+set_comment|9822|0|0|Megalocrab
+set_comment|9823|0|0|Megalocrab
+set_comment|9840|0|0|Akashic Megalocrab
+set_comment|9860|0|0|Devil Crab
+set_comment|9861|0|0|Devil Crab
+set_comment|9862|0|0|Devil Crab
+set_comment|9863|0|0|Devil Crab
+set_comment|9870|0|0|Akashic Devil Crab
+set_comment|9871|0|0|Akashic Devil Crab
+set_comment|9880|0|0|Cray Claw
+set_comment|9882|0|0|Cray Claw
+set_comment|9883|0|0|Akashic Claw
+set_comment|9900|0|0|Hornet
+set_comment|9901|0|0|Hornet
+set_comment|9903|0|0|Hornet
+set_comment|9920|0|0|Akashic Hornet
+set_comment|9940|0|0|Killer Bee
+set_comment|9941|0|0|Killer Bee
+set_comment|9943|0|0|Killer Bee
+set_comment|9960|0|0|Dragonet
+set_comment|9980|0|0|Akashic Dragonet
+set_comment|10000|0|0|Imperial War Wyrm
+set_comment|10020|0|0|Bighorn
+set_comment|10021|0|0|Bighorn
+set_comment|10040|0|0|Akashic Bighorn
+set_comment|10060|0|0|Wivre
+set_comment|10061|0|0|Wivre
+set_comment|10062|0|0|Wivre
+set_comment|10063|0|0|Wivre
+set_comment|10064|0|0|Wivre
+set_comment|10065|0|0|Wivre
+set_comment|10080|0|0|Akashic Wivre
+set_comment|10081|0|0|Akashic Wivre
+set_comment|10140|0|0|Adamantoise
+set_comment|10141|0|0|Adamantoise
+set_comment|10160|0|0|Akashic Adamantoise
+set_comment|10180|0|0|Minotaur
+set_comment|10200|0|0|Akashic Minotaur
+set_comment|10220|0|0|Bomb
+set_comment|10221|0|0|Bomb
+set_comment|10240|0|0|Bomb
+set_comment|10241|0|0|Bomb
+set_comment|10260|0|0|Red Mousse
+set_comment|10261|0|0|Red Mousse
+set_comment|10262|0|0|Red Mousse
+set_comment|10280|0|0|Fallen Hunter
+set_comment|10281|0|0|Fallen Hunter
+set_comment|10282|0|0|Fallen Hunter
+set_comment|10283|0|0|Fallen Hunter
+set_comment|10300|0|0|Fallen Bug
+set_comment|10301|0|0|Fallen Bug
+set_comment|10302|0|0|Fallen Bug
+set_comment|10320|0|0|Wraith
+set_comment|10340|0|0|Revenant
+set_comment|10360|0|0|Specter
+set_comment|10380|0|0|Lich
+set_comment|10800|0|0|Akashic Osfreyr
+set_comment|10801|0|0|Akashic Osfreyr
+set_comment|10820|0|0|Akashic Osfreyr
+set_comment|10821|0|0|Akashic Osfreyr
+set_comment|10840|0|0|Akashic Folkstaf
+set_comment|10841|0|0|Akashic Folkstaf
+set_comment|10861|0|0|Akashic Nathfreyr
+set_comment|10862|0|0|Akashic Gandfreyr
+set_comment|10880|0|0|Akashic Miner
+set_comment|10881|0|0|Akashic Miner
+set_comment|10882|0|0|Akashic Miner
+set_comment|10883|0|0|Akashic Serf
+set_comment|10884|0|0|Akashic Serf
+set_comment|10885|0|0|Akashic Serf
+set_comment|10886|0|0|Akashic Serf
+set_comment|10887|0|0|Akashic Miner
+set_comment|10888|0|0|Akashic Serf
+set_comment|11020|0|0|Orcish Fodder
+set_comment|11022|0|0|Orcish Fodder
+set_comment|11040|0|0|Akashic Fodder
+set_comment|11061|0|0|Orcish Fodder
+set_comment|11064|0|0|Orcish Fodder
+set_comment|11080|0|0|Akashic Fodder
+set_comment|11100|0|0|Orcish Mesmerizer
+set_comment|11102|0|0|Orcish Mesmerizer
+set_comment|11104|0|0|Orcish Mesmerizer
+set_comment|11120|0|0|Akashic Mesmerizer
+set_comment|11140|0|0|Wild Chocobo
+set_comment|11180|0|0|Akashic Chocobo
+set_comment|11201|0|0|Royal Courser
+set_comment|11202|0|0|Akashic Courser
+set_comment|11220|0|0|Pyrolisk
+set_comment|11221|0|0|Pyrolisk
+set_comment|11240|0|0|Akashic Pyrolisk
+set_comment|11260|0|0|Lesser Lopros
+set_comment|11261|0|0|Lesser Lopros
+set_comment|11262|0|0|Lesser Lopros
+set_comment|11280|0|0|Tarantula
+set_comment|11281|0|0|Tarantula
+set_comment|11320|0|0|Mud Crab
+set_comment|11321|0|0|Mud Crab
+set_comment|11323|0|0|Mud Crab
+set_comment|11324|0|0|Mud Crab
+set_comment|11340|0|0|Akashic Mud Crab
+set_comment|11341|0|0|Akashic Mud Crab
+set_comment|11360|0|0|Belzecue
+set_comment|11420|0|0|Royal Mastiff
+set_comment|11430|0|0|Akashic Mastiff
+set_comment|11440|0|0|Hyena
+set_comment|11442|0|0|Akashic Hyena
+set_comment|11460|0|0|Sprinter
+set_comment|11480|0|0|Akashic Sprinter
+set_comment|11500|0|0|Lindwurm
+set_comment|11501|0|0|Lindwurm
+set_comment|11502|0|0|Lindwurm
+set_comment|11503|0|0|Lindwurm
+set_comment|11540|0|0|Akashic Lindwurm
+set_comment|11560|0|0|Adamantitan
+set_comment|11561|0|0|Adamantitan
+set_comment|11565|0|0|Akashic Adamantitan
+set_comment|11580|0|0|Ogre
+set_comment|11620|0|0|Plague
+set_comment|11621|0|0|Plague
+set_comment|11641|0|0|Bomb
+set_comment|11661|0|0|Bomb
+set_comment|11680|0|0|Purobolos
+set_comment|11700|0|0|Purobolos
+set_comment|11722|0|0|Purple Bavarois
+set_comment|11723|0|0|Purple Bavarois
+set_comment|11740|0|0|Blue Trifle
+set_comment|11741|0|0|Blue Trifle
+set_comment|11742|0|0|Blue Trifle
+set_comment|11743|0|0|Blue Trifle
+set_comment|11760|0|0|Fallen Hunter
+set_comment|11780|0|0|Wraith
+set_comment|11800|0|0|Revenant
+set_comment|11820|0|0|Specter
+set_comment|11840|0|0|Lich
+set_comment|11860|0|0|Undertaker
+set_comment|11880|0|0|Akashic Lopros
+set_comment|11882|0|0|Akashic Lopros
+set_comment|11900|0|0|Akashic Plague
+set_comment|11920|0|0|Akashic Tarantula
+set_comment|11940|0|0|Akashic Gandfreyr
+set_comment|14001|0|0|Northern Wolf
+set_comment|14002|0|0|Wolf Trap
+set_comment|14004|0|0|Temple Coeurl
+set_comment|14005|0|0|Robber Crab
+set_comment|14006|0|0|Grey Widow
+set_comment|14007|0|0|Lesser Archelon
+set_comment|14008|0|0|Old Ibex
+set_comment|14009|0|0|Quindim
+set_comment|14010|0|0|Tonberry Creeper
+set_comment|14011|0|0|Widowmaker
+set_comment|14012|0|0|Lesser Archelon
+set_comment|14013|0|0|Deathstalker
+set_comment|20001|0|0|Firebound Orc
+set_comment|20002|0|0|Firebound Orc
+set_comment|20012|0|0|Firebound Vulture
+set_comment|20014|0|0|Firebound Scorpion
+set_comment|20021|0|0|Firebound Wivre
+set_comment|20031|0|0|Firebound Guardian
+set_comment|20032|0|0|Firebound Hunter
+set_comment|20041|0|0|Firebound Node
+set_comment|20043|0|0|Firebound Crab
+set_comment|20051|0|0|Firebound Cannonier
+set_comment|20053|0|0|Firebound Hornet
+set_comment|20061|0|0|Firebound Mousse
+set_comment|20063|0|0|Firebound Bug
+set_comment|20071|0|0|Firebound Dragonet
+set_comment|20072|0|0|Firebound Revenant
+set_comment|20084|0|0|Firebound Lich
+set_comment|20085|0|0|Firebound Undertaker
+set_comment|20092|0|0|Firebound Plague
+set_comment|20101|0|0|Windbound Mesmerizer
+set_comment|20102|0|0|Windbound Worgen
+set_comment|20111|0|0|Windbound Mugger
+set_comment|20113|0|0|Windbound Thorn
+set_comment|20123|0|0|Windbound Minotaur
+set_comment|20133|0|0|Windbound Aevis
+set_comment|20134|0|0|Windbound Hornet
+set_comment|20144|0|0|Windbound Orc
+set_comment|20145|0|0|Windbound Weaver
+set_comment|20153|0|0|Windbound Specter
+set_comment|20154|0|0|Windbound Tognvaldr
+set_comment|20163|0|0|Windbound Bighorn
+set_comment|20165|0|0|Windbound Weaver
+set_comment|20171|0|0|Windbound Osfreyr
+set_comment|20172|0|0|Windbound Vulture
+set_comment|20181|0|0|Windbound Elemental
+set_comment|20182|0|0|Windbound Gigas
+set_comment|20191|0|0|Windbound Coeurl
+set_comment|20202|0|0|Thunderbound Antelope
+set_comment|20203|0|0|Thunderbound Mugger
+set_comment|20211|0|0|Thunderbound Vulture
+set_comment|20214|0|0|Thunderbound Bug
+set_comment|20223|0|0|Thunderbound Salamander
+set_comment|20232|0|0|Thunderbound Bighorn
+set_comment|20233|0|0|Thunderbound Mesmerizer
+set_comment|20241|0|0|Thunderbound Folkstaf
+set_comment|20242|0|0|Thunderbound Sigfreyr
+set_comment|20244|0|0|Thunderbound Dragonet
+set_comment|20253|0|0|Thunderbound Bavarois
+set_comment|20255|0|0|Thunderbound Bomb
+set_comment|20262|0|0|Thunderbound Undertaker
+set_comment|20263|0|0|Thunderbound Node
+set_comment|20272|0|0|Thunderbound Orc
+set_comment|20273|0|0|Thunderbound Orc
+set_comment|20274|0|0|Thunderbound Crusader
+set_comment|20282|0|0|Thunderbound Panther
+set_comment|20283|0|0|Thunderbound Guardian
+set_comment|20292|0|0|Thunderbound Griffin
+set_comment|20301|0|0|Earthbound Hunter
+set_comment|20312|0|0|Earthbound Revenant
+set_comment|20313|0|0|Earthbound Wolf
+set_comment|20325|0|0|Earthbound Gigas
+set_comment|20331|0|0|Earthbound Widow
+set_comment|20332|0|0|Earthbound Adamantoise
+set_comment|20342|0|0|Earthbound Wraith
+set_comment|20343|0|0|Earthbound Lieutenant
+set_comment|20351|0|0|Earthbound Marshal
+set_comment|20352|0|0|Earthbound Bomb
+set_comment|20362|0|0|Earthbound Panther
+set_comment|20364|0|0|Earthbound Mugger
+set_comment|20371|0|0|Earthbound Orc
+set_comment|20372|0|0|Earthbound Orc
+set_comment|20373|0|0|Earthbound Scepter
+set_comment|20381|0|0|Earthbound Fool
+set_comment|20382|0|0|Earthbound Tognvaldr
+set_comment|20391|0|0|Earthbound Giant
+set_comment|20402|0|0|Lightbound Revenant
+set_comment|20411|0|0|Lightbound Bug
+set_comment|20412|0|0|Lightbound Node
+set_comment|20422|0|0|Lightbound Bavarois
+set_comment|20431|0|0|Lightbound Lich
+set_comment|20432|0|0|Lightbound Wolf
+set_comment|20442|0|0|Lightbound Weaver
+set_comment|20444|0|0|Lightbound Raptor
+set_comment|20451|0|0|Lightbound Champion
+set_comment|20453|0|0|Lightbound Vulture
+set_comment|20462|0|0|Lightbound Guardian
+set_comment|20463|0|0|Lightbound Specter
+set_comment|20471|0|0|Lightbound Scorpion
+set_comment|20475|0|0|Lightbound Lancer
+set_comment|20481|0|0|Lightbound Cannonier
+set_comment|20485|0|0|Lightbound Astrologer
+set_comment|20491|0|0|Lightbound Warlord
+set_comment|20501|0|0|Icebound Wolf
+set_comment|20502|0|0|Icebound Wraith
+set_comment|20511|0|0|Icebound Bug
+set_comment|20512|0|0|Icebound Hornet
+set_comment|20522|0|0|Icebound Jelly
+set_comment|20531|0|0|Icebound Adamantoise
+set_comment|20533|0|0|Icebound Mugger
+set_comment|20541|0|0|Icebound Bluebird
+set_comment|20543|0|0|Icebound Purobolos
+set_comment|20551|0|0|Icebound Thorn
+set_comment|20554|0|0|Icebound Fanatic
+set_comment|20561|0|0|Icebound Wivre
+set_comment|20562|0|0|Icebound Mesmerizer
+set_comment|20571|0|0|Icebound Commander
+set_comment|20573|0|0|Icebound Scorpion
+set_comment|20581|0|0|Icebound Bighorn
+set_comment|20582|0|0|Icebound Lich
+set_comment|20591|0|0|Icebound Necrophobe
+set_comment|20602|0|0|Darkbound Mugger
+set_comment|20603|0|0|Darkbound Mugger
+set_comment|20612|0|0|Darkbound Wolf
+set_comment|20613|0|0|Darkbound Hunter
+set_comment|20621|0|0|Darkbound Minotaur
+set_comment|20631|0|0|Darkbound Node
+set_comment|20632|0|0|Darkbound Panther
+set_comment|20641|0|0|Darkbound Orc
+set_comment|20642|0|0|Darkbound Bug
+set_comment|20651|0|0|Darkbound Legionnaire
+set_comment|20652|0|0|Darkbound Lancer
+set_comment|20661|0|0|Darkbound Guardian
+set_comment|20662|0|0|Darkbound Orc
+set_comment|20671|0|0|Darkbound Specter
+set_comment|20673|0|0|Darkbound Raptor
+set_comment|20681|0|0|Darkbound Salamander
+set_comment|20682|0|0|Darkbound Marshal
+set_comment|20691|0|0|Darkbound Chimera
+set_comment|20701|0|0|Waterbound Wolf Trap
+set_comment|20702|0|0|Waterbound Worgen
+set_comment|20711|0|0|Waterbound Domovikha
+set_comment|20712|0|0|Waterbound Domovoi
+set_comment|20721|0|0|Waterbound Guardian
+set_comment|20731|0|0|Waterbound Ibis
+set_comment|20732|0|0|Waterbound Antelope
+set_comment|20741|0|0|Waterbound Creeper
+set_comment|20742|0|0|Waterbound Hexer
+set_comment|20751|0|0|Waterbound Terminal
+set_comment|20752|0|0|Waterbound Hunter
+set_comment|20761|0|0|Waterbound Undertaker
+set_comment|20762|0|0|Waterbound Frost Bomb
+set_comment|20771|0|0|Waterbound Raptor
+set_comment|20772|0|0|Waterbound Vulture
+set_comment|20781|0|0|Waterbound Master
+set_comment|20782|0|0|Waterbound Trifle
+set_comment|20791|0|0|Waterbound King
+set_comment|21001|0|0|Firebound Revenant
+set_comment|21002|0|0|Firebound Elemental
+set_comment|21011|0|0|Firebound Dragonet
+set_comment|21012|0|0|Firebound Scorpion
+set_comment|21022|0|0|Firebound Wivre
+set_comment|21023|0|0|Firebound Astrologer
+set_comment|21031|0|0|Firebound Guardian
+set_comment|21032|0|0|Firebound Hunter
+set_comment|21041|0|0|Firebound Specter
+set_comment|21042|0|0|Firebound Mesmerizer
+set_comment|21051|0|0|Firebound Cannonier
+set_comment|21052|0|0|Firebound Hornet
+set_comment|21053|0|0|Firebound Thorn
+set_comment|21061|0|0|Firebound Mousse
+set_comment|21062|0|0|Firebound Node
+set_comment|21071|0|0|Firebound Vulture
+set_comment|21072|0|0|Firebound Salamander
+set_comment|21081|0|0|Firebound Lich
+set_comment|21082|0|0|Firebound Undertaker
+set_comment|21092|0|0|Firebound Wraith
+set_comment|21101|0|0|Windbound Node
+set_comment|21102|0|0|Windbound Champion
+set_comment|21111|0|0|Windbound Thorn
+set_comment|21112|0|0|Windbound Mugger
+set_comment|21121|0|0|Windbound Panther
+set_comment|21122|0|0|Windbound Specter
+set_comment|21131|0|0|Windbound Aevis
+set_comment|21132|0|0|Windbound Scorpion
+set_comment|21141|0|0|Windbound Orc
+set_comment|21142|0|0|Windbound Gandfreyr
+set_comment|21151|0|0|Windbound Tognvaldr
+set_comment|21152|0|0|Windbound Bug
+set_comment|21161|0|0|Windbound Bighorn
+set_comment|21162|0|0|Windbound Wraith
+set_comment|21171|0|0|Windbound Sigfreyr
+set_comment|21172|0|0|Windbound Fool
+set_comment|21181|0|0|Windbound Gigas
+set_comment|21182|0|0|Windbound Elemental
+set_comment|21192|0|0|Windbound Worgen
+set_comment|21201|0|0|Thunderbound Antelope
+set_comment|21202|0|0|Thunderbound Gigas
+set_comment|21211|0|0|Thunderbound Claw
+set_comment|21212|0|0|Thunderbound Specter
+set_comment|21221|0|0|Thunderbound Salamander
+set_comment|21222|0|0|Thunderbound Purobolos
+set_comment|21231|0|0|Thunderbound Bighorn
+set_comment|21232|0|0|Thunderbound Vulture
+set_comment|21241|0|0|Thunderbound Revenant
+set_comment|21242|0|0|Thunderbound Node
+set_comment|21251|0|0|Thunderbound Bavarois
+set_comment|21252|0|0|Thunderbound Raptor
+set_comment|21261|0|0|Thunderbound Undertaker
+set_comment|21262|0|0|Thunderbound Folkstaf
+set_comment|21271|0|0|Thunderbound Lancer
+set_comment|21272|0|0|Thunderbound Hunter
+set_comment|21281|0|0|Thunderbound Guardian
+set_comment|21282|0|0|Thunderbound Panther
+set_comment|21292|0|0|Thunderbound Widow
+set_comment|21301|0|0|Earthbound Mugger
+set_comment|21302|0|0|Earthbound Undertaker
+set_comment|21311|0|0|Earthbound Chocobo
+set_comment|21312|0|0|Earthbound Thorn
+set_comment|21321|0|0|Earthbound Aevis
+set_comment|21322|0|0|Earthbound Revenant
+set_comment|21331|0|0|Earthbound Adamantoise
+set_comment|21332|0|0|Earthbound Crab
+set_comment|21341|0|0|Earthbound Orc
+set_comment|21342|0|0|Earthbound Bug
+set_comment|21351|0|0|Earthbound Marshal
+set_comment|21352|0|0|Earthbound Scepter
+set_comment|21361|0|0|Earthbound Panther
+set_comment|21362|0|0|Earthbound Widow
+set_comment|21371|0|0|Earthbound Wraith
+set_comment|21372|0|0|Earthbound Gunnvaldr
+set_comment|21381|0|0|Earthbound Tognvaldr
+set_comment|21382|0|0|Earthbound Fool
+set_comment|21392|0|0|Earthbound Hunter
+set_comment|21401|0|0|Lightbound Revenant
+set_comment|21402|0|0|Lightbound Lich
+set_comment|21411|0|0|Lightbound Scorpion
+set_comment|21412|0|0|Lightbound Node
+set_comment|21421|0|0|Lightbound Bavarois
+set_comment|21422|0|0|Lightbound Vulture
+set_comment|21431|0|0|Lightbound Wivre
+set_comment|21432|0|0|Lightbound Legionnaire
+set_comment|21441|0|0|Lightbound Raptor
+set_comment|21442|0|0|Lightbound Dragonet
+set_comment|21451|0|0|Lightbound Champion
+set_comment|21452|0|0|Lightbound Purobolos
+set_comment|21461|0|0|Lightbound Guardian
+set_comment|21462|0|0|Lightbound Hunter
+set_comment|21471|0|0|Lightbound Aevis
+set_comment|21472|0|0|Lightbound Specter
+set_comment|21481|0|0|Lightbound Lancer
+set_comment|21482|0|0|Lightbound Cannonier
+set_comment|21492|0|0|Lightbound Orc
+set_comment|21493|0|0|Lightbound Orc
+set_comment|21501|0|0|Icebound Claw
+set_comment|21502|0|0|Icebound Gunnvaldr
+set_comment|21511|0|0|Icebound Commander
+set_comment|21512|0|0|Icebound Wolf
+set_comment|21521|0|0|Icebound Jelly
+set_comment|21522|0|0|Icebound Vulture
+set_comment|21531|0|0|Icebound Adamantoise
+set_comment|21532|0|0|Icebound Thorn
+set_comment|21541|0|0|Icebound Orc
+set_comment|21542|0|0|Icebound Mesmerizer
+set_comment|21551|0|0|Icebound Fanatic
+set_comment|21552|0|0|Icebound Bluebird
+set_comment|21561|0|0|Icebound Wivre
+set_comment|21562|0|0|Icebound Node
+set_comment|21571|0|0|Icebound Weaver
+set_comment|21572|0|0|Icebound Lancer
+set_comment|21581|0|0|Icebound Bighorn
+set_comment|21582|0|0|Icebound Lich
+set_comment|21592|0|0|Icebound Revenant
+set_comment|21601|0|0|Darkbound Wolf
+set_comment|21602|0|0|Darkbound Bighorn
+set_comment|21611|0|0|Darkbound Raider
+set_comment|21612|0|0|Darkbound Hunter
+set_comment|21621|0|0|Darkbound Minotaur
+set_comment|21622|0|0|Darkbound Crab
+set_comment|21631|0|0|Darkbound Panther
+set_comment|21632|0|0|Darkbound Weaver
+set_comment|21641|0|0|Darkbound Orc
+set_comment|21642|0|0|Darkbound Specter
+set_comment|21651|0|0|Darkbound Lancer
+set_comment|21652|0|0|Darkbound Legionnaire
+set_comment|21661|0|0|Darkbound Guardian
+set_comment|21662|0|0|Darkbound Bug
+set_comment|21671|0|0|Darkbound Raptor
+set_comment|21672|0|0|Darkbound Trifle
+set_comment|21681|0|0|Darkbound Marshal
+set_comment|21682|0|0|Darkbound Salamander
+set_comment|21692|0|0|Darkbound Scorpion
+set_comment|21701|0|0|Waterbound Egi
+set_comment|21702|0|0|Waterbound Node
+set_comment|21711|0|0|Waterbound Domovikha
+set_comment|21712|0|0|Waterbound Domovoi
+set_comment|21721|0|0|Waterbound Guardian
+set_comment|21722|0|0|Waterbound Widow
+set_comment|21731|0|0|Waterbound Ibis
+set_comment|21732|0|0|Waterbound Hexer
+set_comment|21741|0|0|Waterbound Worgen
+set_comment|21742|0|0|Waterbound Dragonet
+set_comment|21751|0|0|Waterbound Terminal
+set_comment|21752|0|0|Waterbound Bug
+set_comment|21761|0|0|Waterbound Undertaker
+set_comment|21762|0|0|Waterbound Wolf Trap
+set_comment|21771|0|0|Waterbound Panther
+set_comment|21772|0|0|Waterbound Creeper
+set_comment|21781|0|0|Waterbound Master
+set_comment|21782|0|0|Waterbound Trifle
+set_comment|21791|0|0|Waterbound Wraith
+set_comment|31001|0|0|Shard Sharp
+set_comment|31002|0|0|Shard Sharp
+set_comment|31003|0|0|Shard Sharp
+set_comment|31004|0|0|Shard Sharp
+set_comment|31005|0|0|Shard Sharp
+set_comment|31006|0|0|Shard Sharp
+set_comment|31007|0|0|Shard Sharp
+set_comment|31009|0|0|Shard Sharp
+set_comment|31020|0|0|Akashic Bighorn
+set_comment|31021|0|0|Akashic Thorn
+set_comment|31022|0|0|Akashic Megalocrab
+set_comment|31023|0|0|Domovikha
+set_comment|31024|0|0|Domovikha
+set_comment|31025|0|0|Shard Sharp
+set_comment|31026|0|0|Shard Sharp
+set_comment|31027|0|0|Shard Sharp
+set_comment|31028|0|0|Shard Sharp
+set_comment|33001|0|0|Kairos Goblin
+set_comment|33004|0|0|Kairos Wolf
+set_comment|33007|0|0|Kairos Thorn
+set_comment|33008|0|0|Kairos Chimera
+set_comment|33010|0|0|Kairos Goblin
+set_comment|33016|0|0|Kairos Wasp
+set_comment|33019|0|0|Kairos Widow
+set_comment|33022|0|0|Kairos Raptor
+set_comment|33023|0|0|Kairos Goblin
+set_comment|33025|0|0|Kairos Marshmallow
+set_comment|33026|0|0|Kairos Trifle
+set_comment|33031|0|0|Kairos Goblin
+set_comment|33032|0|0|Kairos Vulture
+set_comment|33034|0|0|Kairos Scorpion
+set_comment|33037|0|0|Kairos Gigas
+set_comment|33038|0|0|Kairos Gigas
+set_comment|33040|0|0|Infernal Ifrit
+set_comment|33041|0|0|Kairos Wyvern
+set_comment|33042|0|0|Divine Griffin
+set_comment|33044|0|0|Kairos Crab
+set_comment|33045|0|0|Kairos Wasp
+set_comment|33047|0|0|Kairos Fool
+set_comment|33048|0|0|Kairos Thorn
+set_comment|33051|0|0|Kairos Hunter
+set_comment|33052|0|0|Kairos Bug
+set_comment|33054|0|0|Kairos Node
+set_comment|33057|0|0|Kairos Captain
+set_comment|33058|0|0|Kairos Terminal
+set_comment|33059|0|0|Kairos Giant
+set_comment|33060|0|0|Kairos Goblin
+set_comment|33066|0|0|Kairos Bug
+set_comment|33067|0|0|Kairos Hunter
+set_comment|33069|0|0|Kairos Wyrm
+set_comment|33070|0|0|Kairos Astrologer
+set_comment|33072|0|0|Kairos Elemental
+set_comment|33073|0|0|Kairos Lancer
+set_comment|33074|0|0|Kairos Wivre
+set_comment|33075|0|0|Kairos Goblin
+set_comment|33076|0|0|Kairos Goblin
+set_comment|33081|0|0|Kairos Captain
+set_comment|33082|0|0|Kairos Wolf
+set_comment|33084|0|0|Kairos Node
+set_comment|33085|0|0|Kairos Hunter
+set_comment|33086|0|0|Kairos Tognvaldr
+set_comment|33087|0|0|Kairos Champion
+set_comment|33090|0|0|Warden of Wind
+set_comment|33091|0|0|Kairos Terminal
+set_comment|33094|0|0|Kairos Folkstaf
+set_comment|33095|0|0|Kairos Courser
+set_comment|33097|0|0|Kairos Omicron
+set_comment|33098|0|0|Kairos Bug
+set_comment|33099|0|0|Kairos Omicron
+set_comment|33101|0|0|Kairos Fodder
+set_comment|33104|0|0|Kairos Raptor
+set_comment|33105|0|0|Kairos Bomb
+set_comment|33106|0|0|Kairos Hexer
+set_comment|33107|0|0|Kairos Creeper
+set_comment|33108|0|0|Kairos Mesmerizer
+set_comment|33109|0|0|Kairos Fodder
+set_comment|33110|0|0|Kairos Wivre
+set_comment|33111|0|0|Kairos Vulture
+set_comment|33112|0|0|Kairos Raptor
+set_comment|33113|0|0|Kairos Eater
+set_comment|33116|0|0|Kairos Wivre
+set_comment|33117|0|0|Kairos Domovikha
+set_comment|33119|0|0|Kairos Domovoi
+set_comment|33120|0|0|Kairos Domovikha
+set_comment|33122|0|0|Kairos Warlord
+set_comment|33123|0|0|Kairos Fodder
+set_comment|33124|0|0|Kairos Warlord
+set_comment|33125|0|0|Kairos Hexer
+set_comment|33128|0|0|Kairos Marshmallow
+set_comment|33129|0|0|Kairos Trifle
+set_comment|33130|0|0|Kairos Jelly
+set_comment|33131|0|0|Kairos Torama
+set_comment|33132|0|0|Kairos Torama
+set_comment|33133|0|0|Kairos Master
+set_comment|33134|0|0|Kairos Mesmerizer
+set_comment|33135|0|0|Kairos Scarlet Scorpion
+set_comment|33137|0|0|Kairos Asterios
+set_comment|33138|0|0|Kairos Minotaur
+set_comment|33139|0|0|Kairos Asterios
+set_comment|33140|0|0|Warden of Stone
+set_comment|33141|0|0|Kairos Chimera
+set_comment|33142|0|0|Kairos Master
+set_comment|33143|0|0|Kairos King
+set_comment|33146|0|0|Kairos Jelly
+set_comment|33147|0|0|Kairos Fool
+set_comment|33149|0|0|Divine Gunnvaldr
+set_comment|33150|0|0|Kairos Omicron
+set_comment|33151|0|0|Kairos Revenant
+set_comment|33154|0|0|Kairos Wraith
+set_comment|33155|0|0|Kairos Puroboros
+set_comment|33157|0|0|Kairos Giant
+set_comment|33158|0|0|Kairos Wolf
+set_comment|33160|0|0|Kairos Captain
+set_comment|33161|0|0|Kairos Giant
+set_comment|33162|0|0|Divine Griffin
+set_comment|33166|0|0|Kairos Plague
+set_comment|33167|0|0|Kairos Wolf
+set_comment|33168|0|0|Kairos Specter
+set_comment|33169|0|0|Kairos Specter
+set_comment|33170|0|0|Kairos Wraith
+set_comment|33172|0|0|Kairos Egi
+set_comment|33173|0|0|Kairos Wyvern
+set_comment|33174|0|0|Divine Gunnvaldr
+set_comment|33176|0|0|Kairos Undertaker
+set_comment|33177|0|0|Kairos Lancer
+set_comment|33181|0|0|Kairos Frost Bomb
+set_comment|33182|0|0|Divine Panther
+set_comment|33183|0|0|Kairos Wyrm
+set_comment|33184|0|0|Kairos Captain
+set_comment|33185|0|0|Kairos Astrologer
+set_comment|33187|0|0|Philargyria
+set_comment|33190|0|0|Warden of Darkness
+set_comment|33191|0|0|Acedia
+set_comment|33192|0|0|Divine Panther
+set_comment|33193|0|0|Acedia
+set_comment|33194|0|0|Kairos Undertaker
+set_comment|33195|0|0|Kairos Captain
+set_comment|33197|0|0|Orge
+set_comment|33198|0|0|Kairos Giant
+set_comment|33199|0|0|Kairos Champion
+set_comment|33201|0|0|The Shadow Within
+set_comment|33203|0|0|Kenodoxia
+set_comment|33204|0|0|Porneia
+set_comment|33205|0|0|Hyperephania
+set_comment|33206|0|0|Gastrimargia
+set_comment|33207|0|0|Philargyria
+set_comment|33208|0|0|Lype
+set_comment|33209|0|0|Orge
+set_comment|33210|0|0|Kairos King

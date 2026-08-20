@@ -1,0 +1,12 @@
+table_name|CameraFCurve
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+add_column|DLCFlags|int
+add_column|Comment|string
+add_column|CameraFCurveFile|string     // ref: 48 63 50 ? 48 03 D0 48 83 C8 ? 48 FF C0 80 3C 02, ref2: 48 63 48 ? 48 03 C8 48 83 C8 ? 48 FF C0 80 3C 01 ? 75 ? C5 FA 10 B4 24
+add_column|PadVibrationId|int          // ref: 8B 50 ? C5 F8 28 DE, ref2: 8B 68 ? 48 8B 05 ? ? ? ? 48 85 C0 75 ? 48 8B 0D ? ? ? ? 48 85 C9 0F 84 ? ? ? ? BA ? ? ? ? E8 ? ? ? ? 48 89 05 ? ? ? ? 48 85 C0 0F 84 ? ? ? ? 85 ED
+add_column|Unk0x10|byte                // ref: 0F B6 40 ? 44 3B F0 73, ref2: 0F B6 40 ? 3B D8 73 ? 41 8B 36
+add_column|Bool0x11|byte               // ref: too many.
+// <implicit 2 byte padding>

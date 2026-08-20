@@ -1,0 +1,140 @@
+# Animation id names for The Ivalice Chronicles Mod Studio
+# ======================================================
+#
+# Format: "<decimal id>|<name>". Blank lines and # lines are ignored.
+# Edit freely - this is your file. Shown on Abilities -> Unit Animations.
+#
+# From the FFHacktics wiki, which lists these ids in HEX; they are decimal
+# here, because that is what the .xml tables and this tool use.
+#   https://ffhacktics.com/wiki/Animations_(Tab)
+#
+# Entries ending in "?" are the wiki's own uncertainty, kept as-is.
+#
+# 126 names.
+
+0|Vanish
+1|Standing
+2|Standing
+3|Walk
+4|Walk Fast
+5|Walk Slow
+6|Walking Frame (Standing)
+7|Walking Frame (Standing)
+8|Walking Frame (Standing)
+9|Float
+10|Float Fast
+11|Float Slow
+12|Walk Fast
+13|Run
+14|Walk
+15|Walking Frame (Standing)
+16|Walking Frame (Standing)
+17|Walking Frame (Standing)
+18|Walk Fast
+19|Run
+20|Walk
+21|Counter-Clockwise Spinning
+22|Critical/Bow
+23|Defend
+24|Dodge
+25|In Pain (Loop)
+26|Dead
+27|Raise Hands/Jump (Frame Only)
+28|Level Up (Loop)
+29|Job Level Up (Loop)
+30|Jump Animation (For use with SpriteMove)
+31|Flying?
+32|Pickup (Stone, Not Treasure)
+33|Charge
+34|Charge
+35|Walking Frame (Right Foot Out)
+36|Bow/Critical
+37|Confusion
+38|Walking Frame (Standing)
+39|Walking Frame (Standing)
+40|Sing
+41|Dance
+42|Charge Spell
+43|Chant Spell
+44|Found Item
+45|Walking Frame (Standing)
+46|Walking Frame (Standing)
+47|Walking Frame (Standing)
+48|Walking Frame (Left Foot Out)
+49|Walking Frame (Right Foot Out)
+50|Vanish
+51|Found Item (Hands Stay up)
+52|Character Death
+53|Bow then Stand
+54|Bow
+55|Struck + Dodge
+56|Struck + Dodge
+57|Raise Hands (Sticks)
+58|Walking Frame (Standing)
+59|Vanish
+60|Teleport From & Teleport To
+61|Attack High
+62|Attack Middle
+63|Attack Low
+64|Attack High (With Temp Weapon)
+65|Attack Middle (With Temp Weapon)
+66|Attack Low (With Temp Weapon)
+67|Throw Animation
+68|Throwing Frame 1?
+69|Throw Animation
+70|Throw Animation
+71|Throwing Frame 2?
+72|Throw Animation
+73|Throw Animation
+74|Throwing Frame 3
+75|Throw Animation
+76|Throw (No Temp Weapon) (Throw Stone?)
+77|Throw Animation
+78|Throw Animation
+79|Throw Animation
+80|Throw Animation
+81|Throw Animation
+82|Spear?
+83|Bow
+84|Crossbow?
+85|Gun
+86|Book Strike
+87|Harp
+88|Upper Weapon Guard
+89|Middle Weapon Guard
+90|Lower Weapon Guard
+91|Cast With Sword?
+92|Cast With Sword?
+93|Cast With Sword?
+94|In Shock, Step Back?
+95|In Shock, Step Back?
+96|In Shock, Step Back?
+97|Draw Weapon Back
+98|Draw Weapon Back
+99|Draw Weapon Back
+100|Flip Switch On Ground
+101|Raise Hands (Sticks until next Animation)
+102|Raise 1 Hand, Cast
+103|Spin Fist
+104|Quad Strike
+105|Cast Revive?
+106|Push out both hands
+107|Book Strike or Talk Skill?
+108|Talk Fast (less than 1 second)
+109|Slowly Bow
+110|Normal attack w/ Temp Weapon
+111|Pause during Dance
+112|Spin, Dance Fast then Pause (Casting Dance)
+113|Steal
+114|Steal Heart
+115|Draw Out (uses Temp weapon in Event)
+116|Level Up freeze, slightly in air
+117|Jump (Lancer Jump)
+118|Land Jump ?
+119|High Throw? (Buggy uses Temp Weapon)
+120|Mid Throw? (Buggy uses Temp Weapon)
+121|Low Throw? (Buggy uses Temp Weapon)
+122|Walking Frame (Standing)
+123|Walking Frame (Standing)
+124|Walking Frame (Standing)
+125|Gobin Punch (Spin then Punch)

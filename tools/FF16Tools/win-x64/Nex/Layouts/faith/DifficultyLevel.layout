@@ -1,0 +1,48 @@
+table_name|DifficultyLevel
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|true
+
+add_column|DLCFlags|int
+add_column|Comment|string
+add_column|WeaponEquipItemId|int                                  // ref: 48 8B C4 48 89 58 ? 48 89 70 ? 48 89 78 ? 55 41 54 41 55 41 56 41 57 48 8D 68 ? 48 81 EC ? ? ? ? 48 8B 05 ? ? ? ? 48 33 C4 48 89 45 ? 4C 8B E2
+add_column|WeaponEquipItemId2|int                                 // same ref.
+add_column|WeaponEquipItemId3|int                                 // same ref. Is this one isolated and linked to Unk9EquipItemId and Unk10EquipItemId?
+add_column|Comment2|string
+add_column|GearEquipItemIds|int[]                                 // Maybe unused?
+add_column|Unk9EquipItemId|int                                    // ref: 8B 14 06 41 B8
+add_column|Unk10EquipItemId|int                                   // ref: 8B 14 06 41 B8
+add_column|EnemyProjectileSpeedScale|float                        // Affects magic operation 35, property 1417. ref: C5 FA 11 4F ? E9 ? ? ? ? 49 8B 40 ? 33 DB - https://nenkai.github.io/ffxvi-modding/resources/formats/dep_magic/
+add_column|BossDamage|short                                       // ref: 0F B7 48 ? 0F B7 C9
+add_column|EnemyDamage|short                                      // ref: 0F B7 48 ? EB ? 48 85 DB 75 ? 48 8B C5
+add_column|BossStagger|ushort                                     // ref: 0F B7 48 ? 0F AF CD, ref 2: 0F B7 48 ? 41 8B 46 ? 99 F7 F9 44 8B C8 48 85 FF 75 ? 33 C0 EB ? 48 83 3F ? 7C ? 48 8B CF E8 ? ? ? ? EB ? 48 8D 05 ? ? ? ? 0F B7 40 ? 41 0F AF C1 41 89 46 ? 48 83 C6
+add_column|EnemyFlinch|ushort                                     // ref: 0F B7 48 ? EB ? 48 85 DB 75 ? 48 8B C7
+add_column|BossHp|ushort                                          // ref: 0F B7 48 ? 0F AF CF, ref 2: 0F B7 4D ? 0F AF D1, ref 3: 0F B7 48 ? 41 8B 46 ? 99 F7 F9 44 8B C8 48 85 FF 75 ? 33 C0 EB ? 48 83 3F ? 7C ? 48 8B CF E8 ? ? ? ? EB ? 48 8D 05 ? ? ? ? 0F B7 40 ? 41 0F AF C1 41 89 46 ? 48 85 DB
+add_column|EnemyHp|ushort                                         // ref: 0F B7 48 ? EB ? 48 85 DB 75 ? 49 8B C5
+add_column|DropTableKey2|byte                                     // Aswell as SpreadDropTable, ref: 48 89 5C 24 ? 57 48 83 EC ? 48 8B 05 ? ? ? ? 33 DB 8B F9 48 85 C0 75 ? 48 8B 0D ? ? ? ? 48 85 C9 74 ? BA
+add_column|MaxSimultaneousEnemiesAttacking|byte                   // (Maybri): Enemy Aggression (number of enemies that simultaneously attack Clive) - ref: 44 8A 60 ? 48 8B CF, ref2: 40 8A 78 ? 48 8B CE E8 ? ? ? ? 80 B8
+add_column|ActionTransitionLengthIndex|byte                       // Action table, index into FollowupTransitionLength. Last array element is selected if this is above the number of parameters for the current action. ref: 48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC ? 48 8B F9 33 DB 48 8B 89 ? ? ? ? 48 85 C9
+add_column|UnusedUnk21|byte                                       // No references?
+add_column|UnusedUnk22|byte                                       // No references?
+add_column|UseDoonMashingType|byte                                // ref: 44 38 70 ? 74 ? 48 85 DB 75 ? 49 8B C6, ref2: 8A 58 ? 48 8B 87 - uses doonmashingtype+0x55
+add_column|CliveLevelCap|byte                                     // ParamGrow id. 5 added to this if rising tide dlc is unlocked, OR 10 added to this if echoes dlc is unlocked - ref: 48 89 5C 24 ? 57 48 83 EC ? E8 ? ? ? ? 8B F8 33 DB 48 8B 05 ? ? ? ? 48 85 C0 75 ? 48 8B 0D ? ? ? ? 48 85 C9 74 ? BA ? ? ? ? E8 ? ? ? ? 48 89 05 ? ? ? ? 48 85 C0 74 ? 8B D7 48 8B C8 E8 ? ? ? ? 48 85 C0 74 ? 48 39 18 7C ? 48 8B C8 E8 ? ? ? ? 48 8B D8 EB ? 48 8D 1D ? ? ? ? 0F B6 5B
+add_column|UtteranceOfCreationOnNewSave|byte                      // ref: 45 38 77 ? 0F 84 ? ? ? ? 4C 89 75
+add_column|MaxSimultaneousEnemiesAttacking2|byte                  // for when BNpcBase->Unk49_3 is true, overrides MaxSimultaneousEnemiesAttacking. ref: 40 8A 78 ? 48 8B CE E8 ? ? ? ? 8B CD, ref2: 45 8A 66
+add_column|OutgoingDamagePercent|byte                             // ref: 0F B6 48 ? BF
+add_column|UnusedUnk28|byte                                       // No references?
+add_column|OutgoingWillDamagePercent|byte                         // ref: 0F B6 48 ? B8 ? ? ? ? 45 8A 85
+add_column|HpRegainPotentialPercentAfterDamage|byte               // Nourishment Bit bypasses this - ref: 0F B6 78 ? 48 85 D2, ref2: 44 0F B6 60 ? 48 85 D2
+add_column|Unk31|byte                                             // Could be level related - ref: 0F B6 4B ? 8B D0
+add_column|CanPartyMembersDealDamage|byte                         // Maybri: Torgal's Sic and Ravage can still do damage. - ref (func - CanPartyMemberDealDamageFromCurrentDifficulty): 40 38 68 ? 75 ? 41 84 AE. that function seems important and some other columns may affect the result? i.e attackparam->Unk64_3 and bnpcbase->UnkType2
+add_column|UseEnemyParamRate|byte                                 // previously 'IsIncreaseEnemyLevel' - use ParamGrow and BNpcParamRate basically - refer to all use of 48 89 5C 24 ? 57 48 83 EC ? E8 ? ? ? ? 8B F8 33 DB 48 8B 05 ? ? ? ? 48 85 C0 75 ? 48 8B 0D ? ? ? ? 48 85 C9 74 ? BA ? ? ? ? E8 ? ? ? ? 48 89 05 ? ? ? ? 48 85 C0 74 ? 8B D7 48 8B C8 E8 ? ? ? ? 48 85 C0 74 ? 48 39 18 7C ? 48 8B C8 E8 ? ? ? ? 48 8B D8 EB ? 48 8D 1D ? ? ? ? 8A 43
+add_column|HpRegainPotentialPercentAfterDamageNourishmentBit|byte // Bypasses HpRegainPotentialPercentAfterDamage when Nourishment Bit equipped. ref: 0F B6 78 ? 44 8B 54 24
+add_column|HpRegainUnkNourishmentBit|byte                         // ref: 45 0F B6 44 24 ? 49 8B D7
+// <implicit 2 bytes padding>
+
+/////////////////////////////////////////////////////
+set_comment|0|0|0|Story
+set_comment|1|0|0|Action
+set_comment|2|0|0|Final Fantasy
+set_comment|3|0|0|Ultimaniac
+set_comment|4|0|0|Abyss/Kairos Gate
+set_comment|5|0|0|Abyss/Kairos Gate - Final Fantasy

@@ -1,0 +1,9 @@
+table_name|UIBuddyAction
+set_table_type|DoubleKeyed
+set_table_category|DoubleKeyed
+use_base_row_id|true
+
+// Hardcoded row ids
+
+add_column|DLCFlags|int
+add_column|ReqPlayerLevel|int  // this value > current player level - ef: E8 ? ? ? ? 39 43 ? 7F ? 8B 74 24

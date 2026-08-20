@@ -1,0 +1,52 @@
+table_name|SystemMove
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+// Range 2-5: Step Back (Ground Slide)
+// No vertical movement, only horizontal sliding.
+
+// Range 6-9: Parabola Push (Slight Lift)
+// Small vertical lift with horizontal movement. `Unk20=1, Unk21=1` (airborne flags).
+
+// Range 10-13: Slam Downwards
+
+// Range 14-17: Launch Back + Up
+// Strong horizontal + vertical launch. `Unk12=20.0`, `Unk21=1`.
+
+// Range 18-21: Launch Upwards (Vertical)
+// Primarily vertical launch with minimal horizontal. `Unk12=20.0`, `Unk14=0.166`.
+
+// Range 22-25: Slam Down Set 2
+// Uses **negative DownwardMomentum** for forced downward movement.
+
+// Range 26-29: Launch Back + Down
+// Short duration horizontal movement, no vertical.
+
+add_column|DLCFlags|int
+add_column|SidewaysMovement|float       // Horizontal knockback distance
+add_column|SidewaysDuration|float       // Duration of horizontal movement
+add_column|VerticalPush|float           // Initial upward velocity
+add_column|VerticalInterpolation|float  // Vertical smoothing factor
+add_column|FallGravity|float            // Extra gravity after the movment, negative number will make you fall faster, positive number actually lets you hover or even fly!
+add_column|ForwardPush|float
+add_column|ForwardPush2|float
+add_column|DownwardMomentum|float       // Downward force (negative = slam down)
+add_column|DownwardMomentum2|float      // Secondary downward force
+add_column|Unk11|float                  // Always 0.2 (friction?)
+add_column|Unk12|float                  // Height threshold? (20.0 for launches) 
+add_column|Unk13|string
+add_column|Unk14|float
+add_column|Unk15|float
+add_column|Unk16|float
+add_column|Unk17|float
+add_column|Unk18|float
+add_column|Unk19|int                    // Flag (1 = special behavior) 
+add_column|Unk20|byte                   // Airborne check flag
+add_column|Unk21|byte                   // Airborne state flag
+add_column|Unk22|byte
+add_column|Unk23|byte
+add_column|Unk24|byte
+add_column|Unk25|byte
+add_column|Unk26|byte
+add_column|Unk27|byte

@@ -1,0 +1,31 @@
+table_name|GimmickBase
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+add_column|DLCFlags|int
+
+// Valid values (taken from leftover text in FFXVI PS5):
+// 0 = GimmickNone
+// 1 = GimmickTreasureBox
+// 2 = GimmickTreasureBoxUltima
+// 5 = GimmickStageSet
+// 7 = GimmickItem
+// 13 = GimmickChange
+// 17 = GimmickButterfly
+// 19 = GimmickObelisk
+// 20 = GimmickDoor
+// 21 = GimmickElevator
+// 22 = GimmickAccessMessage
+// 23 = GimmickAccessMessageAround
+// 25 = GimmickTerminal
+add_column|Type|int
+
+add_column|StageSetBaseId|int
+add_column|Comment|string
+add_column|Unk5|int
+add_column|Unk6|int
+add_column|Unk7|byte
+add_column|Unk8|byte
+add_column|Unk9|byte
+add_column|Unk10|byte

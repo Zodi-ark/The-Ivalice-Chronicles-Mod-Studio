@@ -1,0 +1,16 @@
+table_name|Body
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+add_column|DLCFlags|int
+add_column|ModelName|string                  // .mdl appended to this
+add_column|Comment|string
+add_column|MastsBodyAudioPath|string
+add_column|MastsFootAudioPath|string
+add_column|MastsAutoSeParamPath|string
+add_column|AnimationSoundEffectsPath|string
+add_column|FootPrintSetId|int                // ref: 8B 78 ? 48 39 33
+add_column|Unk9|float                        // ref: C5 FA 10 70 ? 4D 85 C9 78 ? 49 8B C8 E8 ? ? ? ? EB ? 49 8B C7
+add_column|Unk10|float                       // ref: C5 FA 10 70 ? 4D 85 C9 78 ? 49 8B C8 E8 ? ? ? ? EB ? 49 8B C7
+add_column|BodyNumber|ushort                 // .../model/body/b%04u/... - ref: 66 45 39 68 ? 74 ? 48 63 50 ? 48 8D 8D ? ? ? ? 44 0F B7 4D ? 48 03 D0 41 0F B7 40 ? 4C 8D 05 ? ? ? ? 48 89 54 24 ? 8B D6

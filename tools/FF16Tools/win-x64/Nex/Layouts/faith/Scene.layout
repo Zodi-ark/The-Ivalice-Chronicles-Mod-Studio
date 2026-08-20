@@ -1,0 +1,18 @@
+table_name|Scene
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+// 2 = ingame
+// 3 = world map
+
+add_column|DLCFlags|int
+add_column|Comment|string
+
+// union
+// 146 - BGMMode
+// 314 - BGMSelect
+add_column|BgmUnion|union
+
+add_column|Unk5|byte     // Unknown. If true, checks user situation 992050? - ffxvi.exe steam 1.0.1 - 140452CF7
+// <implicit 3 bytes padding>

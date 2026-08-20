@@ -1,0 +1,11 @@
+table_name|Caption
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+add_column|DLCFlags|int
+
+// this is a union(Placename, CaptionFreeword)
+// 147 = Placename
+// 664 = CaptionFreeword
+add_column|NameUnion|union

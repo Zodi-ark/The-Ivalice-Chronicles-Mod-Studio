@@ -1,0 +1,60 @@
+table_name|DirectorCondition
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed
+use_base_row_id|false
+
+add_column|DLCFlags|int
+
+// Very hardcoded.
+// Conditions: 
+// 1, always true? 
+// 2, always false?
+// 3, multi conditions, all true, up to 4
+// 4, multi conditions, all false, up to 3
+// 10, 2 value (DirectorBankItem, LayoutNamedInstance then/or QuestCharaLayoutBNpc or generic)
+// 11, 2 value (DirectorBankItem, LayoutNamedInstance then QuestCharaLayoutBNpc)
+// 12, 2 value (DirectorBankItem, LayoutNamedInstance then QuestCharaLayoutBNpc)
+// 13, 1 value
+// 14, 2 or 3 values (DirectorBankItem, LayoutNamedInstance, QuestCharaLayoutBNpc, DirectorActorList, then BehaviorMoveSequence)
+// 15, 2 value (DirectorBankItem, LayoutNamedInstance, QuestCharaLayoutBNpc, DirectorActorList, then BehaviorMoveSequence)
+// 21 -> 1 Generic value or DirectorBankItemId
+// 22, 1 value (union type unchecked)
+// 25, 1 value (union type uncheched)
+// 27, 2 generic values
+// 28, 1 value (unknown, generic?)
+// 29, 1 value (simpleeventselect)
+// 100, 1 value DirectorChangeBGMParam
+// 101, 1 Generic value or DirectorBankItemId
+// 102, 1 Generic value
+// 103, 1 Generic value
+// 104, 1 Generic value
+// 105, 1 value (DirectorBankItem, LayoutNamedInstance, QuestCharaLayoutBNpc, DirectorActorList)
+// 106, 
+// 107, 2 values (LayoutNamedInstance + generic value)
+// 108, 1 value (union type uncheched)
+// 109, 1 value (union type uncheched)
+// 1000, 2 values (quest, QuestSequence) - checked against save
+// 2000, no values
+// 2001, no values
+// 3000, 1 value (union type uncheched, unknown union)
+add_column|ConditionType|int
+
+// Every condition type expects different union arguments
+// Max 4
+// union
+// 0
+// 23 = QuestCharaLayoutBNpc
+// 25 = DirectorBankItemId
+// 55 = LayoutNamedInstance
+// 79
+// 82
+// 330
+// 403 = BehaviorMoveSequence
+// 428
+// 454 = DirectorChangeBGMParam
+// 530
+// 557 = DirectorCondition
+// 577 = ?
+// 856 = SimpleEvent
+add_column|ConditionArgumentsUnionArray|union[]
+add_colun|Comment|string

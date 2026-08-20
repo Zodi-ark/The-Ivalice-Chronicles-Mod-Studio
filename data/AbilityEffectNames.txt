@@ -1,0 +1,422 @@
+# Ability effect names for The Ivalice Chronicles Mod Studio
+# =========================================================
+#
+# Format: "<decimal id>|<name>". Blank lines and # lines are ignored.
+# Edit freely - this is your file. Shown on Abilities -> Effect.
+#
+# From FFTPatcher's ability effect list:
+#   https://github.com/Glain/FFTPatcher
+#   PatcherLib.Resources/Resources/PSP/Abilities/Effects.xml
+#   Copyright 2007 Joe Davidson and the FFTPatcher contributors.
+#   Licensed GNU GPL v3 or later - see LICENSE in the project root.
+#   The same list is published on https://ffhacktics.com/wiki/Effects
+#
+# FFTPatcher lists these ids in HEX; they are decimal here, because that is
+# what the .xml tables and this tool use. FFTPatcher's 1FE is this file's 510.
+#
+# PSP (War of the Lions) names are used, because The Ivalice Chronicles uses
+# that translation - "Cura"/"Curaga", not the PSX "Cure 2"/"Cure 3".
+#
+# These describe the original Final Fantasy Tactics. The Ivalice Chronicles
+# is a remaster and its wording may differ here and there.
+#
+# 398 names.
+
+0|Crashes Game
+1|Cure
+2|Cura
+3|Curaga
+4|Curaja
+5|Raise
+6|Arise
+7|Reraise
+8|Regen/Regenerate
+9|Protect
+10|Protectja
+11|Shell
+12|Shellja
+13|Wall
+14|Esuna
+15|Holy
+16|Fire
+17|Fira
+18|Firaga
+19|Firaja
+20|Thunder
+21|Thundara
+22|Thundaga
+23|Thundaja
+24|Blizzard
+25|Blizzara
+26|Blizzaga
+27|Blizzaja
+28|Poison
+29|Toad
+30|Death
+31|Flare
+32|Haste
+33|Hasteja
+34|Slow
+35|Slowja
+36|Stop
+39|Immobilize
+40|Float
+41|Reflect
+43|Summon Demon
+44|Quick/Critical Quick
+45|Gravity
+46|Graviga
+47|Meteor
+49|Blind
+50|Syphon
+51|Drain
+52|Faith/Faith Boost
+53|Doubt
+54|Zombie
+55|Silence
+56|Berserk/Bravery Boost
+57|Chicken
+58|Confuse
+59|Dispel
+60|Disable
+61|Sleep
+62|Break
+63|Moogle
+65|Shiva
+66|Ramuh
+67|Ifrit
+68|Titan
+69|Golem
+70|Carbunkle
+71|Bahamut
+72|Odin
+73|Leviathan
+74|Salamander
+76|Sylph
+77|Faerie
+78|Lich
+79|Cyclops
+80|Zodiark
+81|Seraph Song
+82|Life's Anthem
+83|Rousing Melody
+84|Battle Chant
+85|Magickal Refrain
+86|Nameless Song
+87|Finale
+88|Witch Hunt
+89|Mincing Minuet
+90|Slow Dance
+91|Polka
+92|Heathen Frolic
+93|Forbidden Dance
+94|Last Waltz
+95|Cyclone
+96|Pummel
+97|Aurablast
+98|Shockwave
+99|Doom Fist
+100|Purification
+101|Chakra
+102|Revive
+103|Steal Gil/Gil Snapper/Plunder Gil
+104|Steal Heart/Plunder Heart
+105|Steal Helm/Plunder Helm
+106|Steal Armor/Plunder Armor
+107|Steal Shield/Plunder Shield
+108|Steal Weapon/Plunder Weapon
+109|Steal Accessory/Plunder Accessory
+110|Steal EXP/Plunder EXP
+111|Entice
+112|Stall
+113|Praise
+114|Intimidate
+115|Preach
+116|Enlighten
+117|Condemn
+118|Beg
+119|Insult
+120|Mimic Darlavon
+121|Sinkhole
+122|Torrent
+123|Tanglevine
+124|Contortion
+125|Tremor
+126|Wind Slash
+127|Will-o'-the-Wisp
+128|Quicksand
+129|Sandstorm
+130|Snowstorm
+131|Wind Blast
+132|Magma Surge
+133|Ashura
+134|Kotetsu
+135|Osafune
+136|Murasame
+137|Ama-no-Murakamo
+138|Kiyomuri
+139|Muramasa
+140|Kiku-ichimonji
+141|Masamune
+142|Chirijiraden
+154|Rush/Wing Buffet
+156|Salve
+157|Tailwind
+158|Steel
+159|Shout
+160|Ultima (lvl1)
+161|Chant
+163|Judgment Blade
+164|Cleansing Strike
+165|Northswain's Strike
+166|Hallowed Bolt
+167|Divine Ruination
+168|Crush Armor
+169|Crush Helm
+170|Crush Weapon
+171|Crush Accessory
+172|Duskblade
+173|Shadowblade
+174|Unholy Darkness
+175|Dispelna
+176|Celestial Stasis
+177|Heaven's Wrath
+178|Ashura
+179|Adamantine Sword
+180|Maelstrom
+181|Celestial Void
+182|Divinity
+183|Hell's Wrath
+184|Nether Ashura
+185|Nether Blade
+186|Nether Maelstrom
+187|Corporeal Void
+188|Impiety
+189|Vanish
+190|Shadowbind
+191|Suffocate
+192|Summon Angel
+193|Vengeance (Byblos)
+194|Manaburn
+195|Petrify
+196|Fowlheart
+197|Embrace
+198|Darkness
+199|Aphony
+200|Befuddle
+201|Bind
+202|Nightmare
+203|Ague
+204|Magicksap
+205|Speedsap
+206|Powersap
+208|Mindsap
+210|Vampire
+211|Charm
+212|Bio
+213|Bio
+214|Bio
+215|Biora
+216|Biora
+217|Biora
+218|Biora
+219|Bioga
+220|Bioga
+221|Bioga
+222|Aegis
+225|Very Quick Bloody Strike
+226|Very Quick Strike
+228|Meltdown
+229|Tornado
+230|Quake
+231|Teleport 3: Send
+232|Teleport 3: Arrive
+233|Toadja
+234|Gravija
+235|Flareja
+236|Blindja
+237|Bomblet (blue)
+238|Bomblet (black)
+239|Confuseja
+240|Sleepja
+241|Ultima (lvl2)
+242|Divine Ultima
+243|Disempower
+244|Dispelja
+245|Return
+246|Vengeance (M. Sword)
+247|Brave Slash
+248|Blade Beam
+249|Cross Slash
+255|Climhazzard
+256|Meteorain
+257|Finishing Touch
+258|Cherry Blossom
+259|Omnislash
+260|Potion/Auto-Potion/Cup of Life
+261|Antidote
+262|Eye Drops
+263|Hi-Potion/Critical: Recover HP
+264|Remedy
+265|Echo Herbs
+266|X-Potion
+267|Gold Needle
+268|Phoenix Down
+269|Ether/Absorb MP
+270|Holy Water
+271|Maiden's Kiss
+272|Hi-Ether/Critical: Recover MP
+273|Elixir/Dragonheart
+288|Blind
+289|Empowerment
+290|Invigoration
+291|Belief
+292|Disbelief
+293|Corruption
+294|Quiescence
+295|Fervor
+306|White Talk skill
+307|Ice Breath
+308|Fire Breath
+309|Thunder Breath
+310|Dragon's Charm
+311|Dragon's Gift
+312|Dragon's Might
+313|Dragon's Speed
+314|Holy Breath
+316|Choco Beak
+317|Choco Pellets
+318|Choco Meteor
+319|Choco Esuna
+321|Tackle
+322|Goblin Punch
+323|Spin Punch
+324|Eye Gouge
+325|Bloodfeast
+326|Bite
+327|Bomblet (red)
+328|Self-Destruct
+329|Flame Attack
+330|Spark
+331|Claw
+332|Cat Scratch
+333|Blaster
+334|Venom Fang
+335|Vampire
+336|Tentacles
+337|Ink
+338|Dischord
+339|Mind Blast
+340|Level Drain
+341|Chop/Soulbind
+342|Thunder Anima
+343|Water Anima
+344|Ice Anima
+345|Wind Anima
+346|Ectoplasm
+347|Zombie Touch
+348|Sleep Touch
+349|Drain Touch
+350|Oily Touch
+351|Wing Buffet
+352|Bewitching Gaze
+353|Dread Gaze
+354|Beam
+355|Doom
+356|Talon Dive
+357|Beak
+358|Glitterlust
+359|Featherbomb
+360|Peck
+361|Reckless Charge
+362|Snort
+363|Squeal
+364|Toot
+365|Bequeath Bacon
+366|Leaf Rain
+367|Guardian Nymph
+368|Shell Nymph
+369|Life Nymph
+370|Magick Nymph
+371|Pickaze
+372|Feral Spin
+373|Earthsplitter
+374|Beef Up/Vigilance
+375|Breathe Fire
+376|Tentacles
+377|Lick
+378|Goo
+379|Bad Breath
+380|Malboro Spores
+381|Gore
+382|Heave
+383|Twister
+384|Almagest
+385|Gigaflare
+386|Charge
+387|Tail Sweep
+388|Ice Breath
+389|Fire Breath
+390|Thunder Breath
+391|Tri-Attack
+392|Tri-Breath
+393|Tri-Thunder
+394|Tri-Flame
+395|Dark Whisper
+396|Trepidation
+397|Delirium
+398|Energize
+399|Parasite
+400|Harmony
+401|Snakecharm
+402|Poisononous Frog
+403|Midgardsormr
+404|Hesitation
+405|Repose
+406|Induration
+407|Kerma
+408|Nanoflare
+409|Grand Cross
+410|Destroy
+411|Compress
+412|Dispose
+413|Pulverize
+450|Dejeon: Send (Orbonne, battle vs Loffrey)
+451|Scorpio's Revive spell (Rapha revives Marach)
+452|Altima's Ultimate Transformation
+453|End of the World (Altima's Death)
+454|Banish (Mullonde's entrance)
+455|Fire (unknown)
+456|Flood (Besselate Sluice)
+457|Fire Explosion (Fort Ziekden)
+458|Strong Fire Explosion (Fort Ziekden)
+459|Mini Explosion (Fort Ziekden)
+460|Cancer's Restoration spell
+461|Belias' Transformation
+462|Zalera's Transformation
+463|Hashmal's Transformation
+464|Altima's Transformation
+465|Cuchulainn's Transformation
+466|Adrammelech's Transformation
+467|Aries' Glow
+468|Gemini's Glow
+469|Leo's Glow
+470|Virgo's Glow
+471|Scorpio's Glow
+472|Capricorn's Glow
+473|Saggitarius' electricity recharge
+474|Belias' Death
+475|Zalera's Death
+476|Hashmal's Death
+477|Cuchulainn's Death/Zalbag's Death
+478|Adrammelech's Death
+479|Stone Glow
+480|Dejeon: Arrive (Mullonde's entrance)
+481|Small Electricity (Mustadio's House)
+482|Large Electricity (Mustadio's House)
+483|Exploding Smash (Mustadio's House; Construct 8)
+484|Stone Glow (higher altitude)
+485|Virgo's Holy Angel Revive
+486|Summon Ultimate
+509|Crashes Game
+510|Crashes Game

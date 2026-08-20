@@ -1,0 +1,44 @@
+table_name|ShopBase
+set_table_type|SingleKeyed
+set_table_category|SingleKeyed_Localized
+use_base_row_id|false
+
+add_column|DLCFlags|int
+add_column|Comment|string
+add_column|ShopName|string|rel
+add_column|LayoutNamedInstanceId|int
+add_column|Unk5|int
+add_column|Unk6|int
+
+// union
+// 99 - ItemShopBase
+// 100 - SmithShopBase
+// 484 - ShopChronicle
+// 487 - LetterList
+// 488 - ShopPastSight
+// 502 - StageShopBase
+// 517 - CollectionList
+// 523 - ShopLore
+// 719 - ShopMythril
+// 818 - ShopFixedPaletteExit
+// 889 - OrchestrionList
+// 957 - ShopQuestCounter
+// 976 - ShopFixedPaletteAccess
+// 977 - ShopFixedPaletteWarp
+// 998 - ShopFameValue
+// 1011 - 
+add_column|ShopUnion|union
+add_column|Unk9|int
+add_column|Unk10|int
+add_column|Unk11|int
+add_column|Unk12|int
+add_column|Unk13|int
+add_column|Unk14|string
+add_column|Unk15|int
+add_column|Unk16|int
+add_column|Unk17|int
+add_column|Unk18|byte
+add_column|Unk19|byte
+add_column|Unk20|byte
+add_column|Unk21|byte
+add_column|Unk22|int
