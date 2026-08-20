@@ -502,6 +502,8 @@ class WizardState:
 
 class WizardApp(tk.Tk):
     def __init__(self):
+        # Before the first window exists - see _claim_taskbar_identity.
+        self._claim_taskbar_identity()
         super().__init__()
         self.title(APP_TITLE)
         self.geometry(WINDOW_SIZE)
@@ -520,6 +522,35 @@ class WizardApp(tk.Tk):
         self._build_steps()
         self._show_step(0)
 
+    @staticmethod
+    def _claim_taskbar_identity() -> None:
+        """
+        Tells Windows this is its own application, not "some Python".
+
+        The window icon was always right, but the *taskbar* button showed
+        the Python snake, because Windows groups taskbar buttons by
+        AppUserModelID and a script inherits the host interpreter's. Setting
+        an explicit one makes the taskbar use this window's own icon, and
+        stops Mod Studio being grouped with any other Python program that
+        happens to be running.
+
+        Must happen before the first window exists, which is why it's called
+        at the top of __init__ rather than alongside the icon itself.
+
+        Windows-only and entirely cosmetic, so every failure is swallowed -
+        an old Windows without the call, or a locked-down environment, isn't
+        a reason not to start.
+        """
+        if platform.system() != "Windows":
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "Zodi.IvaliceChroniclesModStudio")
+        except Exception:  # noqa: BLE001 - cosmetic, never fatal
+            pass
+
     def _set_icon(self) -> None:
         """Best-effort - the icon is cosmetic, so any failure here is silently ignored."""
         assets_dir = paths.project_root() / "assets"
@@ -527,7 +558,11 @@ class WizardApp(tk.Tk):
             if platform.system() == "Windows":
                 ico_path = assets_dir / "icon.ico"
                 if ico_path.exists():
-                    self.iconbitmap(str(ico_path))
+                    # `default=` rather than a bare path: it sets the icon
+                    # for this window *and* every dialog opened later, so
+                    # file pickers and message boxes stop falling back to
+                    # the interpreter's icon.
+                    self.iconbitmap(default=str(ico_path))
                     return
             png_path = assets_dir / "icon_256.png"
             if png_path.exists():

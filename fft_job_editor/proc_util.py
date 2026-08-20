@@ -22,6 +22,28 @@ def for_platform(exe_path: Path, raw_command: list[str]) -> list[str]:
     return raw_command
 
 
+def _no_window_flags() -> dict:
+    """
+    Keyword arguments that stop a console window flashing up on Windows.
+
+    Every FF16Tools and AudioMog call is a console program, and Windows
+    gives each one its own window unless told otherwise. Under the old
+    `.py` entry point that went unnoticed - the app already had a console
+    of its own, so the children just reused it. Launching without one makes
+    each call flash a black box on screen instead, which would have turned
+    one visible console into dozens of brief ones.
+
+    `CREATE_NO_WINDOW` only exists on Windows, so this is empty everywhere
+    else and the calls are unchanged there.
+    """
+    if platform.system() != "Windows":
+        return {}
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {"creationflags": flags, "startupinfo": startupinfo}
+
+
 def run_streaming(command: list[str], line_cb: Optional[Callable[[str], None]] = None, cwd: Optional[Path] = None) -> int:
     process = subprocess.Popen(
         command,
@@ -30,6 +52,7 @@ def run_streaming(command: list[str], line_cb: Optional[Callable[[str], None]] =
         text=True,
         bufsize=1,
         cwd=str(cwd) if cwd else None,
+        **_no_window_flags(),
     )
     assert process.stdout is not None
     for line in process.stdout:
@@ -72,6 +95,7 @@ def run_streaming_with_artifact(
         text=True,
         bufsize=1,
         cwd=str(cwd) if cwd else None,
+        **_no_window_flags(),
     )
     assert process.stdout is not None
 
