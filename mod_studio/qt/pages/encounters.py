@@ -812,4 +812,18 @@ class EncountersPage(QWidget):
 
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
-        apply_view_toggles(self.rows.values(), hide_notes, hide_unknown)
+        """
+        BOTH row containers.
+
+        This walked `self.rows` only, so the unit rows in `self.chara_rows`
+        kept their notes with notes turned off - "Generic Unit" was the one
+        that showed. The identical fault to the one Jobs was fixed for, in
+        the container next door, and invisible unless somebody counted:
+        37 of 38 notes hid, which looks exactly like it working.
+
+        Found by `dev/audit_view_toggles.py`, which was written for a
+        different page and turned this up on its first run.
+        """
+        apply_view_toggles(
+            list(self.rows.values()) + list(self.chara_rows.values()),
+            hide_notes, hide_unknown)

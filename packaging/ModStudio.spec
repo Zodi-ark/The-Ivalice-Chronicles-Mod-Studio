@@ -107,11 +107,14 @@ datas = [
 
 hiddenimports = [
     "PIL.Image",
-    "PIL.ImageTk",
     "PIL.ImageChops",
     "PIL.ImageStat",
     "PIL.DdsImagePlugin",   # .dds decode, including BC1-BC7
 ]
+# `PIL.ImageTk` was here and has been removed. It is Pillow's bridge to
+# Tkinter - a Tk PhotoImage wrapper - and there is no Tkinter any more.
+# Nothing imports it; it was forcing PyInstaller to collect a module that
+# could not have worked in this build anyway, since `tkinter` is excluded.
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +272,21 @@ EXCLUDE_MISC = [
     "setuptools",
     "pip",
     "PIL.ImageQt",       # would drag a Qt binding in through Pillow
+    # Pillow's AVIF codec. 7.5 MB on Windows (`_avif.pyd`) and 4.9 MB of
+    # bundled libavif on Linux - the single largest avoidable item in the
+    # build after the OpenGL fallback.
+    #
+    # Safe because the formats this tool accepts are fixed and listed:
+    # `texture_data.REPLACEMENT_IMAGE_EXTENSIONS` is .dds, .png, .jpg,
+    # .jpeg, .gif, .bmp, .tga and .webp, and the game's own textures are
+    # .tex and .dds. AVIF appears nowhere - not in that tuple, not in the
+    # file dialog filters, not in the FF16Tools conversion path.
+    #
+    # If .avif is ever added to REPLACEMENT_IMAGE_EXTENSIONS, remove these
+    # two lines in the same commit or the dialog will offer a format the
+    # build cannot decode.
+    "PIL.AvifImagePlugin",
+    "PIL._avif",
 ]
 
 # The interface toolkit that is no longer used. Gated, because excluding it
@@ -526,10 +544,24 @@ def _is_unwanted_qt_plugin(dest: str) -> bool:
     return len(parts) > index + 1 and parts[index + 1] not in _KEEP_PLUGINS
 
 
+def _is_pillow_dead_weight(dest: str) -> bool:
+    """
+    Pillow's AVIF codec, which nothing in this tool can produce or consume.
+
+    Filtered here as well as excluded above, for the reason `QtOpenGL.pyd`
+    taught: `excludes` acts on the import graph, and the compiled codec plus
+    its bundled `libavif` arrive as BINARIES through Pillow's hook. Excluding
+    the module does not remove them.
+    """
+    name = Path(dest).name.lower()
+    return name.startswith("_avif.") or name.startswith("libavif")
+
+
 def _strip(entry) -> bool:
     dest = entry[0]
     return (_is_qt_translation(dest) or _is_unwanted_qt_plugin(dest)
-            or _is_dropped_qt_library(dest) or _is_qt_dead_weight(dest))
+            or _is_dropped_qt_library(dest) or _is_qt_dead_weight(dest)
+            or _is_pillow_dead_weight(dest))
 
 
 _before = len(a.datas) + len(a.binaries)

@@ -106,11 +106,26 @@ class ColumnFormLayout(QLayout):
     """Uniform-width columns, filled top-to-bottom, count set by width."""
 
     def __init__(self, parent=None, min_column_width: int = DEFAULT_MIN_COLUMN_WIDTH,
-                 spacing: int = 2, column_gap: int = COLUMN_GAP):
+                 spacing: int = 2, column_gap: int = COLUMN_GAP,
+                 max_columns: int = 0):
         super().__init__(parent)
         self._items: list = []
         self._min_column_width = int(min_column_width)
         self._column_gap = int(column_gap)
+        # A ceiling on the column count, 0 meaning "as many as fit".
+        #
+        # For PROSE. The reflow is right for a form of short values - a spin
+        # box does not read better for being 800px wide - but a description
+        # is the opposite case: its readable length IS its width, and a
+        # 261-character job description in a 190px column shows about 75
+        # characters of itself. `max_columns=1` gives such a section the
+        # full width of the page and lets the reflow go on doing its job in
+        # the numeric sections beside it.
+        #
+        # Deliberately a real cap rather than an enormous `min_column_width`,
+        # which would have the same effect at today's window sizes and
+        # silently stop working on a wider one.
+        self._max_columns = max(0, int(max_columns))
         self._columns = 1
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(spacing)
@@ -220,6 +235,8 @@ class ColumnFormLayout(QLayout):
         gap = self._column_gap
         columns = max(1, (available + gap) // (self._min_column_width + gap))
         columns = min(columns, len(items))
+        if self._max_columns:
+            columns = min(columns, self._max_columns)
         if apply:
             # ONLY on the applying pass. `heightForWidth` is a question -
             # "how tall would you be at this width" - and Qt asks it with
@@ -286,10 +303,11 @@ class ColumnFormBody(QWidget):
 
     def __init__(self, parent=None,
                  min_column_width: int = DEFAULT_MIN_COLUMN_WIDTH,
-                 spacing: int = 2, margins: tuple = (0, 0, 0, 0)):
+                 spacing: int = 2, margins: tuple = (0, 0, 0, 0),
+                 max_columns: int = 0):
         super().__init__(parent)
         self.form = ColumnFormLayout(self, min_column_width=min_column_width,
-                                     spacing=spacing)
+                                     spacing=spacing, max_columns=max_columns)
         self.form.setContentsMargins(*margins)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 

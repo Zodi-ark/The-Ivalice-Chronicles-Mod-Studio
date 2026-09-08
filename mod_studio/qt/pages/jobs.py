@@ -44,6 +44,12 @@ from ..widgets.field_rows import (
     TextFieldRow,
 )
 
+#: Lines given to a prose box in the single-column Name and Description
+#: section. Five because the longest real job description - `Job-de`, 427
+#: characters - needs five lines at the 1100px minimum window. The default
+#: three fits English (261 characters) and clips German.
+PROSE_ROWS = 5
+
 
 def is_unknown_field(field_name: str, label: str = "") -> bool:
     """
@@ -262,7 +268,23 @@ class JobsPage(QWidget):
         # section balances its own columns. One form spanning all three
         # would let a stat from Basic Stats land level with a description,
         # and the section headings would stop meaning anything.
-        text_body = ColumnFormBody(min_column_width=DEFAULT_MIN_COLUMN_WIDTH)
+        # ONE COLUMN, unlike the two numeric sections below.
+        #
+        # These four fields are prose - Name, Name (feminine), Description,
+        # Description (feminine) - and prose is the case the reflow is wrong
+        # for. A spin box does not read better for being 800px wide, so
+        # packing stats into columns is free; a description's readable
+        # length IS its width. In three columns the Description box was
+        # about 190px and showed roughly 75 characters of a 261-character
+        # job description, with the rest behind a scrollbar. Reported from a
+        # screenshot, and the two boxes also landed in different columns
+        # from the names they belong to, so the pairing was invisible.
+        #
+        # Stacked, they run the width of the page and read in the order
+        # someone fills them in: name, then its feminine form, then the
+        # description, then its feminine form.
+        text_body = ColumnFormBody(min_column_width=DEFAULT_MIN_COLUMN_WIDTH,
+                                   max_columns=1)
         self.column_bodies = [text_body]
         for field_name in c.JOB_NXD_TEXT_FIELDS:
             label = c.JOB_NXD_FIELD_LABELS.get(field_name, field_name)
@@ -273,7 +295,23 @@ class JobsPage(QWidget):
                 # This page has the columns to afford it - see the gate's
                 # comment on `TextFieldRow`. A job description runs to 261
                 # characters and had one line to show them in.
-                multiline=True)
+                multiline=True,
+                # Five, not the default three. Measured against the real
+                # table rather than the English the developer reads: the
+                # longest `Job-en` description is 261 characters and needs
+                # three lines at the 1100px minimum, but the same job in
+                # `Job-de` is 427 characters and needs five. Three would
+                # have looked correct in English and clipped for a German
+                # modder on a small window.
+                #
+                # Costs nothing at the wide end - a text box with room to
+                # type in is not wasted space - and only two of these four
+                # rows are prose boxes at all; the two names are single-line
+                # fields.
+                rows=PROSE_ROWS,
+                # Stacked rows: hold the note column on rows without notes, and
+                # let a note that does not fit wrap rather than elide.
+                stacked=True)
             row.edited.connect(self._on_text_field_edited)
             self.text_rows[field_name] = row
             text_body.add_row(row)

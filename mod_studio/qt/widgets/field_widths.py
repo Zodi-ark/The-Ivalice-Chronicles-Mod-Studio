@@ -81,13 +81,35 @@ _LONG_EXCEPTIONS = frozenset({
 })
 
 
-def is_long_text(field_name: str) -> bool:
-    """Whether a string column holds prose rather than a name."""
+def is_long_text(field_name: str, label: str = "") -> bool:
+    """
+    Whether a string column holds prose rather than a name.
+
+    **The LABEL counts as much as the column name**, and that is not a
+    convenience - it is the fix for a whole class of column this test used
+    to get wrong.
+
+    The game's tables name plenty of real columns `UnknownN`. `Job-*` has
+    `Unknown6`, which the field notes identify as the feminine form of the
+    Description and which the interface labels "Description (feminine)".
+    Matching the raw name alone, that reads as short, so it was drawn as a
+    one-line box - beside the masculine Description, three lines tall, in
+    the same section.
+
+    It was never visible in English, because `Job-en.Unknown6` is empty in
+    every row. It is `Job-de` that fills it, to 328 characters. A column
+    whose real content only exists in a language the developer does not
+    read is exactly the column a name-based guess will get wrong, and the
+    label is the one place a human has already written down what it is.
+
+    `_LONG_EXCEPTIONS` still exists for the opposite case - a column whose
+    label says nothing but whose contents have been counted.
+    """
     name = (field_name or "").strip()
     if name in _LONG_EXCEPTIONS:
         return True
-    lowered = name.lower()
-    return any(marker in lowered for marker in _LONG_MARKERS)
+    haystack = f"{name} {label or ''}".lower()
+    return any(marker in haystack for marker in _LONG_MARKERS)
 
 
 def short_text_width(font_metrics, characters: int = SHORT_TEXT_CHARS) -> int:

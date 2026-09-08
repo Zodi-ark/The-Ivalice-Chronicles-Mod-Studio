@@ -44,7 +44,7 @@ from .field_widths import (
 
 class LongTextEdit(QPlainTextEdit):
     """
-    A multi-line box that answers to `QLineEdit`'s names.
+    A multi-line box that answers to `QLineEdit`'s names, and sizes itself.
 
     `TextFieldRow.value` is reached into from pages and from three test
     suites - `.text()`, `.setText()`, `.cursorPosition()` - and which kind
@@ -57,7 +57,34 @@ class LongTextEdit(QPlainTextEdit):
     `setTabChangesFocus` because this sits in a form. Tab moving focus is
     what every other field on the page does, and a text area that swallows
     it strands keyboard users in the middle of a job's stats.
+
+    **The height follows the text at the width it is actually drawn at**,
+    between `min_rows` and `max_rows`. A fixed row count cannot be right,
+    because how many lines a description takes depends on how wide the box
+    is, and that changes with the window:
+
+        a 261-character description   1100px wide -> 3 lines
+                                      1420px      -> 2
+                                      2060px      -> 1
+
+    Three was chosen from the English worst case and clipped German. Five
+    was then chosen from the German worst case at the 1100px minimum, and
+    left three empty lines under a two-line description on a maximised
+    1080p monitor - correct at the bottom of the range and wasteful at the
+    top, which is what any single number does here.
+
+    The floor of two keeps the box visibly a text area rather than
+    something that looks like a one-line field. The ceiling stops a pasted
+    essay from pushing the rest of the form off the page; past it the box
+    scrolls, which is the normal behaviour of a text area that is full.
     """
+
+    def __init__(self, parent=None, min_rows: int = 2, max_rows: int = 6):
+        super().__init__(parent)
+        self._min_rows = max(1, int(min_rows))
+        self._max_rows = max(self._min_rows, int(max_rows))
+        self._sizing = False
+        self.textChanged.connect(self._resize_to_content)
 
     def text(self) -> str:
         return self.toPlainText()
@@ -67,6 +94,41 @@ class LongTextEdit(QPlainTextEdit):
 
     def cursorPosition(self) -> int:                          # noqa: N802
         return self.textCursor().position()
+
+    def rows_shown(self) -> int:
+        """How many lines of text the box is currently tall enough for."""
+        spacing = max(1, self.fontMetrics().lineSpacing())
+        return max(1, self.viewport().height() // spacing)
+
+    def _resize_to_content(self) -> None:
+        """Set the height to the wrapped line count, clamped."""
+        # `_sizing` because setting the height triggers a resize, which asks
+        # to be sized again. Without the guard that is an infinite loop on
+        # the first keystroke.
+        if self._sizing:
+            return
+        document = self.document()
+        # The document has to be told the width it is wrapping at, or it
+        # reports the unwrapped single-line height and every box collapses
+        # to the floor - which looks exactly like the feature not working.
+        document.setTextWidth(max(1, self.viewport().width()))
+        lines = int(document.size().height())
+        lines = max(self._min_rows, min(self._max_rows, lines))
+        target = long_text_height(self.fontMetrics(), lines)
+        if target == self.height():
+            return
+        self._sizing = True
+        try:
+            self.setFixedHeight(target)
+            self.updateGeometry()      # the column form re-lays out
+        finally:
+            self._sizing = False
+
+    def resizeEvent(self, event):                             # noqa: N802
+        super().resizeEvent(event)
+        # A narrower window wraps the same text onto more lines, so the
+        # height has to be recomputed on resize and not only on edit.
+        self._resize_to_content()
 
     def setCursorPosition(self, position: int) -> None:       # noqa: N802
         cursor = self.textCursor()
@@ -79,6 +141,89 @@ class LongTextEdit(QPlainTextEdit):
         # single-line box.
         self.moveCursor(QTextCursor.Start)
         self.ensureCursorVisible()
+
+
+class FieldNoteLabel(QLabel):
+    """
+    A field note that ends in an ellipsis when it does not fit.
+
+    The note is deliberately unwrapped and horizontally `Ignored`, for a
+    measured reason recorded on `NumericFieldRow`: a wrapped note took a
+    quarter of the row at the 1100px minimum and ran to five lines, so five
+    text fields were taller than the twelve stat rows under them, and a long
+    note could widen the whole form.
+
+    What that left was a note cut off mid-word with nothing to say it had
+    been - on Job Commands, "A second description. Only one row uses it in m".
+    A reader cannot tell that from a note whose author simply stopped typing.
+
+    Eliding keeps the constraint and fixes the tell: the text is shortened to
+    the width actually available and marked with an ellipsis, and the full
+    text stays in the tooltip, where it already was. Elided on every resize,
+    because the width this gets depends on the window and on what the value
+    beside it is using.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = text or ""
+        self.setWordWrap(False)
+        super().setText(self._full_text)
+
+    def setText(self, text: str) -> None:                     # noqa: N802
+        self._full_text = text or ""
+        self._elide()
+
+    def text(self) -> str:
+        """
+        The note, not the abbreviation of it currently on screen.
+
+        Overridden deliberately. Eliding is a DISPLAY detail, and a caller
+        asking a label for its text wants the note - three suites read this
+        to check what a field says, and against the inherited `text()` they
+        got whatever happened to fit the window they were run at, which is
+        both wrong and intermittent. `painted_text()` is there for the one
+        caller that really does want the visible string.
+        """
+        return self._full_text
+
+    def painted_text(self) -> str:
+        """What is actually drawn, ellipsis and all."""
+        return super().text()
+
+    def full_text(self) -> str:
+        """The unabridged note. Kept as an alias; `text()` now agrees."""
+        return self._full_text
+
+    def is_elided(self) -> bool:
+        return super().text() != self._full_text
+
+    def _elide(self) -> None:
+        if not self._full_text:
+            super().setText("")
+            return
+        # Wrapping and eliding are two answers to the same question, and
+        # running both means the elide wins silently: it rewrites the text
+        # to one line's worth, so `setWordWrap(True)` appears to do nothing
+        # and the note stays a single truncated line. Whichever the caller
+        # asked for, only that one runs.
+        if self.wordWrap():
+            super().setText(self._full_text)
+            return
+        metrics = self.fontMetrics()
+        available = max(0, self.width())
+        # With no width yet - during construction, before the first layout -
+        # show the whole thing. Eliding against a width of zero would set
+        # every note to a bare ellipsis and the first paint would flash.
+        if available <= 0:
+            super().setText(self._full_text)
+            return
+        super().setText(metrics.elidedText(self._full_text, Qt.ElideRight,
+                                           available))
+
+    def resizeEvent(self, event):                             # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
 
 
 class NumericFieldRow(QWidget):
@@ -142,7 +287,7 @@ class NumericFieldRow(QWidget):
         # ask for its full width, one 70-character note put a horizontal
         # scroll bar under the whole editor.
         self._note_text = note
-        self.note = QLabel(note)
+        self.note = FieldNoteLabel(note)
         self.note.setProperty("role", "muted")
         self.note.setWordWrap(False)
         self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -276,7 +421,8 @@ class TextFieldRow(QWidget):
 
     def __init__(self, field_name: str, label: str, note: str = "",
                  unknown: bool = False, parent=None, long: bool | None = None,
-                 multiline: bool = False, max_value_width: int = 0):
+                 multiline: bool = False, max_value_width: int = 0,
+                 rows: int = 0, stacked: bool = False):
         super().__init__(parent)
         self.field_name = field_name
         self.is_unknown = unknown
@@ -297,7 +443,7 @@ class TextFieldRow(QWidget):
         # sizing is not gated - it costs no height, and it makes this row
         # match the capped spin box and dropdown beside it instead of being
         # the only control on the page that stretched to the window edge.
-        self._long_column = (is_long_text(field_name) if long is None
+        self._long_column = (is_long_text(field_name, label) if long is None
                              else bool(long))
         self.is_long = self._long_column and multiline
 
@@ -320,10 +466,20 @@ class TextFieldRow(QWidget):
         row.addWidget(self.label, 0, Qt.AlignTop)
 
         if self.is_long:
-            self.value = LongTextEdit()
+            # `rows` is now a CEILING, not a fixed height. The box sizes
+            # itself to what it holds at the width it is drawn at - see
+            # LongTextEdit - so a two-line description on a maximised 1080p
+            # window is a two-line box, and the same text at the 1100px
+            # minimum, where it wraps to five, is a five-line box.
+            #
+            # This replaced a fixed `rows` count that could only be right at
+            # one window size. Three was picked from the longest English
+            # description and clipped German; five was picked from the
+            # longest German at the 1100px minimum and left three empty
+            # lines under an English description on a 1080p monitor.
+            self.value = LongTextEdit(min_rows=2,
+                                      max_rows=rows or LONG_TEXT_ROWS)
             self.value.setTabChangesFocus(True)
-            self.value.setFixedHeight(
-                long_text_height(self.value.fontMetrics(), LONG_TEXT_ROWS))
             self.value.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         else:
             self.value = QLineEdit()
@@ -373,7 +529,7 @@ class TextFieldRow(QWidget):
         # lines, so five text fields occupied more height than the twelve
         # stat rows underneath them. The full text is in the tooltip.
         self._note_text = note
-        self.note = QLabel(note)
+        self.note = FieldNoteLabel(note)
         self.note.setProperty("role", "muted")
         self.note.setWordWrap(False)
         self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
@@ -387,7 +543,33 @@ class TextFieldRow(QWidget):
         # Abilities, Encounters), and giving the empty label a quarter of
         # the row shortened every one of their name and description boxes
         # by a quarter for nothing.
-        row.addWidget(self.note, 1 if note else 0, Qt.AlignTop)
+        # `stacked` says this row is one of a few in a single-column
+        # section, and TWO things follow from that.
+        #
+        # 1. The note column is held even on rows that have no note. The
+        #    rule above - an empty note surrenders its share - is right for
+        #    a form of many columns and wrong for a stacked one. In the Jobs
+        #    Name and Description section three of the five rows have notes,
+        #    so Description, which needs none, drew 265px wider than
+        #    Description (feminine) immediately below it. In three columns
+        #    that never showed, because they were never side by side.
+        #
+        # 2. The note WRAPS instead of eliding. The no-wrap rule was
+        #    measured on a form of twelve-plus rows at the 1100px minimum,
+        #    where a wrapped note ran to five lines and made five text
+        #    fields taller than the twelve stat rows under them. A stacked
+        #    prose section is four rows, and the cost of a second line there
+        #    is one line.
+        #
+        #    Eliding was the fix when the note could not have more room; it
+        #    is the wrong answer when it can. Job Commands' "A second
+        #    description..." needed 683px and the 3:1 split gave it 337, so
+        #    it elided at every window size the tool supports - a note that
+        #    is never readable is not a note.
+        if stacked:
+            self.note.setWordWrap(True)
+            self.note.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        row.addWidget(self.note, 1 if (note or stacked) else 0, Qt.AlignTop)
         if not note and (not self._long_column or max_value_width):
             # The SHORT box is capped, so on a wide row the leftover has to
             # go somewhere. Without this Qt hands it to the only item with
@@ -518,7 +700,7 @@ class NamedNumberRow(QWidget):
         row.addWidget(self.combo, 1)
 
         self._note_text = note
-        self.note = QLabel(note)
+        self.note = FieldNoteLabel(note)
         self.note.setProperty("role", "muted")
         self.note.setWordWrap(False)
         self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)

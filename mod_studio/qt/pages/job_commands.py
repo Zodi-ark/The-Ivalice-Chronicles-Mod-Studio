@@ -24,10 +24,12 @@ from PySide6.QtWidgets import (
 from ... import constants as c
 from ... import nxd_data
 from ... import xml_io
+from ..widgets.column_form import (
+    DEFAULT_MIN_COLUMN_WIDTH, ColumnFormBody)
 from ..widgets.actions import (
-    COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, TransientNote,
-    copy_edits_to_languages, ensure_language_loaded, language_order,
-    mark_edited, select_list_row, page_intro)
+    COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, TransientNote, ViewToggles,
+    apply_view_toggles, copy_edits_to_languages, ensure_language_loaded,
+    language_order, mark_edited, select_list_row, page_intro)
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow, TextFieldRow)
 
@@ -44,6 +46,20 @@ class JobCommandsPage(QWidget):
         self.state = state
         self.current_command_id = None
         self.rows: dict[str, DropdownFieldRow] = {}
+
+        # Every editing page builds its own pair and hides it; only the
+        # shell's is drawn. The instance is what registers the page with
+        # `ViewToggles._ALL`, which is how a click on the shell's pair
+        # reaches this page at all.
+        #
+        # This page had none. So "Hide field notes" did nothing here, on the
+        # one page whose notes are long enough to be worth hiding - the
+        # Description (alternate) note was the reported case. Reported as
+        # "toggling it doesn't hide it", which is what a page that is not
+        # subscribed to the signal looks like from the outside.
+        self.view_toggles = ViewToggles()
+        self.view_toggles.changed.connect(self._apply_view)
+        self.view_toggles.follow_only()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 20)
@@ -146,18 +162,34 @@ class JobCommandsPage(QWidget):
         # The Dragoon Meliadoul mod already changes one of them (row 67,
         # "Unyielding Blade" -> "Templar Arts"), so opening that mod used to
         # recover every other change it makes and silently drop this one.
+        # The same single-column prose treatment as Jobs, and for a reason
+        # that showed up as a different symptom: the Description (alternate)
+        # note was cut off mid-sentence.
+        #
+        # Measured at 1920: the value box held 1013px for a ONE-LINE field
+        # while its note had 337px and needed 683px. Prose columns are
+        # exempt from the width cap that keeps short boxes from stretching,
+        # deliberately - "a prose column keeps its width until its page can
+        # give it the rows instead". This page never gave them the rows, so
+        # they took the width and starved the note that explains them.
+        #
+        # `multiline=True` is the gate a page passes when it adopts the
+        # column form. Doing that here is what makes the exemption honest:
+        # the box now uses the width for text instead of for nothing, sizes
+        # itself to what it holds, and `stacked=True` holds a note
+        # column of the same width on every row so the four line up.
         self.text_rows = {}
-        text_body = QWidget()
-        text_column = QVBoxLayout(text_body)
-        text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(2)
+        text_body = ColumnFormBody(min_column_width=DEFAULT_MIN_COLUMN_WIDTH,
+                                   max_columns=1)
+        self.column_bodies = [text_body]
         for field_name in c.JOBCOMMAND_NXD_TEXT_FIELDS:
             label = c.JOBCOMMAND_NXD_FIELD_LABELS.get(field_name, field_name)
             row = TextFieldRow(field_name, label,
-                               note=c.JOBCOMMAND_NXD_FIELD_NOTES.get(field_name, ""))
+                               note=c.JOBCOMMAND_NXD_FIELD_NOTES.get(field_name, ""),
+                               multiline=True, stacked=True)
             row.edited.connect(self._on_text_edited)
             self.text_rows[field_name] = row
-            text_column.addWidget(row)
+            text_body.add_row(row)
 
         raw_body = QWidget()
         raw_column = QVBoxLayout(raw_body)
@@ -198,7 +230,27 @@ class JobCommandsPage(QWidget):
 
     # -- records -------------------------------------------------------------
 
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
+        """
+        BOTH row dictionaries.
+
+        `self.rows` holds the ability-slot dropdowns and the raw columns;
+        `self.text_rows` holds Name, Description, Description (alternate)
+        and Comment - which are the rows carrying the notes that prompted
+        this. Passing one would fix the symptom on half the page and leave
+        the identical fault in the container next to it.
+        """
+        apply_view_toggles(
+            list(self.rows.values()) + list(self.text_rows.values()),
+            hide_notes, hide_unknown)
+
     def refresh_records(self) -> None:
+        # The saved preference has to be applied on load, not only when the
+        # checkbox is clicked. `changed` fires on a click; a page that only
+        # listens for it opens with notes showing however the person left
+        # the setting, and corrects itself the first time they touch it -
+        # which reads as the toggle working intermittently.
+        self._apply_view(*self.view_toggles.state())
         ensure_language_loaded(
             self.state, nxd_data.spec_for("job_command").records_attr,
             self.language)
