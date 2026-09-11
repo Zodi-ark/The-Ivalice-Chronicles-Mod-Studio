@@ -25,6 +25,7 @@ from .. import item_xml_io, paths, xml_io
 from ..state import WizardState
 from .pages.data_browser import DataBrowserPage
 from .pages.compare import ComparePage
+from .pages.find_text import FindTextPage
 from .pages.job_commands import JobCommandsPage
 from .pages.jobs import JobsPage
 from .pages.table_editor import TableEditorPage
@@ -282,6 +283,10 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     pages["Textures"] = TexturesPage(state)
     pages["Sounds"] = SoundsPage(state)
     pages["All Game Data"] = DataBrowserPage(state)
+    # Built unconditionally like the rest, for the reason recorded above:
+    # a page created only once its data exists is a page that is never
+    # created, because the data arrives after the window does.
+    pages["Find Text"] = FindTextPage(state)
     pages["Poaching"] = PoachingPage(state)
     pages["Abilities"] = AbilitiesPage(state)
     pages["Encounters"] = EncountersPage(state)
@@ -324,7 +329,7 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     found_versions = (versions if versions is not None
                       else discover_versions(state))
     review = ReviewPage(state, found_versions)
-    compare = ComparePage(found_versions)
+    compare = ComparePage(found_versions, state=state)
     window = MainWindow(
         compare,
         tab_pages=pages,
@@ -398,6 +403,23 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         export.refresh_summary()
     setup.setup_changed.connect(_on_setup_changed)
 
+    def _on_archive_changed():
+        """
+        The saved-versions dialog deleted or added a version.
+
+        Goes through `discover_versions` for the same reason `_on_setup_changed`
+        does: an archived version has to be opened before it can be offered,
+        and both Game Updates tabs must be told or the two would disagree
+        about which versions exist. Saving a version and seeing it appear in
+        Compare Versions' boxes but not in Review Changes' baseline search is
+        precisely the kind of half-refresh that only shows up on a cold start.
+        """
+        if versions is None:
+            fresh = discover_versions(state)
+            compare.set_versions(fresh)
+            review.set_versions(fresh)
+    compare.versions_changed.connect(_on_archive_changed)
+
     # Every editing page tells Export that its totals moved. Without this the
     # summary would show whatever was true when the page was built, which for
     # a page opened before any editing means "nothing edited yet" forever.
@@ -414,6 +436,27 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         signal = getattr(page, "navigate_requested", None)
         if signal is not None:
             signal.connect(window.open_tab)
+
+    # Find Text lands its hits on All Game Data.
+    #
+    # A separate signal from `navigate_requested` because the payload is a
+    # TABLE and a row key, not a tab name and a record id - and it is routed
+    # through the shell here rather than the page calling its sibling
+    # directly, for the same reason every other jump is: a page reaching
+    # into another page is how two pages end up disagreeing about which
+    # record is selected.
+    find_page = pages.get("Find Text")
+    browser_page = pages.get("All Game Data")
+    if find_page is not None and browser_page is not None:
+        def _locate(table, key):
+            # The tab is opened FIRST and unconditionally. Selecting the row
+            # can fail - a hit past the row cap genuinely is not on screen -
+            # and when it does, the person should still be looking at the
+            # right table with the reason written on it, rather than at the
+            # search results wondering whether the button did anything.
+            window.open_tab("All Game Data")
+            browser_page.show_table_row(table, key)
+        find_page.locate_requested.connect(_locate)
 
     # Items' two jumps go through the same shell call. They are separate
     # signals rather than one `navigate_requested` because their payloads

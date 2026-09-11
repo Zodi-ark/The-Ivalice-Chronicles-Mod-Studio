@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QRect, QSize
+from PySide6.QtCore import QEvent, QRect, QSize
 from PySide6.QtWidgets import QLayout, QSizePolicy, QWidget
 
 #: A column wide enough for `[x] Label(200) [value] note`, with the note
@@ -107,7 +107,7 @@ class ColumnFormLayout(QLayout):
 
     def __init__(self, parent=None, min_column_width: int = DEFAULT_MIN_COLUMN_WIDTH,
                  spacing: int = 2, column_gap: int = COLUMN_GAP,
-                 max_columns: int = 0):
+                 max_columns: int = 0, hug_contents: bool = False):
         super().__init__(parent)
         self._items: list = []
         self._min_column_width = int(min_column_width)
@@ -126,6 +126,21 @@ class ColumnFormLayout(QLayout):
         # which would have the same effect at today's window sizes and
         # silently stop working on a wider one.
         self._max_columns = max(0, int(max_columns))
+        # Columns no wider than the widest thing in them.
+        #
+        # Normally a column form SHARES the available width equally, which
+        # is right when the rows use it - a prose column wants every pixel.
+        # It is wrong when the children have a natural width and stop there:
+        # two slot sections in a 1368px body were given 674px each while
+        # needing about 530, so 282px of nothing sat between the last "Edit"
+        # button of one column and the first label of the next.
+        #
+        # Hugging also makes the layout deaf to small width changes, which
+        # fixes a second complaint by itself: a scrollbar appearing took
+        # 14px off the viewport and every dropdown in the form visibly
+        # resized. With the columns at their natural width the 14px comes
+        # off the slack instead.
+        self._hug_contents = bool(hug_contents)
         self._columns = 1
         self.setContentsMargins(0, 0, 0, 0)
         self.setSpacing(spacing)
@@ -247,6 +262,15 @@ class ColumnFormLayout(QLayout):
             # is the same fault as a probe that measures itself.
             self._columns = columns
         column_width = (available - gap * (columns - 1)) // columns
+        if self._hug_contents and columns > 1:
+            # NOT floored at `_min_column_width`. That number is the
+            # threshold for allowing a second column at all - "do not split
+            # into columns narrower than this" - and using it as the hug
+            # floor too kept the columns at 660px when their contents wanted
+            # 530, which is the gap this option exists to close. The widest
+            # child's own hint is by definition wide enough for the child.
+            widest = max(item.sizeHint().width() for item in items)
+            column_width = max(1, min(column_width, widest))
 
         heights = [self._height_of(item, column_width) for item in items]
         spacing = self.spacing()
@@ -262,13 +286,21 @@ class ColumnFormLayout(QLayout):
             for index, height in enumerate(heights):
                 remaining_items = len(items) - index
                 remaining_columns = columns - column
-                # The last condition is what stops a tall row early in the
-                # list from filling every column and leaving the final one
-                # empty: never move on if doing so would leave fewer items
-                # than columns still to place.
+                # The last condition stops a tall row early in the list from
+                # filling every column and leaving the final one empty:
+                # never move on if doing so would leave a later column with
+                # nothing to put in it.
+                #
+                # `>=`, not `>`. With two items and two columns - a tall
+                # Abilities section and a collapsed R/S/M one - the strict
+                # form read "1 > 1" and refused to advance, so the pair
+                # stacked in column zero while the layout reported two
+                # columns and the second stood empty. Moving the LAST item
+                # into the LAST column leaves nothing behind it, which is
+                # precisely the case the guard should allow.
                 if (column < columns - 1 and used > 0
                         and used + height > target
-                        and remaining_items > remaining_columns - 1):
+                        and remaining_items >= remaining_columns - 1):
                     column += 1
                     used = 0
                 assignment.append(column)
@@ -304,15 +336,36 @@ class ColumnFormBody(QWidget):
     def __init__(self, parent=None,
                  min_column_width: int = DEFAULT_MIN_COLUMN_WIDTH,
                  spacing: int = 2, margins: tuple = (0, 0, 0, 0),
-                 max_columns: int = 0):
+                 max_columns: int = 0, hug_contents: bool = False):
         super().__init__(parent)
         self.form = ColumnFormLayout(self, min_column_width=min_column_width,
-                                     spacing=spacing, max_columns=max_columns)
+                                     spacing=spacing, max_columns=max_columns,
+                                     hug_contents=hug_contents)
         self.form.setContentsMargins(*margins)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
     def add_row(self, widget: QWidget) -> None:
+        # Watched, so hiding a row collapses the space it held.
+        #
+        # `_live_items` already skips hidden rows, so the LAYOUT was right -
+        # but the body's minimum height is cached from the last
+        # `heightForWidth`, and nothing recomputed it when a row's
+        # visibility changed. Hiding a Comment row left a row-shaped gap
+        # where it had been, which reads as the toggle half-working.
+        #
+        # Done here rather than asked of each page: three pages own column
+        # bodies and a fourth will, and "remember to invalidate" is the kind
+        # of instruction that gets followed twice out of three times.
+        widget.installEventFilter(self)
         self.form.addWidget(widget)
+
+    def eventFilter(self, watched, event) -> bool:            # noqa: N802
+        if event.type() in (QEvent.Show, QEvent.Hide, QEvent.ShowToParent,
+                            QEvent.HideToParent):
+            self.form.invalidate()
+            self.updateGeometry()
+            self._sync_height()
+        return super().eventFilter(watched, event)
 
     def set_min_column_width(self, width: int) -> None:
         self.form.set_min_column_width(width)

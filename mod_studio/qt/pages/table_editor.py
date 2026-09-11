@@ -24,7 +24,7 @@ from html import escape
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QScrollArea,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -36,8 +36,9 @@ from ..widgets.actions import (
     set_empty_state)
 from ..widgets.field_rows import (
     DropdownFieldRow,
-    CollapsibleSection, FlagFieldPanel, NumericFieldRow,
+    CollapsibleSection, FlagFieldPanel, NumericFieldRow, split_words,
 )
+from ..widgets.form_scroll import FormScrollArea
 
 # A field's value is text in the XML, so the editor needs a range. Anything
 # not named here gets a byte's worth, which is what the great majority of
@@ -116,6 +117,132 @@ USAGE_LIST_LIMIT = 12
 # about what the row does: every item defaults to it, and what it means is
 # that the item grants no equip bonus at all.
 ROW_NAME_OVERRIDES = {"item_equip_bonus": {0: "No bonus"}}
+
+#: How wide the row list is.
+#:
+#: 260px until rows started being named by what they do, at which point 27
+#: of the 85 Equip Bonus rows no longer fitted and were cut mid-word. 340px
+#: is the measured answer: with the shortened connectives and the usage
+#: suffix below, the longest label is 309px against 312px of usable width,
+#: and nothing is clipped. The form gives up 80px it has to spare.
+LIST_WIDTH = 340
+
+# -- naming a row by what it does ---------------------------------------------
+#
+# 84 of the 85 Equip Bonus rows have no name in the file, so the list read
+# "001 - (unnamed) (1 item)" 84 times. The row's own fields say what it is,
+# so the list says it instead: "001 - MA +2 (1 item)".
+#
+# **FFTPatcher was checked first, as the bundled community reference.** It
+# contributes two name lists here (`EncounterNames.txt`,
+# `AbilityEffectNames.txt`) and neither covers this table; its own
+# equivalent tab lists these entries by index with no descriptive label
+# either. There was nothing to reuse, so this is derived from the data.
+#
+# The wording is short forms of what the FORM beside the list already calls
+# these fields, not a second vocabulary invented here - but it IS a second
+# copy of the field list, so `test_qt_table_editor` asserts it covers every
+# field in the spec. A hand-kept list with no check is the thing this
+# project has got wrong three times.
+
+#: `field -> stat shown in the label`. The form says "MA Bonus"; a list row
+#: has no room for the word "Bonus" 19 times over.
+_BONUS_STATS = {
+    "PABonus": "PA", "MABonus": "MA", "SpeedBonus": "Speed",
+    "MoveBonus": "Move", "JumpBonus": "Jump",
+}
+
+#: `field -> (phrase, what the values are)`. The plural noun is only used
+#: when there are too many values to name.
+#: The phrases are the SHORT forms. "Immune to Charm, Confuse" and
+#: "Starts with Invisible" read better in prose and did not fit: the list is
+#: 340px and a third of the rows overflowed it before the four longest
+#: connectives lost a word each. The form beside the list still says "Immune
+#: Status" in full; this is the scanning view, not the editing one.
+_BONUS_FLAGS = {
+    "InnateStatus": ("Innate", "statuses"),
+    "ImmuneStatus": ("Immune", "statuses"),
+    "StartingStatus": ("Starts", "statuses"),
+    "AbsorbElements": ("Absorbs", "elements"),
+    "NullifyElements": ("Nullifies", "elements"),
+    "HalveElements": ("Halves", "elements"),
+    "WeakElements": ("Weak", "elements"),
+    "StrongElements": ("Strong", "elements"),
+}
+
+#: Fields that are simply on or off, shown by name when on.
+_BONUS_SWITCHES = {"BoostJP": "Boost JP"}
+
+#: The strings this table uses for "nothing here", across its three kinds
+#: of field. Compared lower-cased.
+_BONUS_EMPTY = {"", "0", "none", "false"}
+
+#: How many values inside ONE field are named before switching to a count.
+#: Measured: `ImmuneStatus` on row 071 holds **eighteen** statuses, which
+#: named in full is a list row nobody can read. Two is the largest number
+#: that keeps "Immune to Sleep, Blind" - a real and useful row - intact.
+_BONUS_VALUES_NAMED = 2
+
+#: How many fields are named before switching to "+N more". Measured across
+#: the shipped table: 56 of 85 rows do exactly one thing and 76 do one or
+#: two, so this only ever bites the tail. At three it truncates ONE row of
+#: 85 and the longest label is 43 characters; at two it truncates seven and
+#: saves a single character. Three, on that measurement.
+_BONUS_EFFECTS_NAMED = 3
+
+#: Between effects. A comma cannot be the separator at both levels: with one,
+#: row 041 read "PA +2, MA +1, Innate Shell, Protect" and there is no way to
+#: see that the last two are one effect. The middle dot is what this
+#: interface already separates facts with on All Game Data.
+_BONUS_JOIN = " \u00b7 "
+
+
+def equip_bonus_effects(values: dict, field_order,
+                        values_named: int = _BONUS_VALUES_NAMED) -> list:
+    """
+    The short phrases describing what a bonus row does, in field order.
+
+    `values` is the row's effective values - the file's, with any pending
+    edit already applied - so the caller decides what "current" means and
+    this stays a pure function of what it is handed.
+    """
+    phrases = []
+    for field_name in field_order:
+        raw = str(values.get(field_name, "")).strip()
+        if raw.lower() in _BONUS_EMPTY:
+            continue
+        if field_name in _BONUS_STATS:
+            phrases.append(f"{_BONUS_STATS[field_name]} +{raw}")
+        elif field_name in _BONUS_FLAGS:
+            phrase, noun = _BONUS_FLAGS[field_name]
+            parts = [p.strip() for p in raw.split(",") if p.strip()]
+            if len(parts) <= values_named:
+                phrases.append(f"{phrase} {', '.join(parts)}")
+            else:
+                phrases.append(f"{phrase} {len(parts)} {noun}")
+        elif field_name in _BONUS_SWITCHES:
+            phrases.append(_BONUS_SWITCHES[field_name])
+        else:
+            # A field the vocabulary above does not know. Named rather than
+            # dropped, because a row whose only effect is an unknown field
+            # would otherwise read "(no effect)" - which is a false
+            # statement about the row, and worse than an ugly one.
+            phrases.append(split_words(field_name))
+    return phrases
+
+
+def equip_bonus_descriptor(values: dict, field_order) -> str:
+    """A row's effects as one line, or "(no effect)" when it has none."""
+    phrases = equip_bonus_effects(values, field_order)
+    if not phrases:
+        # True of 8 rows, and a better thing to tell someone than
+        # "(unnamed)": it answers the question they are actually asking,
+        # which is whether this row is worth opening.
+        return "(no effect)"
+    if len(phrases) <= _BONUS_EFFECTS_NAMED:
+        return _BONUS_JOIN.join(phrases)
+    shown = _BONUS_JOIN.join(phrases[:_BONUS_EFFECTS_NAMED])
+    return f"{shown} +{len(phrases) - _BONUS_EFFECTS_NAMED} more"
 
 
 def equip_bonus_usage(state) -> dict:
@@ -213,6 +340,14 @@ class TableEditorPage(QWidget):
         # so building an 85-row list is one pass over the item table, not
         # eighty-five.
         self.shows_usage = table_key == "item_equip_bonus"
+        # Whether this table's rows are named by what they DO.
+        #
+        # A separate flag from `shows_usage` even though both are true of
+        # exactly one table today. They answer different questions - "does
+        # anything point at this row" and "what does this row do" - and a
+        # second table wanting one without the other would otherwise have to
+        # untangle them first.
+        self.describes_rows = table_key == "item_equip_bonus"
         self._usage: dict = {}
 
         outer = QVBoxLayout(self)
@@ -245,7 +380,7 @@ class TableEditorPage(QWidget):
         self.search.textChanged.connect(self._filter_list)
         left.addWidget(self.search)
         self.list = QListWidget()
-        self.list.setFixedWidth(260)
+        self.list.setFixedWidth(LIST_WIDTH)
         self.list.currentItemChanged.connect(self._on_selection)
         left.addWidget(self.list, 1)
         split.addLayout(left)
@@ -286,9 +421,7 @@ class TableEditorPage(QWidget):
         self.empty_note.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         right.addWidget(self.empty_note)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         form = QVBoxLayout(holder)
         form.setContentsMargins(4, 4, 4, 4)
@@ -484,9 +617,25 @@ class TableEditorPage(QWidget):
             item = self.list.item(i)
             record = by_id.get(item.data(Qt.UserRole))
             if record is not None:
-                item.setText(self._item_for(record).text())
+                self._dress_item(item, record)
         if self.current_id is not None:
             self._show_usage(self.current_id)
+
+    def _effective_values(self, record) -> dict:
+        """
+        The record's values with this session's pending edits applied.
+
+        The record objects come from the XML and never change - edits live
+        in `state.item_table_edits`. A label built from the record alone is
+        therefore correct exactly until somebody edits the row, which is the
+        half of this that is easy to forget: a list entry disagreeing with
+        the form beside it is worse than "(unnamed)".
+        """
+        values = dict(getattr(record, "values", {}) or {})
+        edits = (self.state.item_table_edits.get(self.table_key, {})
+                 .get(record.item_id, {}))
+        values.update(edits)
+        return values
 
     def display_name(self, record) -> str:
         """The row's name, with the table's own overrides applied."""
@@ -494,19 +643,86 @@ class TableEditorPage(QWidget):
             record.item_id)
         if override:
             return override
-        return getattr(record, "name", "") or "(unnamed)"
+        name = getattr(record, "name", "") or ""
+        if name:
+            return name
+        if self.describes_rows:
+            return equip_bonus_descriptor(self._effective_values(record),
+                                          self.spec.field_order)
+        return "(unnamed)"
+
+    def _label_for(self, record) -> str:
+        """
+        The row's text in the list.
+
+        Browsing 85 rows to find one worth editing means knowing which are
+        in use, and that is why a usage suffix is here at all. What changed
+        is WHICH rows carry one: 78 of the 85 are worn by exactly one item,
+        so "(1 item)" was near-constant text taking about 30% of every row's
+        width while saying almost nothing. The suffix now marks only what is
+        worth marking - unused, or worn by several - and the common case
+        spends its width on the name instead.
+
+        Nothing is lost by it: `_tooltip_for` spells the usage out in full
+        on hover, and the detail pane's "Used by" line always names the
+        items outright.
+        """
+        label = f"{record.item_id:03d} - {self.display_name(record)}"
+        if not self.shows_usage:
+            return label
+        users = self._usage.get(record.item_id, [])
+        if not users:
+            return f"{label}  \u00b7 unused"
+        if len(users) > 1:
+            return f"{label}  \u00b7 {len(users)} items"
+        return label
+
+    def _tooltip_for(self, record) -> str:
+        """
+        The whole truth, on hover, for whatever the row had to shorten.
+
+        A list row names at most three effects and at most two values inside
+        one of them, so "+2 more" and "Immune 18 statuses" are both real
+        losses of detail. Hovering is where they come back, which is what
+        lets the row itself stay short enough to read.
+        """
+        if not self.describes_rows:
+            return ""
+        # Every value, not the two a list row has room for. This is the
+        # whole point of the tooltip: "Immune 18 statuses" is readable and
+        # lossy, and hovering is where the eighteen come back. Without the
+        # argument the tooltip repeated the row verbatim and recovered
+        # nothing.
+        phrases = equip_bonus_effects(self._effective_values(record),
+                                      self.spec.field_order,
+                                      values_named=999)
+        lines = [f"{record.item_id:03d} - "
+                 + (" \u00b7 ".join(phrases) if phrases else "(no effect)")]
+        if self.shows_usage:
+            users = self._usage.get(record.item_id, [])
+            lines.append("Worn by: " + (", ".join(n for _id, n in users)
+                                        if users else "nothing"))
+        return "\n".join(lines)
+
+    def _dress_item(self, item: QListWidgetItem, record) -> None:
+        """
+        Puts the text and the tooltip on a row.
+
+        One place, because three call sites need them and they must agree:
+        the initial build, `refresh_usage` after an item is repointed, and
+        `_relabel_current` after the bonus itself is edited. Two of those
+        used to copy `_item_for(...).text()`, which took the text and left
+        the tooltip behind.
+        """
+        item.setText(self._label_for(record))
+        tip = self._tooltip_for(record)
+        if tip:
+            item.setToolTip(tip)
 
     def _item_for(self, record) -> QListWidgetItem:
-        label = f"{record.item_id:03d} - {self.display_name(record)}"
-        if self.shows_usage:
-            # How many items wear this bonus, on the row itself. Browsing 85
-            # rows to find one worth editing means knowing which are in use,
-            # and 60 of them are not used by anything.
-            users = self._usage.get(record.item_id, [])
-            label += (f"  ({len(users)} item{'s' if len(users) != 1 else ''})"
-                      if users else "  (unused)")
-        item = QListWidgetItem(label)
+        item = QListWidgetItem()
         item.setData(Qt.UserRole, record.item_id)
+        self._dress_item(item, record)
         return item
 
     def _filter_list(self, text: str) -> None:
@@ -596,8 +812,37 @@ class TableEditorPage(QWidget):
             self.state.item_table_edits.pop(self.table_key, None)
 
         self._mark_edited()
+        self._relabel_current()
         self._update_counter()
         self.edits_changed.emit()
+
+    def _relabel_current(self) -> None:
+        """
+        Re-derives the current row's label after an edit.
+
+        A label derived once at load is a label that goes stale the moment
+        somebody changes the value it was derived from - change MA Bonus
+        from 2 to 4 and the list still says "MA +2" beside a form saying 4.
+
+        Follows `refresh_usage`, which is where this page already rebuilds
+        list text after an edit: the row's own item is rewritten in place
+        rather than the list being cleared, so the selection and the scroll
+        position stay where the person left them. The "Editing:" heading
+        carries the same name and is rebuilt with it, for the same reason -
+        two places showing one name is two places to go stale.
+        """
+        if not self.describes_rows or self.current_id is None:
+            return
+        record = {r.item_id: r for r in self.records()}.get(self.current_id)
+        if record is None:
+            return
+        name = self.display_name(record)
+        self.editing_label.setText(f"Editing: {self.current_id:03d} - {name}")
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item.data(Qt.UserRole) == self.current_id:
+                self._dress_item(item, record)
+                break
 
     def _mark_edited(self) -> None:
         table = self.state.item_table_edits.get(self.table_key, {})
@@ -615,5 +860,7 @@ class TableEditorPage(QWidget):
             f"{edited} of {self.list.count()} have pending edits")
 
 
-    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
-        apply_view_toggles(self.rows.values(), hide_notes, hide_unknown)
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
+        apply_view_toggles(self.rows.values(), hide_notes, hide_unknown,
+                           hide_comments)

@@ -50,7 +50,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from ... import constants as c
@@ -58,15 +58,37 @@ from ... import item_xml_io as ix
 from ... import nxd_data
 from ... import paths
 from ..widgets.actions import (
+    ViewToggles, apply_view_toggles,
     TransientNote, mark_edited, page_intro, select_list_row, set_empty_state)
 from ..widgets.field_rows import (
     CollapsibleSection, NumericFieldRow, TextFieldRow)
+from ..widgets.form_scroll import FormScrollArea
 
 # Rows are loaded on demand, but a table with tens of thousands of rows
 # would still build tens of thousands of list items. The cap is generous
 # enough to cover every table in a vanilla conversion and is stated in the
 # interface when it bites, rather than silently truncating.
 MAX_ROWS = 5000
+
+# The one-line value box's width cap, and the budget a column's own data is
+# measured against to decide whether it needs a taller box. One constant, so
+# the cap and the test that a value exceeds it cannot drift apart.
+TEXT_VALUE_WIDTH = 620
+
+# The tallest a long box on this page may grow before it scrolls instead.
+#
+# The shared default is three, chosen for job descriptions. It is far too
+# low here: the longest string on this page is 707 characters, and a box
+# capped at three showed half of it with no sign there was more.
+#
+# Eight, from the measured worst case rather than from the English one. At
+# a 1920 window the longest ENGLISH field needs five lines - but the same
+# row of `Profit-ja` needs seven, because Japanese wraps to more lines AND
+# each line is taller (17-18px against Latin's 15). Six looked sufficient
+# until the Japanese table was opened. Eight covers every table in the
+# shipped database with a line to spare; past it the box scrolls, which is
+# what a full text area is supposed to do.
+LONG_ROWS = 8
 
 # Marks an XML table in the picker. Not a cosmetic label: `_is_xml` reads it
 # to decide which store an edit belongs in, so the two kinds cannot end up
@@ -123,6 +145,19 @@ class DataBrowserPage(QWidget):
             "own tab. Pick a table, then a row. Only the fields you tick are "
             "written into your mod.",
             self.table_controls))
+
+        # The view toggles reach this page too.
+        #
+        # It was never subscribed - the shell draws the toggles above every
+        # tab including this one, and ticking them here did nothing. That
+        # went unnoticed while they only hid notes and unknown fields, which
+        # this page has few of. "Hide comments" is ON by default, so an
+        # unsubscribed page shows a Comment row that every other tab hides,
+        # which is the sort of difference a person notices and cannot
+        # explain.
+        self.view_toggles = ViewToggles()
+        self.view_toggles.follow_only()
+        self.view_toggles.changed.connect(self._apply_view)
 
         self.action_note = TransientNote()
         outer.addWidget(self.action_note)
@@ -185,9 +220,7 @@ class DataBrowserPage(QWidget):
         right.addWidget(self.curated_holder)
         self.curated_holder.setVisible(False)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         self.form = QVBoxLayout(holder)
         self.form.setContentsMargins(4, 4, 4, 4)
@@ -235,6 +268,17 @@ class DataBrowserPage(QWidget):
         if table == c.NXD_OVERRIDE_ENTRY_TABLE:
             return "Encounters"
         return None
+
+    def view_toggles_used(self) -> tuple:
+        """
+        `(notes, unknown, comments)` - which toggles mean anything here.
+
+        This page shows every column of every table exactly as stored - that
+        is its whole purpose - so hiding "unknown" ones would defeat it,
+        and it carries no field notes to hide. Comments it does have, and
+        they are hidden here like everywhere else.
+        """
+        return (False, False, True)
 
     def refresh_records(self) -> None:
         has_data = bool(getattr(self.state, "nxd_sqlite_path", None))
@@ -307,6 +351,56 @@ class DataBrowserPage(QWidget):
                 f"will be typing numbers.")
             self.curated_button.setText(f"Open {owner} \u2192")
         self._load_table()
+
+    def show_table_row(self, table: str, key=None) -> bool:
+        """
+        Lands on `table`, at `key` when it is given.
+
+        This is the destination for Find Text. A search result that names
+        "Job-de row 68" is a lookup; landing on the editable field is the
+        fix, and this is the half only this page can do.
+
+        Deliberately NOT called `select_record`. `MainWindow.open_tab` tries
+        `select_record` on whatever page it lands on, and every other page's
+        version takes a record id - a method with the same name here taking
+        a table AND a key would be a trap for the next caller, which is the
+        same rule that made `LongTextEdit` answer to `QLineEdit`'s names.
+
+        Returns whether it worked, so the caller can say "that row is not
+        reachable" instead of appearing to do nothing.
+        """
+        index = self.table_box.findText(table, Qt.MatchFixedString)
+        if index < 0:
+            self.action_note.setText(
+                f"{table} is not in this database.")
+            return False
+        # The row filter is cleared first. An item that matches the picked
+        # row can be hidden by a filter left over from a previous look, and
+        # a jump that lands on an invisible row is indistinguishable from a
+        # jump that did nothing. Reachable is not visible.
+        self.search.clear()
+        if index != self.table_box.currentIndex():
+            self.table_box.setCurrentIndex(index)
+        else:
+            # Already on this table, so `_on_table_chosen` returns early and
+            # the list is whatever it was. Nothing to reload; fall through
+            # to the row selection below.
+            pass
+        if key is None:
+            return True
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if item.data(Qt.UserRole) == key:
+                select_list_row(self.list, i)
+                self.load_row(key)
+                self.list.scrollToItem(item)
+                return True
+        # A real outcome rather than a silent miss: the row list is capped
+        # at MAX_ROWS, so a hit past that cap genuinely is not on screen.
+        self.action_note.setText(
+            f"Row {key} of {table} is past the first {MAX_ROWS} rows shown "
+            f"here, so it could not be selected.")
+        return False
 
     def _go_to_curated(self) -> None:
         owner = self._curated_tab_for(self.table or "")
@@ -465,6 +559,9 @@ class DataBrowserPage(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         self.field_rows = {}
+        # Computed once per table, not once per row - see `_long_text_columns`
+        # for why the current row is the wrong thing to measure.
+        long_columns = self._long_text_columns()
         for column in columns:
             if column in keys:
                 # The key identifies the row. Editing it would not rename
@@ -474,11 +571,24 @@ class DataBrowserPage(QWidget):
             if kind == "number":
                 row = NumericFieldRow(column, column, NUMERIC_MIN, NUMERIC_MAX)
             else:
-                # Capped THROUGH the row, not by setting `row.value`'s
-                # maximum afterwards: the row has to know, or it cannot
-                # absorb the space the box then refuses. See the note on
-                # `max_value_width`.
-                row = TextFieldRow(column, column, max_value_width=620)
+                is_long = column in long_columns
+                # `multiline=True` unconditionally, `long` per column.
+                #
+                # `multiline` is the page-level opt-in to taller boxes and
+                # `long` is the per-column decision; `TextFieldRow` ANDs
+                # them, so passing multiline on a short column changes
+                # nothing. This page can afford the height where the denser
+                # tabs could not: its form is one column against the full
+                # width of the right pane, with room to spare under it.
+                #
+                # A long box is NOT width-capped. `max_value_width` exists to
+                # stop a one-line box stretching to the window edge and
+                # dragging its row with it; a text area wants the width,
+                # because every pixel of it is one fewer wrapped line.
+                row = TextFieldRow(
+                    column, column,
+                    max_value_width=0 if is_long else TEXT_VALUE_WIDTH,
+                    long=is_long, multiline=True, rows=LONG_ROWS)
             row.edited.connect(self._on_field_edited)
             self.field_rows[column] = row
             self.fields_column.addWidget(row)
@@ -487,8 +597,74 @@ class DataBrowserPage(QWidget):
         # has no setter, so the header button is set directly.
         # Rebuilding the section per table would reset its expanded
         # state every time someone switched tables.
+        # Rebuilt rows start visible, so the toggles have to be re-applied
+        # every time the field list changes - not only when they change.
+        self._apply_view(*self.view_toggles.state())
         self.section.header.setText(
-            f"Fields \u2014 {self._xml_filename if self._is_xml else self.table}")
+            # The table, never the file it came from. Section headings across
+            # Edit Game Data used to carry the source file - "Abilities -
+            # JobCommandData.xml" - which is an implementation detail of the
+            # game, not a name for what you are editing. The picker directly
+            # above already says which table this is.
+            f"Fields \u2014 {self.table}")
+
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
+        """Pushes the toggles at this page's rows."""
+        apply_view_toggles(self.field_rows.values(), hide_notes, hide_unknown,
+                           hide_comments)
+
+    def _long_text_columns(self) -> set:
+        """
+        Columns whose own data will not fit on one line.
+
+        Reported from a screenshot of `Profit-en`: five of its seven text
+        boxes were showing a fraction of their contents, cut mid-word, with
+        no way to read the rest. Those five hold 317 to 707 characters. The
+        other two hold 29.
+
+        **Decided from the data, and from the whole table.** Two reasons,
+        both of which rule out the alternatives:
+
+        - The column NAME cannot say. `_column_kind` right below already
+          decides text-vs-number from the data for exactly this reason, and
+          length is the same problem one step further on. On this page the
+          names are `Unknown8` and `UnknownC`; there is nothing to read.
+        - The CURRENT ROW cannot say either. Sizing each box to the row you
+          happen to be looking at reshapes the whole form every time you
+          click a different row, and a form that moves under the pointer is
+          worse than one that clips. Measuring the whole table gives one
+          stable answer per column - which is the same rule already written
+          down for this project as "check the longest string in the TABLE,
+          not the longest in English".
+
+        **Measured in pixels, not characters.** `horizontalAdvance` on the
+        real string, because a character count is not a width: 40 characters
+        of Chinese in `GuidePage-cs` are roughly twice the width of 40 of
+        English, and this page is where those tables are read. The widest
+        string per column is found by length first and measured once, so
+        this costs one measurement per column rather than one per value.
+
+        Measured against the shipped 1.5.2 database: 73% of the 1138 text
+        columns hold nothing longer than 40 characters and stay on one line.
+        About a fifth are promoted, and the worst single table - Profit - has
+        five. The vertical cost is bounded and small, which is what makes
+        this affordable on a page whose form is one column.
+        """
+        widest = {}
+        for values in self.rows_by_key.values():
+            for name, value in values.items():
+                if isinstance(value, str) and len(value) > len(widest.get(name, "")):
+                    widest[name] = value
+        if not widest:
+            return set()
+        metrics = self.fontMetrics()
+        # The usable width inside the box, not the box: a QLineEdit spends a
+        # few pixels either side on its frame and text margin, and a value
+        # that "just fits" the outer width is the one that gets clipped.
+        budget = max(80, TEXT_VALUE_WIDTH - 16)
+        return {name for name, text in widest.items()
+                if metrics.horizontalAdvance(text) > budget}
 
     def _column_kind(self, column: str) -> str:
         """

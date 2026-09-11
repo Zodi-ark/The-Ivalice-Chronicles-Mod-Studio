@@ -54,7 +54,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ... import constants as c
@@ -66,6 +66,7 @@ from ..widgets.actions import (
     copy_edits_to_languages, ensure_language_loaded, mark_edited,
     language_order, set_empty_state)
 from ..widgets.field_rows import CollapsibleSection, NumericFieldRow
+from ..widgets.form_scroll import FormScrollArea
 from .poaching import BoolFieldRow, TextFieldRow
 
 # Read from Nenkai's layout, not restated. This one was already correct -
@@ -289,9 +290,7 @@ class EncountersPage(QWidget):
         # for recovery, not a delete button. The note pointed at a feature
         # that does not exist anywhere and never should.
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         form = QVBoxLayout(holder)
         form.setContentsMargins(4, 4, 4, 4)
@@ -408,9 +407,7 @@ class EncountersPage(QWidget):
         self.chara_empty_note.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         right.addWidget(self.chara_empty_note)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         form = QVBoxLayout(holder)
         form.setContentsMargins(4, 4, 4, 4)
@@ -811,7 +808,8 @@ class EncountersPage(QWidget):
         self.counter.setText(f"{edited} of {total} encounter rows edited")
 
 
-    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
         """
         BOTH row containers.
 
@@ -826,4 +824,4 @@ class EncountersPage(QWidget):
         """
         apply_view_toggles(
             list(self.rows.values()) + list(self.chara_rows.values()),
-            hide_notes, hide_unknown)
+            hide_notes, hide_unknown, hide_comments)

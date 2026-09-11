@@ -29,17 +29,26 @@ tidied away.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import QEvent, QRect, Qt, Signal
+from PySide6.QtGui import QTextCursor, QTextDocument, QTextLayout
 from PySide6.QtWidgets import (
+    QPlainTextDocumentLayout,
+    QApplication,
     QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox,
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from .layout_settle import settle_layout
 from .field_widths import (
+    is_comment_field,
     LONG_TEXT_ROWS, is_long_text, long_text_height, short_text_width,
 )
+
+
+# Line geometry is the same for every box sharing a font and script, and
+# `_resize_to_content` runs on every resize - so it is measured once.
+_LINE_GEOMETRY = {}
 
 
 class LongTextEdit(QPlainTextEdit):
@@ -100,6 +109,158 @@ class LongTextEdit(QPlainTextEdit):
         spacing = max(1, self.fontMetrics().lineSpacing())
         return max(1, self.viewport().height() // spacing)
 
+    def _wrap_width(self) -> int:
+        """
+        The width the text is actually wrapped at.
+
+        The viewport is NOT it. `QPlainTextEdit` keeps a document margin -
+        4px each side by default - and wraps inside that, so measuring at
+        the viewport width counts one fewer line than the box will draw.
+        The symptom is a box exactly one line short of its contents with a
+        scrollbar that moves by a pixel or two: found on `Profit-en`, where
+        a 619-character field measured 4 lines at the viewport's 1078px and
+        needed 5 at the 1070px it wraps at.
+        """
+        margin = int(self.document().documentMargin())
+        return max(1, self.viewport().width() - 2 * margin)
+
+    def _wrapped_lines(self, width: int) -> int:
+        """
+        How many lines the text takes when wrapped to `width`.
+
+        Laid out with `QTextLayout` - the same line breaker the widget
+        itself uses - rather than estimated.
+
+        Two earlier attempts were both wrong, and wrong quietly:
+
+        - `document().size().height()` is only right once the document's
+          layout has run at the width being asked about, and this is called
+          from `resizeEvent`, i.e. exactly when the width just changed and
+          the layout has not caught up. On `Profit-en` three fields sized
+          themselves for two lines while needing three and stayed there
+          after a forced recompute, because the document was answering for
+          the width it previously had.
+        - `QFontMetrics.boundingRect(..., TextWordWrap, ...)` does not break
+          lines identically to the widget, and came out one line short on a
+          619-character field at 1070px - which looks like success until you
+          notice the scrollbar can still move.
+
+        Asking `QTextLayout` removes the guesswork: it is what wraps the
+        text, so it cannot disagree with itself.
+        """
+        text = self.toPlainText()
+        if not text:
+            return 1
+        font = self.font()
+        total = 0
+        # Split on newlines first: each is its own paragraph to the widget,
+        # and a paragraph is laid out independently.
+        for paragraph in text.split("\n"):
+            layout = QTextLayout(paragraph, font)
+            layout.beginLayout()
+            while True:
+                line = layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(max(1, int(width)))
+                total += 1
+            layout.endLayout()
+        return max(1, total)
+
+    def _content_metrics(self):
+        """
+        `(wrapped line count, pixel height, pixels per line)` for the text.
+
+        Read from the document's own block rectangles rather than computed
+        as `lineSpacing * rows`.
+
+        **Because `lineSpacing` is the LATIN line height.** Measured on the
+        real database: with the height formula multiplying font metrics, the
+        padding that stopped `Profit-en` clipping (+16) still left every
+        long field of `Profit-ja` clipped, because a line of Japanese is
+        taller than the font's reported line spacing and no single constant
+        can cover both. This page is where the Japanese, Korean and Chinese
+        tables are read, so getting that wrong is not an edge case here.
+
+        `blockBoundingRect` is what the widget will actually draw, in the
+        script it is actually holding.
+        """
+        document = self.document()
+        document.setTextWidth(self._wrap_width())
+        layout = document.documentLayout()
+        lines = max(1, int(document.size().height()))
+        height = 0.0
+        block = document.begin()
+        while block.isValid():
+            height += layout.blockBoundingRect(block).height()
+            block = block.next()
+        if height <= 0:
+            height = self.fontMetrics().lineSpacing() * lines
+        return lines, height, height / lines
+
+    def _block_count(self) -> int:
+        """How many newline-separated blocks the text has, at least one."""
+        document = self.document()
+        count = 0
+        block = document.begin()
+        while block.isValid():
+            count += 1
+            block = block.next()
+        return max(1, count)
+
+    def _line_geometry(self):
+        """
+        `(height of the first line, height each further line adds)`.
+
+        **A line is not worth the same as the line before it.** Measured in
+        this widget's own font: a block holding ONE line is 20px, and a
+        block holding two is 36 - so the first line costs 20 and each one
+        after costs 16. Multiplying an average by the row count therefore
+        gives a different answer depending on how many lines the text
+        happens to have, which is the bug this fixes: a one-line
+        description clamped up to the two-row floor came out 50px while a
+        genuinely two-line description came out 46, and Job Commands showed
+        both, four pixels apart, one under the other.
+
+        Measured off a scratch document rather than the widget's own,
+        because the widget's document holds the user's text and must not be
+        disturbed to measure it. The sample is taken FROM that text so the
+        answer is script-aware - Latin measures (20, 16) and Japanese
+        (21, 17), and a page showing Japanese should get Japanese line
+        heights.
+
+        Cached on the font and the sample: this runs on every resize.
+        """
+        text = self.toPlainText()
+        first_line = next((ln for ln in text.split("\n") if ln.strip()), "")
+        # Short enough that it cannot wrap in an unconstrained document,
+        # long enough to carry the script.
+        sample = first_line[:40] or "X"
+        key = (self.font().toString(), sample)
+        cached = _LINE_GEOMETRY.get(key)
+        if cached is not None:
+            return cached
+
+        document = QTextDocument()
+        document.setDocumentLayout(QPlainTextDocumentLayout(document))
+        document.setDefaultFont(self.font())
+
+        def total(value: str) -> float:
+            document.setPlainText(value)
+            layout = document.documentLayout()
+            height = 0.0
+            block = document.begin()
+            while block.isValid():
+                height += layout.blockBoundingRect(block).height()
+                block = block.next()
+            return height
+
+        one = total(sample)
+        two = total(sample + "\n" + sample)
+        result = (one or 1.0, max(1.0, two - one))
+        _LINE_GEOMETRY[key] = result
+        return result
+
     def _resize_to_content(self) -> None:
         """Set the height to the wrapped line count, clamped."""
         # `_sizing` because setting the height triggers a resize, which asks
@@ -107,14 +268,25 @@ class LongTextEdit(QPlainTextEdit):
         # the first keystroke.
         if self._sizing:
             return
-        document = self.document()
-        # The document has to be told the width it is wrapping at, or it
-        # reports the unwrapped single-line height and every box collapses
-        # to the floor - which looks exactly like the feature not working.
-        document.setTextWidth(max(1, self.viewport().width()))
-        lines = int(document.size().height())
-        lines = max(self._min_rows, min(self._max_rows, lines))
-        target = long_text_height(self.fontMetrics(), lines)
+        lines, _height, _per_line = self._content_metrics()
+        blocks = self._block_count()
+        shown = max(self._min_rows, min(self._max_rows, lines))
+        # One formula for every case, so two boxes showing the same number
+        # of rows are the same height whatever their text.
+        #
+        # A BLOCK - a run of text between newlines - always costs a full
+        # first-line height; only the lines a block WRAPS onto cost the
+        # step. Ignoring that clipped every field on `Profit-en`, whose
+        # descriptions carry real newlines: four separate blocks cost
+        # 4 x 20 and the model charged 20 + 3 x 16, sixteen pixels short.
+        first, step = self._line_geometry()
+        starts = min(blocks, shown)
+        # The chrome the text sits inside, measured rather than assumed: the
+        # frame either side and the document's own margin top and bottom.
+        # The old formula used a flat +12, which happened to equal these for
+        # the default style and stopped being right the moment either moved.
+        chrome = 2 * self.frameWidth() + 2 * int(self.document().documentMargin())
+        target = int(round(starts * first + (shown - starts) * step)) + chrome
         if target == self.height():
             return
         self._sizing = True
@@ -241,6 +413,10 @@ class NumericFieldRow(QWidget):
         super().__init__(parent)
         self.field_name = field_name
         self.is_unknown = unknown
+        # Set beside `is_unknown` on purpose: the two are the same kind
+        # of fact about a row, and a row type that knew one but not the
+        # other would silently ignore the toggle for its own fields.
+        self.is_comment = is_comment_field(field_name, label)
         self._loading = False
 
         row = QHBoxLayout(self)
@@ -364,7 +540,8 @@ class NumericFieldRow(QWidget):
 
     # -- view toggles -------------------------------------------------------
 
-    def apply_display(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
         """
         The two view toggles.
 
@@ -377,7 +554,57 @@ class NumericFieldRow(QWidget):
         # whether or not it has a note and whether or not notes are on.
         self.note.setText("" if hide_notes else self._note_text)
         self.note.setToolTip("" if hide_notes else self._note_text)
-        self.setVisible(not (hide_unknown and self.is_unknown))
+        self.setVisible(not (hide_unknown and self.is_unknown)
+                        and not (hide_comments and self.is_comment))
+
+
+def _align_to_first_line(control, *widgets) -> None:
+    """
+    Nudges labels down so they sit on the control's first line of text.
+
+    The offset is measured off the control rather than assumed, because it
+    differs by control: a `QLineEdit` centres one line in its box, and a
+    `QPlainTextEdit` starts at its frame plus its document margin. A
+    constant would be right for one of them.
+
+    A top margin rather than `AlignVCenter`, because centring is wrong the
+    moment the control is taller than one line - against a five-line
+    description a centred label floats beside line three.
+    """
+    text_top = 0
+    if isinstance(control, QPlainTextEdit):
+        text_top = control.frameWidth() + int(control.document().documentMargin())
+    else:
+        hint = control.sizeHint().height()
+        line = control.fontMetrics().height()
+        text_top = max(0, (hint - line) // 2)
+    line_height = 0
+    for widget in widgets:
+        if widget is None:
+            continue
+        if isinstance(widget, QCheckBox):
+            # A checkbox has no text here - just the indicator, which Qt
+            # centres in whatever height the widget has. So a top margin
+            # moves it half as far, exactly as it does a QLabel's text, and
+            # the tick ended up five pixels above the line it belongs to.
+            #
+            # Given a height whose CENTRE is the text line, the indicator
+            # lands on it by construction and there is no margin arithmetic
+            # to be wrong: centre of `2 * text_top + line` is
+            # `text_top + line / 2`, which is the middle of the first line
+            # of text.
+            widget.setFixedHeight(2 * max(0, text_top) + line_height)
+            continue
+        # A QLabel centres its text in whatever height the layout gives it,
+        # so a top margin of N moves the TEXT by about N/2 and the answer
+        # depends on a height that is not known yet. Top-aligning the text
+        # first makes the margin mean exactly what it says.
+        if isinstance(widget, QLabel):
+            widget.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            line_height = widget.fontMetrics().height()
+        margins = widget.contentsMargins()
+        widget.setContentsMargins(margins.left(), max(0, text_top),
+                                  margins.right(), margins.bottom())
 
 
 class TextFieldRow(QWidget):
@@ -426,6 +653,10 @@ class TextFieldRow(QWidget):
         super().__init__(parent)
         self.field_name = field_name
         self.is_unknown = unknown
+        # Set beside `is_unknown` on purpose: the two are the same kind
+        # of fact about a row, and a row type that knew one but not the
+        # other would silently ignore the toggle for its own fields.
+        self.is_comment = is_comment_field(field_name, label)
         self._note_text = note
         self._loading = False
         # `multiline` is a ROLLOUT GATE, and it is temporary.
@@ -517,6 +748,19 @@ class TextFieldRow(QWidget):
         # minimum that left the name box about 150px while a two-line note
         # sat beside it.
         row.addWidget(self.value, 3)
+        # The label and tick sit on the value's FIRST LINE OF TEXT.
+        #
+        # Both were added with `Qt.AlignTop`, which puts them at the top of
+        # the row - but a control's text does not start at the top of the
+        # control. A QLineEdit centres its text in a 26px box; a
+        # QPlainTextEdit starts its text below a frame and a document
+        # margin. So "Name" sat about five pixels above "Fundaments", and
+        # "Description" above its own first line, while "Ability slot 1" -
+        # a dropdown whose label and control happen to be the same height -
+        # lined up perfectly. Three rows in a column, two of them out by
+        # five pixels, is exactly the kind of thing that reads as sloppy
+        # without the reader being able to say why.
+        _align_to_first_line(self.value, self.label, self.include)
 
         # Same shape as NumericFieldRow's, down to the size policy, because
         # the two sit in the same column on the Jobs page and any
@@ -586,6 +830,18 @@ class TextFieldRow(QWidget):
 
         self.setProperty("unknownField", bool(unknown))
 
+    def showEvent(self, event):                               # noqa: N802
+        """
+        Re-aligns the label once the control has its real height.
+
+        A `QLineEdit`'s height comes from the stylesheet's padding, which
+        is not applied when the row is built - so at construction the hint
+        and the drawn height differ and `Name` sat two pixels above its own
+        text while the multi-line rows were exact.
+        """
+        super().showEvent(event)
+        _align_to_first_line(self.value, self.label, self.include)
+
     @property
     def included(self) -> bool:
         return self.include.isChecked()
@@ -624,10 +880,12 @@ class TextFieldRow(QWidget):
         if not self._loading:
             self.edited.emit()
 
-    def apply_display(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
         self.note.setText("" if hide_notes else self._note_text)
         self.note.setToolTip("" if hide_notes else self._note_text)
-        self.setVisible(not (hide_unknown and self.is_unknown))
+        self.setVisible(not (hide_unknown and self.is_unknown)
+                        and not (hide_comments and self.is_comment))
 
 
 class NamedNumberRow(QWidget):
@@ -671,6 +929,10 @@ class NamedNumberRow(QWidget):
         super().__init__(parent)
         self.field_name = field_name
         self.is_unknown = unknown
+        # Set beside `is_unknown` on purpose: the two are the same kind
+        # of fact about a row, and a row type that knew one but not the
+        # other would silently ignore the toggle for its own fields.
+        self.is_comment = is_comment_field(field_name, label)
         self._loading = False
         self._id_to_index: dict[int, int] = {}
 
@@ -771,10 +1033,12 @@ class NamedNumberRow(QWidget):
             return
         self.edited.emit()
 
-    def apply_display(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
         self.note.setText("" if hide_notes else self._note_text)
         self.note.setToolTip("" if hide_notes else self._note_text)
-        self.setVisible(not (hide_unknown and self.is_unknown))
+        self.setVisible(not (hide_unknown and self.is_unknown)
+                        and not (hide_comments and self.is_comment))
 
 
 class AnnotatedNumberRow(NumericFieldRow):
@@ -847,6 +1111,17 @@ class CollapsibleSection(QWidget):
     def _on_toggled(self, on: bool) -> None:
         self.header.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
         self.body.setVisible(on)
+        self._settle()
+
+    def _settle(self) -> None:
+        """
+        Finish the layout now, so no half-laid-out frame can be painted.
+
+        See `layout_settle.settle_layout` for why this is needed and why it
+        walks up. The same call is made by the view toggles, which hide rows
+        down a page and had the identical flash.
+        """
+        settle_layout(self)
 
     def set_expanded(self, on: bool) -> None:
         self.header.setChecked(on)
@@ -990,7 +1265,8 @@ class FlagFieldPanel(QWidget):
         else:
             self.edited.emit()
 
-    def apply_display(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
         """Flag panels carry no notes and are never unknown fields."""
         return
 
@@ -1236,5 +1512,6 @@ class DropdownFieldRow(QWidget):
             return
         self.edited.emit()
 
-    def apply_display(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
         return

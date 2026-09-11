@@ -26,6 +26,11 @@ SETTINGS_FILENAME = "ui_settings.json"
 DEFAULTS = {
     "hide_field_notes": False,
     "hide_unknown_fields": False,
+    # ON by default. A Comment column exists on 134 tables and is the
+    # game team's own scratch notes, not something a modder edits - so
+    # showing it costs a row on every record for a field almost nobody
+    # wants. The toggle is there for the people who do.
+    "hide_comments": True,
     "export_show_all_sections": False,
     # Compare Versions: show every column of a changed row, not just the
     # columns that differ. Off by default because it's a lot of text; on

@@ -1284,8 +1284,7 @@ JOBCOMMAND_NXD_NUMERIC_FIELDS = {
 
 JOBCOMMAND_NXD_FIELD_NOTES = {
     "Description2": (
-        "A second description. Only one row uses it in most languages, two "
-        "in German, so most commands leave it empty."
+        "Only one row uses it in most languages."
     ),
     "IconId": "0-27 in vanilla.",
     "Unknown14": "0-226, 114 distinct values in vanilla. Purpose unknown.",

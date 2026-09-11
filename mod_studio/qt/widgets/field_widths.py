@@ -81,6 +81,24 @@ _LONG_EXCEPTIONS = frozenset({
 })
 
 
+def is_comment_field(field_name: str, label: str = "") -> bool:
+    """
+    Whether this row is a `Comment` field.
+
+    `Comment` is a column on 134 of the game's tables and always carries
+    that exact name, so this is a name test rather than a heuristic - and
+    it lives here, beside `is_long_text`, so a row's kind is decided in one
+    place rather than at each of the seven pages that build rows.
+
+    The label is checked too, for the same reason `is_long_text` checks it:
+    a page may present the column under a longer heading.
+    """
+    for text in (field_name or "", label or ""):
+        if text.strip().lower().split(" (")[0] == "comment":
+            return True
+    return False
+
+
 def is_long_text(field_name: str, label: str = "") -> bool:
     """
     Whether a string column holds prose rather than a name.

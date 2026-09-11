@@ -35,6 +35,7 @@ from ... import (
     audiomog, ff16tools, game_install, modconfig, nxd_data, paths, reloaded)
 from ... import sound_data as sd, texture_data as td
 from ..widgets.field_rows import CollapsibleSection
+from ..widgets.form_scroll import FormScrollArea
 from ..workers import Worker, run_in_thread
 
 # The groups come from `game_install.CONTENT_GROUPS`, not a list written
@@ -76,7 +77,7 @@ class AdoptFolderWorker(Worker):
             # thing to have, and the user needs to know which tabs it leaves
             # unavailable.
             self.log.emit(
-                "No nxd folder in there, so the data tabs stay unavailable. "
+                "No nxd folder in there, so Game Data stays unavailable. "
                 "If you unpacked with a filter, unpack again with Game data "
                 "ticked.")
 
@@ -511,9 +512,7 @@ class SetupPage(QWidget):
         # as a broken layout rather than as more to see.
         page = QVBoxLayout(self)
         page.setContentsMargins(0, 0, 0, 0)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll = FormScrollArea()
         self.scroll.setFrameShape(QScrollArea.NoFrame)
         page.addWidget(self.scroll)
 
@@ -2067,7 +2066,7 @@ class SetupPage(QWidget):
         self._show_progress(determinate=True)
         self._say(
             "Unpacking your game files. This takes several minutes and only "
-            "reads them - nothing is modified.", "muted")
+            "reads them.", "muted")
 
         # Rebuilt against the folder about to be used, not whatever was
         # selected when Advanced options was last opened. Applying one
@@ -2235,10 +2234,20 @@ class SetupPage(QWidget):
                     "game's version string, so it's filed by date. You can "
                     "rename it later if you know which build it was.")
             else:
+                # States what happened, and stops there.
+                #
+                # It used to go on to explain what the copy is FOR, naming
+                # Review Changes. That tab does read the archive - it opens
+                # every saved version to score a baseline - but saying so
+                # here was wrong twice over: a log line is a record of what
+                # the tool just did, not a place to teach a feature, and
+                # Review Changes' own description on the tab makes no
+                # mention of saved copies, so the two surfaces described the
+                # same thing differently. Compare Versions is the tab whose
+                # whole subject is saved versions, and it says so itself.
                 self._log(
-                    f"Archived {entry.file_count} game data file(s) as "
-                    f"{entry.version} ({entry.size_mb:.1f} MB) so mods built "
-                    f"on it can be updated after the game patches.")
+                    f"Saved a copy of your {entry.version} game data "
+                    f"({entry.file_count} files, {entry.size_mb:.1f} MB).")
         except Exception as exc:                              # noqa: BLE001
             self._log(f"Couldn't archive this version's game data: {exc}")
 
@@ -2439,14 +2448,31 @@ class SetupPage(QWidget):
 
         A tab with no data behind it is named as unavailable rather than
         left to look broken when someone clicks it.
+
+        **Textures and Sounds are counted, not tested for existence.**
+        Reported from real use: unpacking with only "Game data" ticked still
+        said "Ready to edit: Game Data, Textures, Sounds." Neither
+        `scan_texture_tree` nor `scan_sound_tree` ever returns None - when
+        they find nothing they return an empty ROOT NODE, so
+        `texture_tree is not None` is true the moment a scan has run,
+        whatever it found. The check was asking whether a scan happened when
+        the question is whether it found anything. Both modules already ship
+        the counter that answers it.
+
+        `getattr` with a default is kept for the attributes themselves
+        because a mod opened before a scan legitimately has neither - but
+        the default is now 0 through the counter rather than a truthy
+        object.
         """
         ready, missing = [], []
+        # "Game Data" rather than "the data tabs": the other two entries are
+        # tab names and this one was not, so the sentence read as a list of
+        # two proper nouns and a description. The sidebar says "Edit Game
+        # Data"; this is the same thing under the same name.
         (ready if self.state.mod_sqlite_path or self.state.nxd_unpack_dir
-         else missing).append("the data tabs")
-        (ready if getattr(self.state, "texture_tree", None) is not None
-         else missing).append("Textures")
-        (ready if getattr(self.state, "sound_tree", None) is not None
-         else missing).append("Sounds")
+         else missing).append("Game Data")
+        (ready if self._texture_count() else missing).append("Textures")
+        (ready if self._sound_count() else missing).append("Sounds")
 
         parts = []
         if ready:
@@ -2454,6 +2480,28 @@ class SetupPage(QWidget):
         if missing:
             parts.append("Not set up yet: " + ", ".join(missing) + ".")
         self._say(" ".join(parts) or "Nothing set up yet.", "muted")
+
+    def _texture_count(self) -> int:
+        """How many textures the scan actually found. 0 if it never ran."""
+        tree = getattr(self.state, "texture_tree", None)
+        if tree is None:
+            return 0
+        try:
+            return td.count_textures(tree)
+        except Exception:                                     # noqa: BLE001
+            # An unreadable tree is reported as nothing found rather than as
+            # ready. Overstating is the failure being fixed here.
+            return 0
+
+    def _sound_count(self) -> int:
+        """How many sound archives the scan actually found. 0 if never run."""
+        tree = getattr(self.state, "sound_tree", None)
+        if tree is None:
+            return 0
+        try:
+            return sd.count_sounds(tree)
+        except Exception:                                     # noqa: BLE001
+            return 0
 
     def _say(self, text: str, role: str) -> None:
         self.status.setText(text)

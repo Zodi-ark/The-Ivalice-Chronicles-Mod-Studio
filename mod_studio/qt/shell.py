@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from .. import paths, ui_settings
 from . import theme, win_native
+from .widgets.hairline_splitter import set_hairline_colours
 from .pages.settings import SettingsPage
 from .widgets.actions import ViewToggles
 
@@ -52,6 +53,12 @@ EDIT_TABS = [
     # the game data is reachable through this one searchable page. See
     # pages/data_browser.py for why that is the shape.
     "All Game Data",
+    # Beside All Game Data, because it is the page every result opens into.
+    # This one answers the other half of "which table do I want" - the half
+    # where the person knows the TEXT and not the table. A twelfth row costs
+    # nothing here for the reason recorded above: these are sidebar rows,
+    # not a strip, and the strip is what could not fit an eleventh.
+    "Find Text",
 ]
 
 
@@ -519,6 +526,17 @@ class MainWindow(QMainWindow):
         # and the sidebar entry cannot disagree.
         if 0 <= index < len(EDIT_TABS):
             self.tab_title.setText(EDIT_TABS[index])
+        # Which of the three view toggles this tab can actually act on.
+        #
+        # Asked of the PAGE, not looked up from a list of tab names here.
+        # A list in the shell is a second place that has to be edited when
+        # a page changes, and the twelve-entry version of exactly that has
+        # already been wrong three times in this project. A page that says
+        # nothing gets all three, so adding a page needs no change here.
+        page = self.tab_stack.widget(index)
+        relevant = getattr(page, "view_toggles_used", None)
+        self.view_toggles.show_only(*(relevant() if callable(relevant)
+                                      else (True, True, True)))
         edit_index = STEPS.index("Edit Game Data")
         if self.stack.currentIndex() != edit_index:
             self._select(edit_index)
@@ -712,12 +730,19 @@ class MainWindow(QMainWindow):
         if column.contentsMargins().top() != reach:
             column.setContentsMargins(0, reach, 0, 0)
 
-    def changeEvent(self, event):
+    def changeEvent(self, event):                           # noqa: N802
+        # THE ONLY `changeEvent` ON THIS CLASS. There were two, and Python
+        # does not complain about that - the second simply won, so the
+        # `_sync_updates_inset()` call below had not run since the day the
+        # second one was added and the updates column kept whichever inset
+        # it was built with. Found by AST-diffing the class's members, not
+        # by reading: two definitions 50 lines apart look like two different
+        # methods.
         super().changeEvent(event)
-        # Maximise and restore change how far the caption reaches, so the
-        # inset has to follow. A value read once at build time is right in
-        # whichever state the window happened to start in and wrong in the
-        # other.
+        # Maximise, restore and fullscreen all change how far the caption
+        # reaches, so both insets have to follow. A value read once at build
+        # time is right in whichever state the window happened to start in
+        # and wrong in the other.
         if event.type() == QEvent.WindowStateChange:
             self._sync_updates_inset()
             self._sync_caption_inset()
@@ -763,13 +788,6 @@ class MainWindow(QMainWindow):
         self._root.setContentsMargins(
             margins.left(), wanted, margins.right(), margins.bottom())
 
-    def changeEvent(self, event):                           # noqa: N802
-        super().changeEvent(event)
-        if event.type() == event.Type.WindowStateChange:
-            # Going in or out of fullscreen is the moment the client area
-            # moves, so it is the moment the inset has to change with it.
-            self._sync_caption_inset()
-
     def _restyle(self) -> None:
         # Told before the stylesheet is built, so anything that PAINTS a
         # row - the edited-row marking on the file trees and the list rows -
@@ -786,6 +804,14 @@ class MainWindow(QMainWindow):
                 app.setPalette(theme.qt_palette(self._appearance))
             app.setStyleSheet(theme.stylesheet(self._appearance,
                                                self._material_active))
+            # The splitter handle paints itself, so it cannot pick up
+            # `border-color` from the stylesheet the way a styled widget
+            # would. Handing the two colours over HERE - beside the
+            # stylesheet, from the same palette - is what stops the painted
+            # hairline and the styled panel edges drifting to different
+            # greys when the appearance changes.
+            palette = theme.APPEARANCES[self._appearance]
+            set_hairline_colours(palette["border"], palette["accent"])
 
     def apply_theme(self) -> None:
         self._restyle()

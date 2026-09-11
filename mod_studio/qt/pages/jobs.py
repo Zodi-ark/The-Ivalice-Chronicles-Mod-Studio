@@ -23,7 +23,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
+    QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout,
     QWidget,
 )
 
@@ -43,6 +43,8 @@ from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, FlagFieldPanel, NumericFieldRow,
     TextFieldRow,
 )
+from ..widgets.form_scroll import FormScrollArea
+from ..widgets.layout_settle import settle_layout
 
 #: Lines given to a prose box in the single-column Name and Description
 #: section. Five because the longest real job description - `Job-de`, 427
@@ -238,12 +240,7 @@ class JobsPage(QWidget):
         self.no_reference.setVisible(False)
         right.addWidget(self.no_reference)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        # Vertical only. The form must fit the width it is given; if it
-        # ever does not, that is a layout bug to fix rather than something
-        # to hand the user a sideways scroll bar for.
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         self.form = QVBoxLayout(holder)
         self.form.setContentsMargins(4, 4, 4, 4)
@@ -316,7 +313,7 @@ class JobsPage(QWidget):
             self.text_rows[field_name] = row
             text_body.add_row(row)
         self.text_section = CollapsibleSection(
-            "Name and Description \u2014 job.<lang>.nxd", text_body,
+            "Name and Description", text_body,
             expanded=True)
         self.sections = [self.text_section]
         self.form.addWidget(self.text_section)
@@ -342,7 +339,7 @@ class JobsPage(QWidget):
             self.text_rows[field_name] = row
             numeric_body.add_row(row)
         self.numeric_section = CollapsibleSection(
-            "Other job.<lang>.nxd fields", numeric_body, expanded=False)
+            "Other fields", numeric_body, expanded=False)
         self.sections.append(self.numeric_section)
         self.form.addWidget(self.numeric_section)
 
@@ -360,7 +357,7 @@ class JobsPage(QWidget):
             self.rows[field_name] = row
             stats.add_row(row)
         self.sections.append(
-            CollapsibleSection("Basic Stats \u2014 JobData.xml", stats,
+            CollapsibleSection("Basic Stats", stats,
                                expanded=True))
         self.form.addWidget(self.sections[-1])
 
@@ -725,14 +722,15 @@ class JobsPage(QWidget):
 
     # -- view toggles ---------------------------------------------------------
 
-    def _on_view_changed(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def _on_view_changed(self, hide_notes: bool, hide_unknown: bool,
+                         hide_comments: bool) -> None:
         # BOTH row dictionaries. Passing only `self.rows` would leave the
         # text rows showing their notes with notes turned off, and "Unknown
         # 2" visible with unknown fields hidden - the identical-container-
         # next-door fault, on the page that just grew the second container.
         apply_view_toggles(
             list(self.rows.values()) + list(self.text_rows.values()),
-            hide_notes, hide_unknown)
+            hide_notes, hide_unknown, hide_comments)
         # Hiding the notes makes every row narrower, so more columns fit.
         # The layout is told the new minimum rather than being taught about
         # notes: a row's width requirement is the only thing it needs to
@@ -741,6 +739,16 @@ class JobsPage(QWidget):
         width = NARROW_MIN_COLUMN_WIDTH if hide_notes else DEFAULT_MIN_COLUMN_WIDTH
         for body in self.column_bodies:
             body.set_min_column_width(width)
+        # This page keeps changing the layout AFTER `apply_view_toggles` has
+        # settled it, so it has to settle again itself. Without this, 82
+        # widgets were still moving once the click returned - the toggles
+        # were settled and then the column width changed under them.
+        #
+        # From the BODIES, not from the page. Walking up from the page never
+        # re-lays the bodies, which are below it and are the things that just
+        # changed; settling the page alone left all 82 still moving.
+        for body in self.column_bodies:
+            settle_layout(body)
 
     def _apply_display(self) -> None:
         """Applies whatever the toggles currently say. Saving is the bar's job."""

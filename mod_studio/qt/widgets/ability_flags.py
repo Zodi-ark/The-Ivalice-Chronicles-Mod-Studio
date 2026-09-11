@@ -127,7 +127,8 @@ class _PackedBytePanel(QWidget):
         else:
             self.edited.emit()
 
-    def apply_display(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
         return
 
 

@@ -31,6 +31,7 @@ from ... import item_xml_io as ix
 from ... import constants as c
 from ... import modconfig, paths, reloaded, xml_io
 from ... import sound_data as sd, texture_data as td
+from ..widgets.hairline_splitter import HairlineSplitter
 from ..widgets.field_rows import CollapsibleSection
 from ..nxd_export import NxdExportWorker
 from ..widgets.flow_layout import FlowLayout
@@ -225,18 +226,59 @@ class ExportPage(QWidget):
         # want different widths depending on what is being done - a mod with
         # forty changed files needs room to list them, and one being filled
         # in for the first time does not.
-        split = QSplitter(Qt.Horizontal)
+        split = HairlineSplitter(Qt.Horizontal)
         split.setChildrenCollapsible(False)
 
         # The banner sits above the details it is talking about, which is
         # where Tkinter puts it - a warning under the fields it applies to
         # is read after they have already been filled in.
+        #
+        # Split into two parts, which is what makes the two halves of the
+        # page share a bottom edge:
+        #
+        #   the FORM scrolls inside the left pane
+        #   the status line and the log are pinned under it
+        #
+        # Before this, everything was one column inside the page's own
+        # scroll area, so expanding "Publishing and Reloaded-II options"
+        # made the left column taller, made the splitter taller, and pushed
+        # the whole page's floor down - Mod Contents grew with it and the
+        # log ended up somewhere below the fold. The floor moved because
+        # the collapsible section was driving the height.
+        #
+        # Now the pane's height is authoritative and the form takes what is
+        # left, so expanding a section scrolls the form instead of resizing
+        # the page. Status and log stay on the floor because they are the
+        # two things a person looks at WHILE exporting, and a log that
+        # scrolls out of view during the job it is reporting is the one
+        # arrangement worse than no log.
+        form_column = QVBoxLayout()
+        form_column.setContentsMargins(0, 0, 0, 0)
+        form_column.addWidget(self._build_opened_mod_banner())
+        form_column.addWidget(self._details_box())
+        form_column.addWidget(self._build_publishing_section())
+        form_column.addWidget(self._destination_box())
+        form_column.addStretch(1)
+        form_holder = QWidget()
+        form_holder.setLayout(form_column)
+
+        # No visible scrollbar, and still scrollable.
+        #
+        # `ScrollBarAlwaysOff` hides the bar without removing the scroll
+        # RANGE, so the wheel and the keyboard still move it - which is the
+        # requirement. A bar here would be a second vertical scrollbar a few
+        # hundred pixels from the page's own, and two scrollbars side by
+        # side is how a reader stops trusting either.
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_scroll.setWidget(form_holder)
+
         left_column = QVBoxLayout()
         left_column.setContentsMargins(0, 0, 0, 0)
-        left_column.addWidget(self._build_opened_mod_banner())
-        left_column.addWidget(self._details_box())
-        left_column.addWidget(self._build_publishing_section())
-        left_column.addWidget(self._destination_box())
+        left_column.addWidget(self.left_scroll, 1)
 
         self.status = QLabel("")
         self.status.setProperty("role", "muted")
@@ -247,7 +289,6 @@ class ExportPage(QWidget):
         self.log.setReadOnly(True)
         self.log.setMaximumHeight(120)
         left_column.addWidget(self.log)
-        left_column.addStretch(1)
 
         left_holder = QWidget()
         left_holder.setLayout(left_column)
@@ -267,6 +308,15 @@ class ExportPage(QWidget):
         self.missing_note = QLabel("")
         self.missing_note.setProperty("role", "attention")
         self.missing_note.setWordWrap(True)
+        # Hidden while it has nothing to say.
+        #
+        # An empty QLabel is not a zero-height widget: it keeps a line of
+        # height and the layout's spacing above it. Reported from a
+        # screenshot - Mod Contents stopped 26px short of the floor the log
+        # and the splitter shared, and the culprit was this label holding
+        # a line open for a warning that was not there. `_say_missing`
+        # shows it again the moment there is one.
+        self.missing_note.setVisible(False)
         right_column.addWidget(self.missing_note)
         right_holder = QWidget()
         right_holder.setLayout(right_column)
@@ -1064,7 +1114,10 @@ class ExportPage(QWidget):
                     f"{nxd_edits} name/description and override edit(s) need "
                     f"{' and '.join(missing)} to be written into the mod. "
                     f"Set that up under General Setup.")
-        self.missing_note.setText(" ".join(parts))
+        text = " ".join(parts)
+        self.missing_note.setText(text)
+        # Shown only when it says something - see where it is built.
+        self.missing_note.setVisible(bool(text))
 
     # -- exporting -----------------------------------------------------------------
 

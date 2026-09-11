@@ -43,7 +43,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QSizePolicy, QSplitter,
+    QListWidgetItem, QPushButton, QSizePolicy, QSplitter,
     QVBoxLayout, QWidget,
 )
 
@@ -60,6 +60,7 @@ from ..widgets.actions import (
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, FlagFieldPanel, NumericFieldRow,
 )
+from ..widgets.form_scroll import FormScrollArea
 from ..widgets.texture_slot import InlineTextureSlot
 from .poaching import TextFieldRow
 
@@ -275,10 +276,8 @@ class ItemsPage(QWidget):
 
     # -- the three sub-tabs -------------------------------------------------
 
-    def _scrollable(self, body: QWidget) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    def _scrollable(self, body: QWidget) -> FormScrollArea:
+        scroll = FormScrollArea()
         # Keep the body at the height its contents want, and scroll past it.
         #
         # Without this the seven Type checkboxes were squashed into the
@@ -979,10 +978,12 @@ class ItemsPage(QWidget):
 
     # -- view toggles -------------------------------------------------------
 
-    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
         rows = (list(self.text_rows.values()) + list(self.base_rows.values())
                 + list(self.linked_rows.values()) + [self.shops_row])
-        apply_view_toggles(rows, hide_notes, hide_unknown)
+        apply_view_toggles(rows, hide_notes, hide_unknown,
+                           hide_comments)
 
 
 class _EnumRow(DropdownFieldRow):

@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSortFilterProxyModel, Qt
+from PySide6.QtCore import QSortFilterProxyModel, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QProgressBar, QPushButton, QTableView, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea, QTableView,
+    QVBoxLayout, QWidget,
 )
 
 from .. import theme
@@ -65,8 +66,327 @@ class RowTintProxy(QSortFilterProxyModel):
         return super().data(index, role)
 
 
+class SavedVersionsDialog(QDialog):
+    """
+    Manage the archived game versions: see them, delete them, add one.
+
+    **Why deleting is offered here rather than only in General Setup.**
+    General Setup has an automatic prune - "remove what nothing needs,
+    keeping the most recent five" - which is housekeeping and deliberately
+    cannot be aimed. This is the other half: a person who knows they will
+    never look at v1.4.0 again should be able to say so. Compare Versions
+    is where the list of versions is already a thing on screen, so it is
+    where a person goes looking for it.
+
+    **The rule that has to survive.** A version some mod was built against
+    must not be deletable, or the next Review Changes run on that mod loses
+    its baseline and silently substitutes another - which is worth exactly
+    the size of the patch in between. `version_archive.versions_in_use` is
+    what knows this, and it is asked here rather than re-derived.
+
+    The row is DISABLED with the reason written next to it rather than
+    accepting the tick and refusing later. A delete that refuses after the
+    fact teaches people the button is unreliable; a row that explains
+    itself teaches them how the archive works.
+    """
+
+    def __init__(self, state=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Saved game versions")
+        self.setMinimumWidth(560)
+        self._state = state
+        self._boxes = {}          # version -> (QCheckBox, ArchivedVersion)
+        self._changed = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 18)
+        outer.setSpacing(10)
+
+        blurb = QLabel(
+            "Mod Studio saves a copy of your game data each time you unpack. "
+            "Compare Versions uses these to show what a patch changed, and "
+            "Review Changes uses them to tell a mod's own edits apart from "
+            "the game's.")
+        blurb.setWordWrap(True)
+        blurb.setProperty("role", "muted")
+        outer.addWidget(blurb)
+
+        self.list_area = QScrollArea()
+        self.list_area.setWidgetResizable(True)
+        self.list_area.setFrameShape(QScrollArea.NoFrame)
+        holder = QWidget()
+        self.list_column = QVBoxLayout(holder)
+        self.list_column.setContentsMargins(0, 0, 0, 0)
+        self.list_column.setSpacing(6)
+        self.list_area.setWidget(holder)
+        outer.addWidget(self.list_area, 1)
+
+        self.result = QLabel("")
+        self.result.setWordWrap(True)
+        self.result.setProperty("role", "muted")
+        outer.addWidget(self.result)
+
+        actions = QHBoxLayout()
+        self.archive_button = QPushButton("Save the game data I already unpacked")
+        self.archive_button.clicked.connect(self.archive_current)
+        actions.addWidget(self.archive_button)
+        actions.addStretch(1)
+        self.delete_button = QPushButton("Delete ticked")
+        self.delete_button.clicked.connect(self.delete_ticked)
+        self.delete_button.setEnabled(False)
+        actions.addWidget(self.delete_button)
+        outer.addLayout(actions)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(self.accept)
+        outer.addWidget(buttons)
+
+        self.refresh()
+
+    # -- reading the archive ------------------------------------------------
+
+    def _in_use(self) -> set:
+        """
+        Versions something still depends on.
+
+        Two sources, both from the engine: the version currently installed,
+        and every stamped mod sitting in the Reloaded-II Mods folder. A
+        failure to read either is treated as "everything is in use" rather
+        than "nothing is" - guessing that an archive is disposable is the
+        direction that destroys something irreplaceable.
+        """
+        from ... import migration, reloaded, version_archive
+
+        try:
+            installed = ""
+            converted = getattr(self._state, "nxd_sqlite_path", None)
+            if converted:
+                installed = migration.read_game_version(Path(converted)) or ""
+            root = getattr(self._state, "reloaded_ii_path", None)
+            mods = (reloaded.effective_mods_folder(Path(root)) if root
+                    else reloaded.configured_mods_folder())
+            return version_archive.versions_in_use(mods, installed)
+        except Exception:                                     # noqa: BLE001
+            return None
+
+    def refresh(self) -> None:
+        """Redraws the list from the archive on disk."""
+        from ... import version_archive
+
+        while self.list_column.count():
+            item = self.list_column.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                # `takeAt` unmanages a widget but leaves it parented and
+                # visible, and `deleteLater` only queues the destruction -
+                # so without this the old rows go on painting over the new
+                # ones. Same fault All Game Data had.
+                widget.setParent(None)
+                widget.deleteLater()
+        self._boxes = {}
+
+        try:
+            entries = version_archive.list_archived()
+        except Exception as exc:                              # noqa: BLE001
+            self.list_column.addWidget(QLabel(f"Couldn't read the archive: {exc}"))
+            return
+
+        in_use = self._in_use()
+        unreadable = in_use is None
+        if unreadable:
+            in_use = set()
+
+        if not entries:
+            empty = QLabel(
+                "No saved versions yet. Unpacking your game files on General "
+                "Setup saves one, or use the button below if you have already "
+                "unpacked.")
+            empty.setWordWrap(True)
+            empty.setProperty("role", "muted")
+            self.list_column.addWidget(empty)
+            self._sync_delete_button()
+            return
+
+        for entry in entries:
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            box = QCheckBox(entry.version)
+            box.toggled.connect(self._sync_delete_button)
+            line.addWidget(box)
+            line.addSpacing(8)
+
+            detail = f"{entry.file_count} files, {entry.size_mb:.1f} MB"
+            if entry.source:
+                detail += f" - from {entry.source}"
+            note = QLabel(detail)
+            note.setProperty("role", "muted")
+            line.addWidget(note)
+            line.addStretch(1)
+
+            reason = ""
+            if unreadable:
+                reason = "can't check whether a mod needs it"
+            elif version_archive._safe_dirname(entry.version) in in_use:
+                reason = "in use - a mod or your install is built on it"
+            if reason:
+                box.setEnabled(False)
+                box.setToolTip(reason)
+                held = QLabel(reason)
+                held.setProperty("role", "muted")
+                line.addWidget(held)
+            else:
+                self._boxes[entry.version] = (box, entry)
+            self.list_column.addWidget(row)
+
+        self.list_column.addStretch(1)
+        self._sync_delete_button()
+
+    def _sync_delete_button(self, *_args) -> None:
+        self.delete_button.setEnabled(bool(self.ticked()))
+
+    def ticked(self) -> list:
+        """The archived versions the user has actually ticked."""
+        return [entry for box, entry in self._boxes.values() if box.isChecked()]
+
+    # -- acting -------------------------------------------------------------
+
+    def delete_ticked(self) -> None:
+        """
+        Deletes exactly what is ticked, through the engine's `apply_prune`.
+
+        A `PrunePlan` is built here rather than a new deletion path being
+        written, because `apply_prune` already survives a locked folder
+        without abandoning the rest, and one deleter is one place for that
+        behaviour to live.
+        """
+        from ... import version_archive
+
+        chosen = self.ticked()
+        if not chosen:
+            return
+        # Re-checked at the moment of deletion, not trusted from when the
+        # list was drawn. A mod can be installed while this dialog is open.
+        in_use = self._in_use()
+        if in_use is None:
+            self.result.setText(
+                "Couldn't confirm which versions mods still need, so nothing "
+                "was deleted.")
+            return
+        blocked = [e for e in chosen
+                   if version_archive._safe_dirname(e.version) in in_use]
+        if blocked:
+            self.result.setText(
+                "Not deleted - now in use by a mod: "
+                + ", ".join(sorted(e.version for e in blocked)) + ".")
+            self.refresh()
+            return
+
+        plan = version_archive.PrunePlan(remove=list(chosen))
+        freed = plan.freed_bytes()
+        try:
+            removed = version_archive.apply_prune(plan)
+        except Exception as exc:                              # noqa: BLE001
+            self.result.setText(f"Couldn't delete: {exc}")
+            return
+        if removed:
+            self._changed = True
+            self.result.setText(
+                f"Deleted {', '.join(sorted(removed))} - {freed / 1_000_000:.1f} MB freed. "
+                f"These cannot be recovered; the game builds they came from "
+                f"are no longer installed.")
+        else:
+            self.result.setText("Nothing was deleted.")
+        self.refresh()
+
+    def archive_current(self) -> None:
+        """
+        Saves the game data already sitting in the unpack folder.
+
+        For anyone who unpacked before this existed, or who cleared the
+        archive. Everything it needs is what General Setup's automatic
+        archive uses, so `archive_unpacked_nxd` is called the same way.
+
+        `clean_unpack` is left None on purpose. General Setup knows whether
+        the unpack included installed mods because it just ran it; here that
+        is genuinely unknown, and unknown must not be recorded as clean -
+        claiming a baseline is mod-free when it might not be makes every
+        diff drawn against it wrong with nothing to show for it.
+        """
+        from ... import migration, version_archive
+
+        unpacked = getattr(self._state, "nxd_unpack_dir", None)
+        if not unpacked:
+            self.result.setText(
+                "No unpacked game files to save. Unpack your game on General "
+                "Setup first.")
+            return
+        nxd_dir = Path(unpacked) / "nxd"
+        if not nxd_dir.is_dir():
+            self.result.setText(
+                f"No nxd folder in {unpacked} - nothing to save. If you "
+                f"unpacked with a filter, unpack again with Game data ticked.")
+            return
+
+        sqlite_path = getattr(self._state, "nxd_sqlite_path", None)
+        self.archive_button.setEnabled(False)
+        try:
+            version = (migration.read_game_version(Path(sqlite_path))
+                       if sqlite_path else None)
+            existing = version_archive.find_archived(version) if version else None
+            entry = version_archive.archive_unpacked_nxd(
+                nxd_dir, version, source=Path(unpacked).name,
+                clean_unpack=None,
+                sqlite_path=Path(sqlite_path) if sqlite_path else None,
+                converter=version_archive.converter_fingerprint(
+                    getattr(self._state, "ff16tools_cli_path", None)),
+            )
+        except Exception as exc:                              # noqa: BLE001
+            self.result.setText(f"Couldn't save it: {exc}")
+            self.archive_button.setEnabled(True)
+            return
+        finally:
+            self.archive_button.setEnabled(True)
+
+        if entry is None:
+            self.result.setText(
+                "Couldn't save it - no .nxd files were found in the unpack "
+                "folder.")
+            return
+        if existing is not None:
+            # `archive_unpacked_nxd` is a no-op on a version already held and
+            # returns the existing manifest, which is right - but reporting
+            # that as "saved" would tell somebody their second copy took.
+            self.result.setText(
+                f"{entry.version} was already saved ({entry.size_mb:.1f} MB). "
+                f"Nothing to do.")
+            return
+        self._changed = True
+        self.result.setText(
+            f"Saved {entry.version} - {entry.file_count} files, "
+            f"{entry.size_mb:.1f} MB.")
+        self.refresh()
+
+    @property
+    def changed(self) -> bool:
+        """Whether the archive on disk is different from when this opened."""
+        return self._changed
+
+
 class ComparePage(QWidget):
-    def __init__(self, versions: dict, dark: bool = False, parent=None):
+    # Emitted when the set of archived versions has changed on disk.
+    #
+    # The page cannot refill its own boxes from here and be correct: an
+    # archived version has to be OPENED to be offered, which is
+    # `app.discover_versions`'s job, and Review Changes chooses from the
+    # same set. So this says "the archive moved" and lets the window
+    # re-discover and hand the result to BOTH pages - otherwise saving a
+    # version here would appear in Compare Versions and not in the tab
+    # beside it. Rule 7: a new artefact gets walked through what consumes it.
+    versions_changed = Signal()
+
+    def __init__(self, versions: dict, dark: bool = False, parent=None,
+                 state=None):
         """
         `versions` maps a version label to the path of its converted
         database - whatever the archive can actually open. The page shows
@@ -78,6 +398,11 @@ class ComparePage(QWidget):
         self._thread = None
         self._comparing = ("", "")
         self._dark = dark
+        # Optional so every existing caller - including four suites that
+        # build the page with a fixed dict of versions - keeps working. The
+        # dialog degrades honestly without it: it can still list and delete,
+        # and says why it cannot save a new one.
+        self._state = state
 
         self.model = ComparisonModel()
         self.proxy = RowTintProxy(dark)
@@ -111,6 +436,12 @@ class ComparePage(QWidget):
         self.compare_button = QPushButton("Compare")
         self.compare_button.clicked.connect(self.start_compare)
         picker.addWidget(self.compare_button)
+        picker.addSpacing(12)
+        # Beside Compare, because the versions this manages are the ones the
+        # two boxes to its left are choosing between.
+        self.manage_button = QPushButton("Saved versions...")
+        self.manage_button.clicked.connect(self.manage_versions)
+        picker.addWidget(self.manage_button)
         picker.addStretch(1)
         self.full_rows = QCheckBox("Show whole rows")
         self.full_rows.toggled.connect(self.model.set_show_full_rows)
@@ -235,6 +566,20 @@ class ComparePage(QWidget):
                 if was and was in labels:
                     box.setCurrentText(was)
         self.compare_button.setEnabled(len(labels) >= 2)
+
+    def manage_versions(self) -> None:
+        """
+        Opens the saved-versions dialog, and reports when it changed anything.
+
+        The signal is emitted after the dialog closes rather than on each
+        action, so a person who deletes three versions and saves one causes
+        one re-discovery rather than four - and re-discovery opens every
+        archive, which is not free.
+        """
+        dialog = SavedVersionsDialog(self._state, self)
+        dialog.exec()
+        if dialog.changed:
+            self.versions_changed.emit()
 
     def set_versions(self, versions: dict) -> None:
         """

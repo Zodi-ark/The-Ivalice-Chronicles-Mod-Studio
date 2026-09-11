@@ -18,7 +18,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from ... import constants as c
@@ -32,9 +32,24 @@ from ..widgets.actions import (
     language_order, mark_edited, select_list_row, page_intro)
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow, TextFieldRow)
+from ..widgets.form_scroll import FormScrollArea
 
 ABILITY_SLOTS = 16
 RSM_SLOTS = 6
+
+
+# The narrowest a slot section may be before the pair stops sharing a row.
+#
+# A slot row is a 200px label, a dropdown and an "Edit" button. Measured on
+# the real page, one needs about 660px to show an ability name without
+# eliding it - so two columns need roughly 1340px of form, which a 1920
+# window has and the 1100px minimum does not.
+SLOT_COLUMN_WIDTH = 560
+
+# The narrowest a slot dropdown may be. Measured against the longest ability
+# name the page can show - "460 - Equip Heavy Armor" - which needs about 230
+# pixels before it starts eliding.
+SLOT_COMBO_WIDTH = 240
 
 
 class JobCommandsPage(QWidget):
@@ -121,9 +136,7 @@ class JobCommandsPage(QWidget):
         self.editing_label.setStyleSheet("font-weight: 600; font-size: 12pt;")
         right.addWidget(self.editing_label)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         form = QVBoxLayout(holder)
         form.setContentsMargins(4, 4, 4, 4)
@@ -206,19 +219,59 @@ class JobCommandsPage(QWidget):
             raw_column.addWidget(row)
         raw_column.addStretch(1)
 
+        # Abilities and R/S/M sit SIDE BY SIDE when the window can hold them.
+        #
+        # Sixteen ability slots and six R/S/M slots stacked one under the
+        # other is about 1100px of form on a page whose right half is wider
+        # than that and almost entirely empty - so the reader scrolls past
+        # sixteen rows to reach six that would have fitted beside them.
+        #
+        # `ColumnFormLayout` already does exactly this decision - it flows
+        # its children into as many columns as the width allows and falls
+        # back to one when it does not - so the two sections go into one
+        # rather than a second width rule being written here. Narrow window,
+        # or R/S/M expanded to its full height: they stack, as before.
+        self.slot_sections = [
+            CollapsibleSection("Abilities", abilities, expanded=True),
+            # Expanded, like Abilities beside it. Collapsed made sense when
+            # it sat UNDER sixteen ability rows and its header was the only
+            # thing you could see without scrolling; now it shares a row
+            # with them and a collapsed column is just an empty half.
+            CollapsibleSection("Reaction / Support / Movement", rsm,
+                               expanded=True),
+        ]
+        # A wider floor for the slot dropdowns, on THESE rows only.
+        #
+        # Hugging sizes a column to its widest child's size hint, and that
+        # hint is built from each widget's minimum - so with the shared
+        # 160px combo minimum the columns hugged down to 526px and the
+        # dropdowns arrived at 160, narrow enough to elide "460 - Equip
+        # Heavy Armor". Raising the floor here rather than in
+        # `DropdownFieldRow` keeps every other page's rows exactly as they
+        # were; this is the only page that puts two slot columns side by
+        # side and therefore the only one where the hint decides a width.
+        for slot_row in self.rows.values():
+            combo = getattr(slot_row, "combo", None)
+            if combo is not None:
+                combo.setMinimumWidth(SLOT_COMBO_WIDTH)
+
+        self.slots_body = slots_body = ColumnFormBody(
+            min_column_width=SLOT_COLUMN_WIDTH, max_columns=2, spacing=8,
+            hug_contents=True)
+        for section in self.slot_sections:
+            slots_body.add_row(section)
+
         self.sections = [
             CollapsibleSection(
-                "Name and Description \u2014 jobcommand.<lang>.nxd",
+                "Name and Description",
                 text_body, expanded=True),
-            CollapsibleSection("Abilities \u2014 JobCommandData.xml",
-                               abilities, expanded=True),
-            CollapsibleSection("Reaction / Support / Movement \u2014 JobCommandData.xml",
-                               rsm, expanded=False),
-            CollapsibleSection("Other jobcommand.<lang>.nxd fields",
+            *self.slot_sections,
+            CollapsibleSection("Other fields",
                                raw_body, expanded=False),
         ]
-        for section in self.sections:
-            form.addWidget(section)
+        form.addWidget(self.sections[0])
+        form.addWidget(slots_body)
+        form.addWidget(self.sections[-1])
         form.addStretch(1)
         scroll.setWidget(holder)
         self.scroll = scroll
@@ -230,7 +283,8 @@ class JobCommandsPage(QWidget):
 
     # -- records -------------------------------------------------------------
 
-    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
         """
         BOTH row dictionaries.
 
@@ -242,7 +296,7 @@ class JobCommandsPage(QWidget):
         """
         apply_view_toggles(
             list(self.rows.values()) + list(self.text_rows.values()),
-            hide_notes, hide_unknown)
+            hide_notes, hide_unknown, hide_comments)
 
     def refresh_records(self) -> None:
         # The saved preference has to be applied on load, not only when the

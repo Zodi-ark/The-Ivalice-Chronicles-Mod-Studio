@@ -27,7 +27,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
     QSizePolicy,
 )
 
@@ -49,6 +49,7 @@ from ..widgets.field_rows import (
     AnnotatedNumberRow, CollapsibleSection, DropdownFieldRow, FlagFieldPanel,
     NamedNumberRow, NumericFieldRow,
 )
+from ..widgets.form_scroll import FormScrollArea
 from ..widgets.texture_slot import InlineTextureSlot
 from .poaching import TextFieldRow
 
@@ -291,9 +292,7 @@ class AbilitiesPage(QWidget):
         self.empty_note.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         right.addWidget(self.empty_note)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         form = QVBoxLayout(holder)
         form.setContentsMargins(4, 4, 4, 4)
@@ -515,7 +514,7 @@ class AbilitiesPage(QWidget):
             CollapsibleSection("Unit animations", animation_body,
                                expanded=False),
             CollapsibleSection("Base stats", stats_body, expanded=False),
-            CollapsibleSection("Other ability.<lang>.nxd fields", raw_body,
+            CollapsibleSection("Other fields", raw_body,
                                expanded=False),
         ]
         for section in self.sections:
@@ -905,13 +904,15 @@ class AbilitiesPage(QWidget):
         self.counter.setText(f"{edited} of {total} abilities edited")
 
 
-    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
         rows = (list(self.text_rows.values())
                 + list(self.override_rows.values())
                 + list(self.animation_rows.values())
                 + list(self.base_stat_rows.values())
                 + [self.effect_row, self.element_panel] + self.flag_groups)
-        apply_view_toggles(rows, hide_notes, hide_unknown)
+        apply_view_toggles(rows, hide_notes, hide_unknown,
+                           hide_comments)
 
 
 class _AbilityTypeRow(DropdownFieldRow):

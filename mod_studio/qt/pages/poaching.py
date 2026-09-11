@@ -23,7 +23,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
     QSizePolicy,
 )
 
@@ -41,6 +41,7 @@ from ..widgets.field_rows import TextFieldRow as _TextFieldRow
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow,
 )
+from ..widgets.form_scroll import FormScrollArea
 
 # The id that means "produces nothing". NOT -1 - see the module docstring.
 PRODUCED_ITEM_NONE = 0
@@ -223,9 +224,7 @@ class PoachingPage(QWidget):
         self.empty_note.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         right.addWidget(self.empty_note)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll = FormScrollArea()
         holder = QWidget()
         form = QVBoxLayout(holder)
         form.setContentsMargins(4, 4, 4, 4)
@@ -578,5 +577,7 @@ class PoachingPage(QWidget):
             f"{edited} of {total} carcasses edited in {self.language}")
 
 
-    def _apply_view(self, hide_notes: bool, hide_unknown: bool) -> None:
-        apply_view_toggles(self.rows.values(), hide_notes, hide_unknown)
+    def _apply_view(self, hide_notes: bool, hide_unknown: bool,
+                    hide_comments: bool) -> None:
+        apply_view_toggles(self.rows.values(), hide_notes, hide_unknown,
+                           hide_comments)

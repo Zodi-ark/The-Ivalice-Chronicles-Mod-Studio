@@ -497,24 +497,48 @@ class ReviewPage(QWidget):
         """
         Says which version was picked, and admits when it was a guess.
 
-        A baseline chosen against the mod's own stamp is a different level
-        of confidence from one inferred by scoring, and the difference
-        decides how much to trust everything below it.
+        **This asks the engine rather than re-deriving the sentence.** It
+        used to have two branches where four situations exist, and the
+        missing one is the dangerous one. With the mod stating v1.5.1 and
+        only v1.5.2 archived, `hint_agreed` is False and the second branch
+        fired, so the page said:
+
+            "The mod records v1.5.1, but its data matches the saved v1.5.2
+             more closely - using that."
+
+        No such comparison happened. v1.5.1 was never a candidate; it was
+        the only archive there was. Measured with both versions present,
+        the mod scores 291 against v1.5.1 and 298 against v1.5.2 - so the
+        sentence asserted the exact opposite of the truth, and asserted it
+        in the confident register a person uses to decide whether to trust
+        the merge below it.
+
+        `BaselineChoice.fell_back` exists for precisely this, and
+        `explain()` already words all four cases correctly - the engine had
+        been right the whole time and the page paraphrased it wrong. Two
+        mechanisms answering one question, with the wrong one on screen.
         """
-        chosen = baseline.chosen
-        if getattr(baseline, "hint_agreed", False) and baseline.hint_version:
-            self.baseline_note.setText(
-                f"Built against {chosen.version}, which matches what the mod "
-                f"records ({baseline.hint_source}).")
-        elif baseline.hint_version:
-            self.baseline_note.setText(
-                f"The mod records {baseline.hint_version}, but its data "
-                f"matches the saved {chosen.version} more closely - using "
-                f"that.")
-        else:
-            self.baseline_note.setText(
-                f"The mod doesn't record which version it was built on. Its "
-                f"data matches the saved {chosen.version} most closely.")
+        self.baseline_note.setText(self._baseline_sentence(baseline))
+
+    @staticmethod
+    def _baseline_sentence(baseline) -> str:
+        """
+        The engine's account, plus the one thing only this page can offer.
+
+        Split out from the setter so a suite can read the sentence for a
+        given `BaselineChoice` without building a plan.
+        """
+        text = baseline.explain()
+        if getattr(baseline, "fell_back", False):
+            # A substitute baseline is wrong by exactly the size of the
+            # patch between the two versions, and the author is the only
+            # one who can judge whether that matters. Compare Versions is
+            # where that patch can be looked at, so it is named here
+            # rather than left to be discovered.
+            text += (" Anything that changed between those two versions "
+                     "will be offered below as if this mod had made it - "
+                     "Compare Versions shows what that was.")
+        return text
 
     def _build_unmodelled(self, plan) -> None:
         """

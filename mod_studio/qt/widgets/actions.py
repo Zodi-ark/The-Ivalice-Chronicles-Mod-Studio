@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from ... import constants as c
 from ... import nxd_data
 from .. import theme
+from .layout_settle import settle_layout
 
 
 def copy_edits_to_languages(store: dict, source_language: str, key,
@@ -187,7 +188,7 @@ def mark_edited(item, edited: bool) -> None:
 
 class ViewToggles(QWidget):
     """
-    `[ ] Hide field notes   [ ] Hide unknown fields`
+    `[ ] Hide field notes   [ ] Hide unknown fields   [x] Hide comments`
 
     Every tab with field rows gets these, not just Jobs. They were on Jobs
     alone for the same reason most gaps happen: the first page that needed
@@ -216,7 +217,7 @@ class ViewToggles(QWidget):
     single step-level pair without every page having to know about the rest.
     """
 
-    changed = Signal(bool, bool)
+    changed = Signal(bool, bool, bool)
 
     # Every live instance. Weak, so a closed page does not keep its widgets
     # alive and a stale entry cannot be signalled at.
@@ -243,9 +244,23 @@ class ViewToggles(QWidget):
         self.unknown.toggled.connect(self._emit)
         row.addWidget(self.unknown)
 
+        # ON by default, unlike the two beside it.
+        #
+        # `Comment` is a column on 134 of the game's tables and holds the
+        # game team's own working notes. It is not something a mod changes,
+        # so it costs a row on every record to show a field almost nobody
+        # wants - and it sits directly under Description, where it reads
+        # like a second one. Defaulted on for that reason, and a toggle
+        # rather than a deletion because the people who do want to read
+        # those notes have nowhere else to.
+        self.comments = QCheckBox("Hide comments")
+        self.comments.setChecked(bool(saved.get("hide_comments", True)))
+        self.comments.toggled.connect(self._emit)
+        row.addWidget(self.comments)
+
         # Quieter than the content around them: this is a preference, not an
         # action, and it should not compete with the record counter.
-        for box in (self.notes, self.unknown):
+        for box in (self.notes, self.unknown, self.comments):
             box.setStyleSheet("font-size: 9pt;")
             box.setProperty("role", "muted")
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -285,10 +300,34 @@ class ViewToggles(QWidget):
         """
         self.setVisible(False)
 
-    def state(self) -> tuple:
-        return self.notes.isChecked(), self.unknown.isChecked()
+    def show_only(self, notes: bool = True, unknown: bool = True,
+                  comments: bool = True) -> None:
+        """
+        Hides the toggles a page has no use for.
 
-    def set_state(self, hide_notes: bool, hide_unknown: bool) -> None:
+        A checkbox that does nothing where it is shown is worse than one
+        that is absent: the reader ticks it, sees no change, and stops
+        trusting the other two. Find Text has no field notes, no unknown
+        rows and no comment rows - it is a search result list - so all
+        three are hidden there. All Game Data has no notes and deliberately
+        shows every column including the unknown ones, so it keeps only
+        "Hide comments".
+
+        The state is untouched - only the widget's visibility - so a
+        preference set on one tab still applies on the tabs that use it.
+        Hiding a control must not silently change what it controls.
+        """
+        self.notes.setVisible(notes)
+        self.unknown.setVisible(unknown)
+        self.comments.setVisible(comments)
+        self.setVisible(notes or unknown or comments)
+
+    def state(self) -> tuple:
+        return (self.notes.isChecked(), self.unknown.isChecked(),
+                self.comments.isChecked())
+
+    def set_state(self, hide_notes: bool, hide_unknown: bool,
+                  hide_comments: bool) -> None:
         """
         Matches another instance without re-broadcasting.
 
@@ -299,6 +338,7 @@ class ViewToggles(QWidget):
         try:
             self.notes.setChecked(hide_notes)
             self.unknown.setChecked(hide_unknown)
+            self.comments.setChecked(hide_comments)
         finally:
             self._syncing = False
 
@@ -307,22 +347,24 @@ class ViewToggles(QWidget):
 
         if self._syncing:
             return
-        hide_notes, hide_unknown = self.state()
+        hide_notes, hide_unknown, hide_comments = self.state()
         ui_settings.save(hide_field_notes=hide_notes,
-                         hide_unknown_fields=hide_unknown)
+                         hide_unknown_fields=hide_unknown,
+                         hide_comments=hide_comments)
 
         for other in list(ViewToggles._ALL):
             if other is self:
                 continue
-            other.set_state(hide_notes, hide_unknown)
+            other.set_state(hide_notes, hide_unknown, hide_comments)
             # Each page still has to redisplay its own rows; the widget
             # only knows about the preference, not about the form.
-            other.changed.emit(hide_notes, hide_unknown)
+            other.changed.emit(hide_notes, hide_unknown, hide_comments)
 
-        self.changed.emit(hide_notes, hide_unknown)
+        self.changed.emit(hide_notes, hide_unknown, hide_comments)
 
 
-def apply_view_toggles(rows, hide_notes: bool, hide_unknown: bool) -> None:
+def apply_view_toggles(rows, hide_notes: bool, hide_unknown: bool,
+                       hide_comments: bool) -> None:
     """
     Pushes the toggles at every row that understands them.
 
@@ -330,10 +372,28 @@ def apply_view_toggles(rows, hide_notes: bool, hide_unknown: bool) -> None:
     implement `apply_display` as a no-op rather than being special-cased
     here, so a new row type works without this function knowing about it.
     """
+    touched = {}
     for row in rows:
         handler = getattr(row, "apply_display", None)
         if handler is not None:
-            handler(hide_notes, hide_unknown)
+            handler(hide_notes, hide_unknown, hide_comments)
+            parent = row.parentWidget() if hasattr(row, "parentWidget") else None
+            if parent is not None:
+                touched.setdefault(id(parent), parent)
+    # Hiding rows down a page shortens its content, and the page it sits in
+    # is only resized a posted event later - the same two-pass window that
+    # made a section expand flash. Fixing it on `CollapsibleSection` alone
+    # left this path flashing, which is how it was reported the second time.
+    #
+    # **Once per BODY, not once for the lot.** Items keeps its rows across
+    # three sub-tab scroll areas, and a `QStackedWidget` does not pass a
+    # layout request sideways to its siblings - so settling from the last
+    # row only settled the last row's branch and 311 widgets on the visible
+    # sub-tab still moved after the click. Deduplicated by parent, because
+    # rows in one body share one, and the walk up from each reaches the
+    # window anyway.
+    for parent in touched.values():
+        settle_layout(parent)
 
 
 def _registry_key_for_store(store_name: str):

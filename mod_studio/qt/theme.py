@@ -484,6 +484,26 @@ def stylesheet(dark, backdrop=False) -> str:
        would cover the material outright, and did once. */
     QStackedWidget#ContentArea {{ background: {content}; }}
     QScrollArea, QScrollArea > QWidget > QWidget {{ background: transparent; }}
+    /* The splitter handle, which the default style paints as a filled bar.
+       On the plain window that bar is the window colour, so it reads as
+       background and is invisible; under Mica and Acrylic the window is
+       translucent and the bar is not, so the same widget reads as a solid
+       slab laid across the page. One opaque fill cannot be right for both.
+
+       So: no fill at all. The one visible pixel is painted by
+       `HairlineHandle` rather than styled here - three CSS attempts each
+       put it off-centre or smeared it, see widgets/hairline_splitter.py.
+       All that is left for QSS is to stop the default style filling the
+       handle. Transparent is what makes it correct under a material:
+       whatever is behind the window shows through the gap exactly as it
+       does either side of it.
+
+       Deliberately NOT a different colour per material. The Acrylic
+       sidebar's contrast cannot be promised, because much of what is
+       behind it is the user's wallpaper - so the fix has to be "not a
+       slab" rather than "a slab in a better colour". */
+    QSplitter {{ background: transparent; }}
+    QSplitter::handle {{ background: transparent; image: none; }}
     /* The tab strip gets a surface of its own. Left transparent over an
        extended frame it read as a lighter band across the top of the
        window - the "bleed onto the title bar". */
