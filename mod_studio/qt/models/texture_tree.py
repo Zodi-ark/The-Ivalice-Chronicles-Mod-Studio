@@ -258,6 +258,23 @@ class TextureTreeModel(QAbstractItemModel):
         if self._root is None or not relative_path:
             return QModelIndex()
         wanted = str(relative_path).replace("\\", "/").strip("/")
+        # The root's own path comes off first.
+        #
+        # A texture tree's root is the unpack folder, so its relative_path
+        # is "" and a path walks straight down from it. A SOUND tree's root
+        # IS `sound` - `scan_sound_tree` starts at `<unpacked>/sound` and
+        # names it - so its children begin at `voice`, while every node's
+        # `relative_path` still reads `sound/voice/...`. Walking the full
+        # path from the root looked for a child called `sound` inside
+        # `sound` and found nothing.
+        #
+        # That is why a jump from Find Text opened Sounds and selected
+        # nothing: every step before this one was right, and the lookup
+        # returned an invalid index for a file that was three rows down the
+        # visible tree.
+        root_path = (getattr(self._root, "relative_path", "") or "").strip("/")
+        if root_path and wanted.startswith(root_path + "/"):
+            wanted = wanted[len(root_path) + 1:]
         parent_index = QModelIndex()
         node = None
         for segment in wanted.split("/"):

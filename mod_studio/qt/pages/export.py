@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QVBoxLayout, QWidget,
 )
 
+from ... import pzd_data
 from ... import item_xml_io as ix
 from ... import constants as c
 from ... import modconfig, paths, reloaded, xml_io
@@ -78,10 +79,14 @@ class AssetExportWorker(Worker):
     """
 
     def __init__(self, mod_root, mode, texture_edits, sound_edits,
-                 cli_path, audiomog_path, game_dir):
+                 cli_path, audiomog_path, game_dir, pzd_edits=None):
         super().__init__()
         self.mod_root = Path(mod_root)
         self.mode = mode
+        # A nested copy, for the reason given below about sound edits.
+        self.pzd_edits = {rel: dict(lines)
+                          for rel, lines in (pzd_edits or {}).items()
+                          if lines}
         self.texture_edits = dict(texture_edits or {})
         # A nested copy: the per-track dicts are the page's own state and
         # must not be handed to a background thread by reference.
@@ -98,7 +103,46 @@ class AssetExportWorker(Worker):
         dest_root = modconfig.data_output_dir(self.mod_root, self.mode)
         result = {"textures": 0, "texture_total": len(self.texture_edits),
                   "sounds": 0, "sound_total": len(self.sound_edits),
+                  "texts": 0, "text_total": len(self.pzd_edits),
                   "skipped": [], "errors": []}
+
+        # Text files first: they are the cheapest and the most likely to
+        # fail for a reason worth hearing early (no FF16Tools), and a person
+        # watching a long texture export does not want that news at the end.
+        if self.pzd_edits:
+            if self.cli_path is None:
+                result["errors"].append(
+                    "FF16Tools isn't set up, so no text file could be "
+                    "written. Set it under General Setup.")
+            elif self.game_dir is None:
+                result["errors"].append(
+                    "The unpacked game folder isn't set, and writing a text "
+                    "file needs the original to start from.")
+            else:
+                staging = paths.local_data_dir() / "text_export_staging"
+                for relative_path, edits in sorted(self.pzd_edits.items()):
+                    original = self.game_dir / relative_path
+                    if not original.exists():
+                        result["errors"].append(
+                            f"{relative_path}: the original file isn't at "
+                            f"{original}")
+                        continue
+                    self.log.emit(f"Writing {relative_path}...")
+                    try:
+                        # Read the original NOW rather than trusting a copy
+                        # taken when the page was open. The game may have
+                        # updated since, and every line this mod does not
+                        # touch should be the current one.
+                        lines = pzd_data.apply_line_edits(
+                            pzd_data.read_pzd(original), edits)
+                        staged = pzd_data.stage_pzd_export(
+                            relative_path, lines, staging, self.cli_path)
+                        destination = dest_root / relative_path
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy(staged, destination)
+                        result["texts"] += 1
+                    except Exception as exc:                  # noqa: BLE001
+                        result["errors"].append(f"{relative_path}: {exc}")
 
         if self.texture_edits:
             staging = paths.local_data_dir() / "texture_export_staging"
@@ -943,6 +987,7 @@ class ExportPage(QWidget):
                          is None)
                     and not (self._edited_jobs() or self._edited_commands()
                              or self._extra_table_files()
+                             or self.state.pzd_edits
                              or self.state.texture_edits
                              or self.state.sound_edits
                              or self.state.other_file_replacements))
@@ -1073,9 +1118,39 @@ class ExportPage(QWidget):
         # An opened mod's details land here rather than in a one-shot call,
         # because a mod is opened from a different page and this one may not
         # exist yet when that happens. `adopt_opened_mod` is idempotent.
-        self.adopt_opened_mod()
+        # Both of these run BEFORE the panes are rebuilt, and neither is
+        # allowed to stop that happening.
+        #
+        # Reported from real use: after editing a job command, the Job
+        # Commands section was sometimes missing from Mod Contents until
+        # "Show every section" was ticked and unticked. That toggle calls
+        # `refresh_visibility` directly, which reads the predicates live -
+        # so it revealed sections that were correct all along and simply had
+        # not been rebuilt. Anything raising here left the whole pane on its
+        # previous contents, silently: in a frozen build there is no console
+        # for the traceback to land in.
+        #
+        # `refresh` already protects each file preview from its neighbours.
+        # This is the same rule one level up - the pane must not be lost to
+        # a failure in the two steps that happen to run first.
+        problems = []
+        try:
+            # An opened mod's details land here rather than in a one-shot
+            # call, because a mod is opened from a different page and this
+            # one may not exist yet when that happens. Idempotent.
+            self.adopt_opened_mod()
+        except Exception as exc:                              # noqa: BLE001
+            problems.append(f"Couldn't read the opened mod's details: {exc}")
+        try:
+            summary = self._summary_text()
+        except Exception as exc:                              # noqa: BLE001
+            summary = ""
+            problems.append(f"Couldn't build the summary: {exc}")
+        if problems:
+            summary = ("\n".join(problems) + "\n\nThe file list below is "
+                       "still current.\n\n" + summary)
         # Fills the summary tab and every file preview in one pass.
-        self.contents.refresh(self._summary_text())
+        self.contents.refresh(summary)
 
         # Two different kinds of "this won't be in your mod", kept apart.
         #
@@ -1135,11 +1210,27 @@ class ExportPage(QWidget):
                 for job_id, fields in sorted(self.state.edits.items())
                 if fields and job_id in by_id]
 
-    def _edited_commands(self) -> list:
-        by_id = {r.command_id: r for r in (self.state.job_command_records or [])}
-        return [(by_id[cid], fields, None)
+    def _edited_commands(self, monsters: bool = False) -> list:
+        """
+        Edited skillsets, split by which FILE they belong in.
+
+        Both kinds share one list and one edit dict because they share a
+        page and their ids do not overlap. They do not share a file: the
+        loader reads monster skillsets from `MonsterJobCommandData.xml`,
+        which has four slots and a different element name. So the split
+        happens here, at the point where a file is about to be written, and
+        nowhere earlier.
+        """
+        by_id = {r.command_id: r
+                 for r in (self.state.job_command_records or [])}
+        return [(by_id[cid], fields, by_id[cid].name)
                 for cid, fields in sorted(self.state.job_command_edits.items())
-                if fields and cid in by_id]
+                if fields and cid in by_id
+                and bool(by_id[cid].is_monster) is bool(monsters)]
+
+    def edited_command_count(self, monsters: bool = False) -> int:
+        """How many edited skillsets will land in one file or the other."""
+        return len(self._edited_commands(monsters=monsters))
 
     # -- text the Mod Contents pane shows ------------------------------------
     #
@@ -1157,6 +1248,11 @@ class ExportPage(QWidget):
         return xml_io.build_job_command_diff_xml_text(
             self.state.job_command_version, self._edited_commands(),
             self.state.job_command_preserved)
+
+    def monster_job_command_diff_xml_text(self) -> str:
+        return xml_io.build_monster_job_command_diff_xml_text(
+            self.state.monster_job_command_version,
+            self._edited_commands(monsters=True))
 
     def table_diff_xml_text(self, key: str) -> str:
         spec = ix.ALL_SPECS.get(key)
@@ -1372,6 +1468,15 @@ class ExportPage(QWidget):
             command_xml = (xml_io.build_job_command_diff_xml_text(
                 self.state.job_command_version or "1", commands)
                 if commands else None)
+            # Monster skillsets go to their own file, and only when there
+            # are any. An empty MonsterJobCommandData.xml in every mod
+            # would be one more file for the loader to read and one more
+            # thing for a reader of the mod to wonder about.
+            monsters = self._edited_commands(monsters=True)
+            if monsters:
+                extras = dict(extras or {})
+                extras["MonsterJobCommandData.xml"] = (
+                    self.monster_job_command_diff_xml_text())
             root = modconfig.scaffold_mod_folder(
                 Path(destination), meta, job_xml,
                 job_command_xml_text=command_xml,
@@ -1402,15 +1507,16 @@ class ExportPage(QWidget):
 
         if self.state.texture_edits or self.state.sound_edits:
             self._say(
-                "Tables written. Converting textures and repacking sound "
-                "archives...", "muted")
+                "Tables written. Writing text files, converting textures "
+                "and repacking sound archives...", "muted")
             self.export_button.setEnabled(False)
             worker = AssetExportWorker(
                 root, meta.game_mode, self.state.texture_edits,
                 self.state.sound_edits,
                 getattr(self.state, "ff16tools_cli_path", None),
                 getattr(self.state, "audiomog_exe_path", None),
-                getattr(self.state, "nxd_unpack_dir", None))
+                getattr(self.state, "nxd_unpack_dir", None),
+                pzd_edits=self.state.pzd_edits)
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -1491,6 +1597,9 @@ class ExportPage(QWidget):
         if result["sound_total"]:
             parts.append(f"{result['sounds']} of {result['sound_total']} "
                          f"sound archive(s)")
+        if result.get("text_total"):
+            parts.append(f"{result.get('texts', 0)} of "
+                         f"{result['text_total']} text file(s)")
         detail = " and ".join(parts)
 
         for line in result["errors"]:

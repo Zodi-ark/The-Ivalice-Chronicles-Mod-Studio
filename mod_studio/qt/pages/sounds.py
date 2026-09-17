@@ -30,15 +30,19 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QFileDialog, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QPlainTextEdit, QSpinBox,
     QListWidgetItem, QPushButton, QSizePolicy, QSpinBox, QTreeView,
     QSplitter, QVBoxLayout, QWidget
 )
 
+from ... import pzd_data
 from ... import sound_data as sd
 from ... import paths
 from ..models.texture_tree import TextureTreeModel
-from ..widgets.actions import page_intro
+from ..widgets.actions import (
+    edit_counter_text, language_combo, page_intro)
+from ..widgets.field_rows import CollapsibleSection
 from ..widgets.marked_tree import MarkedTreeView
 from ..workers import Worker, run_in_thread
 from ..pages.textures import TexturePathFilter
@@ -77,6 +81,49 @@ class UnpackArchiveWorker(Worker):
         return tracks
 
 
+#: How many in-game users to name before saying "and N more".
+TRACK_USER_LIMIT = 12
+
+#: A users list with more than this share of undecodable bytes is not worth
+#: printing. `parse_track_users` reads with `errors="replace"`, so a track
+#: whose entry is binary comes back as thousands of U+FFFD.
+TRACK_USER_GARBAGE_SHARE = 0.3
+
+
+def describe_track_users(users: str) -> str:
+    """
+    The "In-game use" line, bounded and readable.
+
+    Reported from real use: one track - 016 of `vo_bs001_battle.en.sab` -
+    froze Mod Studio for a long time and then printed thousands of question
+    marks. Its entry in AudioMog's `TrackUsers.txt` is enormous and mostly
+    undecodable, and the page was handing the lot to a word-wrapping QLabel
+    to lay out in one go.
+
+    Two separate faults, so two guards:
+
+    - **Length.** Named up to `TRACK_USER_LIMIT`, then a count. Every other
+      list in this tool that can run long does this; this one was the
+      exception because nobody had seen a long one.
+    - **Content.** `parse_track_users` decodes with `errors="replace"`, so a
+      binary entry arrives as a wall of U+FFFD. Printing ten thousand
+      question marks tells the reader nothing and costs them a frozen
+      window; saying the entry is unreadable tells them what is true.
+    """
+    text = (users or "").strip()
+    if not text:
+        return ""
+    replacement = text.count("\ufffd") + text.count("?")
+    if replacement > len(text) * TRACK_USER_GARBAGE_SHARE:
+        return ("(this track's usage list is not readable text - AudioMog "
+                "wrote bytes that are not a name)")
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) <= TRACK_USER_LIMIT:
+        return ", ".join(parts)
+    return (", ".join(parts[:TRACK_USER_LIMIT])
+            + f", and {len(parts) - TRACK_USER_LIMIT} more")
+
+
 class SoundsPage(QWidget):
     edits_changed = Signal()
 
@@ -102,8 +149,9 @@ class SoundsPage(QWidget):
         outer.setSpacing(10)
 
         outer.addLayout(page_intro(
-            "Music, voice lines and sound effects. Each archive holds several "
-            "tracks. Only the ones you replace are written into your mod."))
+            "Music, voice lines and sound effects. Each archive can hold "
+            "several tracks, and a voice recording carries the subtitle "
+            "spoken in it."))
 
         self.counter = QLabel("")
         self.counter.setProperty("role", "ok")
@@ -171,7 +219,14 @@ class SoundsPage(QWidget):
         self.track_detail.setWordWrap(True)
         right.addWidget(self.track_detail)
 
-        actions = QVBoxLayout()
+        # In a widget, so the whole set can be hidden until an archive is
+        # chosen. Five disabled buttons, a Loop points box and a Subtitle
+        # box, all sitting under "Select a sound archive", is a page that
+        # looks broken before it has been used - reported from real use,
+        # with a screenshot.
+        self.actions_box = QWidget()
+        actions = QVBoxLayout(self.actions_box)
+        actions.setContentsMargins(0, 0, 0, 0)
         self.play_button = QPushButton("Play")
         self.play_button.setMinimumWidth(self.play_button.sizeHint().width() + 8)
         self.play_button.setEnabled(False)
@@ -205,7 +260,71 @@ class SoundsPage(QWidget):
         self.clear_track_button.clicked.connect(self.clear_track_replacement)
         actions.addWidget(self.clear_track_button)
         actions.addStretch(1)
-        right.addLayout(actions)
+        right.addWidget(self.actions_box)
+
+        # -- the subtitle for this recording ---------------------------------
+        #
+        # Subtitles live on THIS page, not a page of their own, and the data
+        # is what settles it: 14,208 lines, 14,208 distinct voice paths,
+        # 100% of lines carrying one, every one a `.sab` under
+        # `sound/voice/`. The relationship is total and one-to-one, because
+        # these lines ARE the subtitles for these recordings - listen to a
+        # file and you hear the line.
+        #
+        # They were briefly a separate "Text" page. That was wrong: it split
+        # one thing across two places and asked somebody checking a line
+        # against its recording to hold two tabs in their head. The thing
+        # you are looking at when you want the words is the recording.
+        #
+        # Progressive disclosure, Wroblewski's rule: the SUBTITLE is what
+        # somebody came for and is always visible. Speaker, show type and
+        # the short-voice fields are real and editable but are the long
+        # tail, so they sit behind one disclosure rather than pushing the
+        # line itself below the fold.
+        self.subtitle_box = QGroupBox("Subtitle")
+        subtitle_column = QVBoxLayout(self.subtitle_box)
+
+        self.subtitle_status = QLabel("")
+        self.subtitle_status.setProperty("role", "muted")
+        self.subtitle_status.setWordWrap(True)
+        subtitle_column.addWidget(self.subtitle_status)
+
+        language_row = QHBoxLayout()
+        language_row.addWidget(QLabel("Language:"))
+        # Built inside the guard: populating a combo emits
+        # `currentTextChanged`, and that signal arriving during construction
+        # was being read as "the person picked English" - which then stuck,
+        # so selecting the Japanese recording went on showing the English
+        # line.
+        self._loading_subtitle = True
+        try:
+            self.subtitle_language = language_combo()
+        finally:
+            self._loading_subtitle = False
+        self.subtitle_language.currentTextChanged.connect(
+            self._on_subtitle_language)
+        language_row.addWidget(self.subtitle_language)
+        language_row.addStretch(1)
+        self.subtitle_revert = QPushButton("Revert this line")
+        self.subtitle_revert.setEnabled(False)
+        self.subtitle_revert.clicked.connect(self.revert_subtitle)
+        language_row.addWidget(self.subtitle_revert)
+        subtitle_column.addLayout(language_row)
+
+        self.subtitle_edit = QPlainTextEdit()
+        self.subtitle_edit.setMaximumHeight(90)
+        self.subtitle_edit.setPlaceholderText(
+            "The words spoken in this recording")
+        self.subtitle_edit.textChanged.connect(
+            lambda: self._on_subtitle_field("line",
+                                            self.subtitle_edit.toPlainText()))
+        subtitle_column.addWidget(self.subtitle_edit)
+
+        self.subtitle_more = CollapsibleSection(
+            "Speaker, show type and short voice", self._subtitle_fields(),
+            expanded=False)
+        subtitle_column.addWidget(self.subtitle_more)
+        right.addWidget(self.subtitle_box)
 
         # -- loop points, editable -------------------------------------------
         #
@@ -259,6 +378,7 @@ class SoundsPage(QWidget):
 
         outer.addWidget(split, 1)
         self.refresh_tree()
+        self._refresh_detail()
 
     # -- tree --------------------------------------------------------------------
 
@@ -325,19 +445,354 @@ class SoundsPage(QWidget):
         self.tracks_note.setText("Opening the archive...")
         self.open_archive()
 
+    def select_record(self, relative_path) -> bool:
+        """
+        Selects an archive by its relative path - what a jump arrives with.
+
+        Named `select_record` because that is the first method the shell's
+        `open_tab` looks for, the same as Textures. This page had no such
+        method, so a jump to it opened the tab and selected nothing; the
+        Text page's "Edit ->" on a line's voice path is the first thing that
+        needed it.
+
+        The same model and proxy as Textures, so this is that method with
+        the archive tree behind it rather than a second way of doing it.
+        """
+        index = self.model.index_for_path(str(relative_path))
+        if not index.isValid():
+            # The tree may not have been built yet. A jump can arrive before
+            # this tab has ever been shown, and the page builds its tree
+            # when it is - so the first jump of a session found an empty
+            # model and selected nothing, which is what "it opens Sounds but
+            # not the file" looks like.
+            self.refresh_tree()
+            index = self.model.index_for_path(str(relative_path))
+        if not index.isValid():
+            return False
+        mapped = self.proxy.mapFromSource(index)
+        if not mapped.isValid():
+            # Hidden by the current filter. Cleared rather than reported as
+            # a failure - the file exists and the person asked for it, so
+            # the filter is the thing that should give way.
+            self.search.clear()
+            mapped = self.proxy.mapFromSource(index)
+            if not mapped.isValid():
+                return False
+        self.tree.setCurrentIndex(mapped)
+        self.tree.scrollTo(mapped)
+        return True
+
     def _on_selection(self, current, _previous) -> None:
         node = self.model.node_at(current) if current.isValid() else None
         self.current_node = node if node is not None and node.is_file else None
         self._refresh_detail()
         self._open_selected_archive()
 
+    # -- subtitles -----------------------------------------------------------
+
+    def _subtitle_fields(self) -> QWidget:
+        """
+        The fields beyond the line itself, every one from `PzdTextContent`.
+
+        All of them, because a field this tool reads but will not let
+        anybody change is a field they have to leave Mod Studio and
+        hand-edit YAML for. `Id` is absent because it is the key.
+        """
+        holder = QWidget()
+        form = QVBoxLayout(holder)
+        form.setContentsMargins(0, 0, 0, 0)
+        self.subtitle_rows = {}
+
+        def row(label, widget, field, getter):
+            line = QHBoxLayout()
+            caption = QLabel(label)
+            caption.setMinimumWidth(150)
+            line.addWidget(caption)
+            line.addWidget(widget, 1)
+            form.addLayout(line)
+            self.subtitle_rows[field] = (widget, getter)
+
+        self.speaker_type = QSpinBox()
+        self.speaker_type.setRange(-32768, 32767)
+        self.speaker_type.valueChanged.connect(
+            lambda: self._on_subtitle_field("speaker_type",
+                                            self.speaker_type.value()))
+        row("Speaker type", self.speaker_type, "speaker_type",
+            self.speaker_type.value)
+
+        self.speaker_value = QSpinBox()
+        self.speaker_value.setRange(-2147483648, 2147483647)
+        self.speaker_value.valueChanged.connect(
+            lambda: self._on_subtitle_field("speaker_value",
+                                            self.speaker_value.value()))
+        row("Speaker id", self.speaker_value, "speaker_value",
+            self.speaker_value.value)
+
+        self.show_type = QComboBox()
+        # By name, with the number behind it - the enum's own members, so
+        # nobody has to know that 2 is the hearing-impaired one.
+        for value, name in sorted(pzd_data.SHOW_TYPES.items()):
+            self.show_type.addItem(name, value)
+        self.show_type.currentIndexChanged.connect(
+            lambda: self._on_subtitle_field("show_type",
+                                            self.show_type.currentData()))
+        row("Show type", self.show_type, "show_type",
+            self.show_type.currentData)
+
+        self.voice_path = QLineEdit()
+        self.voice_path.textChanged.connect(
+            lambda: self._on_subtitle_field("voice_sound_path",
+                                            self.voice_path.text()))
+        row("Voice sound path", self.voice_path, "voice_sound_path",
+            self.voice_path.text)
+
+        self.short_voice_path = QLineEdit()
+        self.short_voice_path.textChanged.connect(
+            lambda: self._on_subtitle_field("short_voice_sound_path",
+                                            self.short_voice_path.text()))
+        row("Short voice path", self.short_voice_path,
+            "short_voice_sound_path", self.short_voice_path.text)
+
+        self.is_shortened = QCheckBox("Is shortened")
+        self.is_shortened.toggled.connect(
+            lambda: self._on_subtitle_field("is_shortened",
+                                            self.is_shortened.isChecked()))
+        row("", self.is_shortened, "is_shortened",
+            self.is_shortened.isChecked)
+        return holder
+
+    #: The voice-path index and the folder it was built from. Class-level
+    #: defaults so the accessor works before the first build - a page that
+    #: raises on a fresh instance is a page that cannot be constructed.
+    _voice_index: dict = {}
+    _voice_index_root = object()
+
+    def voice_index(self) -> dict:
+        """
+        `{voice path: (file, line id)}`, built once and kept.
+
+        Rebuilt only when the unpack folder changes. Reading every `.pzd`
+        costs about 0.4s for a text mod's 629 files and a few seconds for
+        the game's 4,417 - cheap once, wasteful per selection.
+        """
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        if getattr(self, "_voice_index_root", None) != root:
+            self._voice_index = pzd_data.build_voice_index(root)
+            self._voice_index_root = root
+        return self._voice_index
+
+    def _subtitle_for(self, relative_path: str, language: str = ""):
+        """
+        The line whose voice path is this archive, in `language`.
+
+        The index is keyed on the EN file's path by whichever language was
+        scanned; the other languages are the same stem with a different
+        code, so the language swap happens on the path rather than by
+        indexing seven times.
+        """
+        # The archive's language is part of its FILE NAME and not part of
+        # the voice path a line carries. Split them, and let the archive's
+        # own language pick the subtitle unless the person has chosen
+        # another - selecting the Japanese recording should show the
+        # Japanese line.
+        neutral, file_language = pzd_data.voice_key(relative_path)
+        language = language or file_language
+        found = self.voice_index().get(neutral)
+        if not found:
+            return None, "", 0
+        text_path, line_id = found
+        if not language:
+            # The archive did not say, and neither did the person. Prefer
+            # English, which is the order every other language picker in
+            # this tool uses - rather than whichever file the scan reached
+            # first, which is arbitrary and changes with the filesystem.
+            root = getattr(self.state, "nxd_unpack_dir", None)
+            _f, _stem, current = pzd_data.split_pzd_name(text_path)
+            for preferred in pzd_data.PZD_LANGUAGES:
+                candidate = text_path.replace(f".{current}.pzd",
+                                              f".{preferred}.pzd")
+                if root and (Path(root) / candidate).is_file():
+                    language = preferred
+                    break
+        if language:
+            folder, stem, current = pzd_data.split_pzd_name(text_path)
+            if current and current != language:
+                text_path = text_path.replace(f".{current}.pzd",
+                                              f".{language}.pzd")
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        try:
+            lines = pzd_data.read_pzd(Path(root) / text_path)
+        except (OSError, ValueError):
+            return None, text_path, line_id
+        entry = next((e for e in lines if e.line_id == line_id), None)
+        return entry, text_path, line_id
+
+    def _refresh_subtitle(self) -> None:
+        """Fills the subtitle panel for whichever archive is selected."""
+        node = self.current_node
+        relative = node.relative_path if node is not None else ""
+        self._subtitle_path = ""
+        self._subtitle_line_id = None
+        if not relative or not str(relative).endswith(".sab"):
+            self.subtitle_box.setVisible(False)
+            return
+        _neutral, file_language = pzd_data.voice_key(relative)
+        language = self._chosen_language or file_language
+        entry, text_path, line_id = self._subtitle_for(relative, language)
+        if entry is not None and language:
+            position = self.subtitle_language.findText(language)
+            if position >= 0 and position != self.subtitle_language.currentIndex():
+                self._loading_subtitle = True
+                try:
+                    self.subtitle_language.setCurrentIndex(position)
+                finally:
+                    self._loading_subtitle = False
+        if entry is None:
+            # Hidden rather than shown empty. Most archives are music and
+            # effects with no words in them, and an empty Subtitle box on
+            # every one of them would be noise on 14,000 rows.
+            self.subtitle_box.setVisible(False)
+            return
+        self.subtitle_box.setVisible(True)
+        self._subtitle_path = text_path
+        self._subtitle_line_id = line_id
+        edits = (self.state.pzd_edits or {}).get(text_path, {}).get(
+            line_id, {})
+        self._loading_subtitle = True
+        try:
+            self.subtitle_edit.setPlainText(
+                edits.get("line", entry.line))
+            self.speaker_type.setValue(
+                int(edits.get("speaker_type", entry.speaker_type)))
+            self.speaker_value.setValue(
+                int(edits.get("speaker_value", entry.speaker_value)))
+            position = self.show_type.findData(
+                int(edits.get("show_type", entry.show_type)))
+            if position >= 0:
+                self.show_type.setCurrentIndex(position)
+            self.voice_path.setText(
+                edits.get("voice_sound_path", entry.voice_sound_path))
+            self.short_voice_path.setText(
+                edits.get("short_voice_sound_path",
+                          entry.short_voice_sound_path))
+            self.is_shortened.setChecked(
+                bool(edits.get("is_shortened", entry.is_shortened)))
+        finally:
+            self._loading_subtitle = False
+        self.subtitle_status.setText(
+            f"{text_path}  \u00b7  line {line_id}"
+            + (f"  \u00b7  {len(edits)} field(s) edited" if edits else ""))
+        self.subtitle_revert.setEnabled(bool(edits))
+
+    #: The language the person PICKED, as opposed to the one the selected
+    #: archive happens to be in. Empty means "follow the file", which is
+    #: what makes selecting the Japanese recording show the Japanese line.
+    _chosen_language = ""
+
+    def _on_subtitle_language(self, text="") -> None:
+        if getattr(self, "_loading_subtitle", False):
+            return
+        self._chosen_language = text or ""
+        self._refresh_subtitle()
+
+    def _on_subtitle_field(self, field: str, value) -> None:
+        """
+        Records one field, and drops it again if it matches the original.
+
+        Typing a value back to what it was is not an edit. Without this,
+        touching a field would put an unchanged value into the mod, which
+        then wins over any other mod editing that line for no reason
+        anybody chose.
+        """
+        if getattr(self, "_loading_subtitle", False):
+            return
+        path, line_id = self._subtitle_path, self._subtitle_line_id
+        if not path or line_id is None:
+            return
+        entry, _p, _i = self._subtitle_for(
+            self.current_node.relative_path,
+            self._chosen_language or "")
+        if entry is None:
+            return
+        lines = self.state.pzd_edits.setdefault(path, {})
+        fields = lines.setdefault(line_id, {})
+        if value == getattr(entry, field):
+            fields.pop(field, None)
+        else:
+            fields[field] = value
+        if not fields:
+            lines.pop(line_id, None)
+        if not lines:
+            self.state.pzd_edits.pop(path, None)
+        edits = self.state.pzd_edits.get(path, {}).get(line_id, {})
+        self.subtitle_status.setText(
+            f"{path}  \u00b7  line {line_id}"
+            + (f"  \u00b7  {len(edits)} field(s) edited" if edits else ""))
+        self.subtitle_revert.setEnabled(bool(edits))
+        self.edits_changed.emit()
+
+    def revert_subtitle(self) -> None:
+        """Drops every edit on this line and shows the game's own values."""
+        path, line_id = self._subtitle_path, self._subtitle_line_id
+        if not path or line_id is None:
+            return
+        lines = self.state.pzd_edits.get(path, {})
+        lines.pop(line_id, None)
+        if not lines:
+            self.state.pzd_edits.pop(path, None)
+        self._refresh_subtitle()
+        self.edits_changed.emit()
+
+    def select_subtitle(self, voice_path: str, language: str = "") -> bool:
+        """
+        Selects the archive a subtitle belongs to - what a Find Text hit
+        needs to land somewhere useful.
+        """
+        if language:
+            position = self.subtitle_language.findText(language)
+            if position >= 0:
+                self.subtitle_language.setCurrentIndex(position)
+        # A line's voice path names the RECORDING, not one language's copy
+        # of it, so the archive to select is that path with a language put
+        # back into it. Tried in order: the language asked for, then every
+        # other the game ships, then the bare path - a mod that carries only
+        # English subtitles should still land on the English recording.
+        candidates = [pzd_data.voice_path_for_language(voice_path, language)]
+        candidates += [pzd_data.voice_path_for_language(voice_path, code)
+                       for code in pzd_data.PZD_LANGUAGES if code != language]
+        candidates.append(str(voice_path))
+        for candidate in candidates:
+            if self.select_record(candidate):
+                return True
+        return False
+
+    def subtitle_for_line(self, text_path: str, line_id) -> str:
+        """The voice path of one line, so a hit can be turned into a jump."""
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        try:
+            lines = pzd_data.read_pzd(Path(root) / text_path)
+        except (OSError, ValueError):
+            return ""
+        entry = next((e for e in lines if e.line_id == line_id), None)
+        return entry.voice_sound_path if entry else ""
+
     def _refresh_detail(self) -> None:
         node = self.current_node
-        if node is None:
+        if node is None or not node.is_file:
+            # Nothing chosen, or a FOLDER chosen. Neither has tracks, loop
+            # points or a subtitle, so none of that furniture is shown -
+            # the pane says what to do and stops there.
             self.selected_label.setText("Select a sound archive")
             self.detail.setText("")
             self.tracks_note.setText("")
+            self.track_list.setVisible(False)
+            self.track_detail.setText("")
+            self.actions_box.setVisible(False)
+            self.loop_box.setVisible(False)
+            self.subtitle_box.setVisible(False)
             return
+        self.actions_box.setVisible(True)
+        self.loop_box.setVisible(True)
 
         self.selected_label.setText(node.name)
         lines = [node.relative_path]
@@ -358,6 +813,7 @@ class SoundsPage(QWidget):
         if whole:
             lines.append(f"Whole archive replaced with: {whole}")
         self.detail.setText("\n".join(lines))
+        self._refresh_subtitle()
 
         # Said plainly rather than shown as an empty list. An archive whose
         # tracks cannot be read is a different thing from an archive with no
@@ -453,7 +909,7 @@ class SoundsPage(QWidget):
             # in-game identifier AudioMog records in TrackUsers.txt, and it
             # is the only thing that tells you which of 300 files named
             # music_000NN is the one you are looking for.
-            lines.append(f"In-game use: {track.users}")
+            lines.append(f"In-game use: {describe_track_users(track.users)}")
         self.track_detail.setText("\n".join(lines))
         self._refresh_track_buttons()
         self._sync_loop_fields()
@@ -709,12 +1165,21 @@ class SoundsPage(QWidget):
         if not total:
             self.counter.setText("")
             return
-        tracks = self.state.edited_sound_track_count()
-        files = self.state.replaced_sound_file_count()
-        parts = []
-        if tracks:
-            parts.append(f"{tracks} track{'s' if tracks != 1 else ''} replaced")
-        if files:
-            parts.append(f"{files} whole archive{'s' if files != 1 else ''} replaced")
-        self.counter.setText(
-            f"{total:,} sound archives" + (" - " + ", ".join(parts) if parts else ""))
+        # How many ARCHIVES this mod changes, which is the question every
+        # other page's counter answers. This said "14,545 sound archives" -
+        # the size of the game, the same number forever, and the only page
+        # that never reported how much had been edited.
+        #
+        # An archive counts once whether a track inside it was replaced or
+        # the whole thing was, because both mean "this mod ships this
+        # archive". Subtitles are counted separately: editing the words is
+        # not replacing the recording, and rolling them together would make
+        # the number mean two things.
+        changed = set(self.state.sound_edits or {}) | set(
+            self.state.sound_file_replacements or {})
+        text = edit_counter_text(len(changed), total, "sounds", "replaced")
+        subtitles = self.state.edited_pzd_line_count()
+        if subtitles:
+            text += (f" - {subtitles:,} subtitle line"
+                     f"{'s' if subtitles != 1 else ''} edited")
+        self.counter.setText(text)

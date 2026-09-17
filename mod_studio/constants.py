@@ -25,6 +25,7 @@ TABLE_FILENAMES = {
     "item_shield": "ItemShieldData.xml",
     "item_accessory": "ItemAccessoryData.xml",
     "item_equip_bonus": "ItemEquipBonusData.xml",
+    "item_options": "ItemOptionsData.xml",
     "item_shops": "ItemShopsData.xml",
     "map_trap": "MapTrapFormationData.xml",
     "ability_effect": "AbilityEffectNumberFilterData.xml",
@@ -375,17 +376,21 @@ OVERRIDE_SCALAR_FIELDS = {
     "Range": (0, 255, "Range", ""),
     "EffectArea": (0, 255, "Effect Area", "AoE radius override."),
     "Vertical": (0, 255, "Vertical Tolerance", ""),
-    "Formula": (0, 255, "Formula ID", "References the game's internal damage/effect formula table."),
+    # "Formula", not "Formula ID": the Items page calls the same field
+    # Formula, and two names for one concept is two things to learn.
+    "Formula": (0, 255, "Formula", ""),
     "X": (0, 255, "X", ""),
     "Y": (0, 255, "Y", ""),
-    "InflictStatus": (0, 255, "Inflict Status ID", "References a status effect ID."),
+    "InflictStatus": (0, 255, "Inflict Status", ""),
     "CT": (0, 255, "CT (Charge Time)", ""),
     "MPCost": (0, 255, "MP Cost", ""),
 }
 # Numeric-spinner override fields shown in the UI (Element is also a plain
 # override column in the table, but gets its own checkbox-based UI - see
 # OVERRIDE_ALL_COLUMNS below for the full read/write column list).
-OVERRIDE_SCALAR_FIELD_ORDER = ["Range", "EffectArea", "Vertical", "Formula", "X", "Y", "InflictStatus", "CT", "MPCost"]
+# Inflict Status follows Formula, because Formula is what decides
+# whether it means a status row or a spell to cast.
+OVERRIDE_SCALAR_FIELD_ORDER = ["Range", "EffectArea", "Vertical", "Formula", "InflictStatus", "X", "Y", "CT", "MPCost"]
 # Every plain int column in OverrideAbilityActionData (matches table order),
 # used for reading/writing - Element included, since it's stored the same
 # way as the others (just presented differently in the UI).
@@ -460,10 +465,17 @@ ABILITY_ELEMENT_VALUES = [
 # ItemTypeFlags has an extra real bit (ImmuneToStealBreak) plus one
 # genuinely-unused bit that no current item sets.
 #
-# ItemConsumableData.xml/ItemOptionsData.xml weren't among the tables
-# provided, so "Item"-category consumables/key items can't have their
-# recovery effects/inflicted-status options edited here - only their base
-# ItemData.xml row and nxd name/description.
+# ItemConsumableData.xml still isn't among the tables provided, so an
+# "Item"-category consumable's RECOVERY effects can't be edited here - only
+# its base ItemData.xml row and nxd name/description.
+#
+# ItemOptionsData.xml no longer belongs in that sentence. Its inflicted
+# statuses have their own Inflict Status tab, built on the derived spec
+# rather than a hand-written one: the mod loader's own `ItemOptions` model
+# is bundled and declares the field order, the types and the `Effects` flag
+# enum, so there is nothing here to restate. `MAX_ITEM_OPTIONS_ID` is not
+# declared below for the same reason - `derive_spec` reads 127 from the
+# table's own rows.
 # =============================================================================
 
 MAX_ITEM_ID = 260              # ItemData.xml: 261 slots (0-260)
@@ -527,7 +539,10 @@ ITEM_SHOP_AVAILABILITY = [
     "Unknown17", "Unknown18", "Unknown19", "Unknown20",
 ]
 
-ITEM_WEAPON_FIELD_ORDER = ["Range", "AttackFlags", "Formula", "Unused_0x03", "Power", "Evasion", "Elements", "OptionsAbilityId"]
+# Inflict Status sits next to Formula because Formula is what decides
+# whether it means a status row or an ability to cast. Reading them
+# five rows apart asked the person to hold one to check the other.
+ITEM_WEAPON_FIELD_ORDER = ["Range", "AttackFlags", "Formula", "OptionsAbilityId", "Unused_0x03", "Power", "Evasion", "Elements"]
 # Confirmed against the real ITEM_WEAPON_DATA.cs struct (Structures.zip),
 # ordered high-bit-first to match.
 ITEM_ATTACK_FLAGS = ["Striking", "Lunging", "Direct", "Arc", "TwoSwords", "TwoHands", "Throwable", "ForcedTwoHands"]
@@ -544,7 +559,7 @@ ITEM_XML_NUMERIC_FIELDS = {
     "RequiredLevel": (0, 255, "Required Level", ""),
     "Price": (0, 65535, "Price", ""),
     "AdditionalDataId": (0, 255, "Additional Data Id", "Which row of the linked table below this item uses."),
-    "EquipBonusId": (0, 255, "Equip Bonus Id", "Which row of ItemEquipBonusData this item uses - see the Equip Bonus section below."),
+    "EquipBonusId": (0, 255, "Equip Bonus", ""),
     "Unused_0x06": (0, 255, "Unused_0x06", ""),
     "Unused_0x0B": (0, 255, "Unused_0x0B", ""),
     "Range": (0, 255, "Range", ""),
@@ -552,7 +567,7 @@ ITEM_XML_NUMERIC_FIELDS = {
     "Unused_0x03": (0, 255, "Unused_0x03", ""),
     "Power": (0, 255, "Power", ""),
     "Evasion": (0, 255, "Evasion", ""),
-    "OptionsAbilityId": (0, 255, "Options Ability Id", "If Formula is 2, an ability id; otherwise an \"item options\" id or 0."),
+    "OptionsAbilityId": (0, 255, "Inflict Status", ""),
     "HPBonus": (0, 255, "HP Bonus", ""),
     "MPBonus": (0, 255, "MP Bonus", ""),
     "PhysicalEvasion": (0, 255, "Physical Evasion", ""),
@@ -1454,7 +1469,7 @@ POACH_FIELD_FRIENDLY_NAMES = {raw: friendly for friendly, raw in POACH_FIELD_RAW
 #
 # Ability 509 "Treasure Hunter" (vanilla FFT/FFTPatcher call this "Move-Find
 # Item") lets a unit dig up buried treasure on specially-marked tiles. Each
-# map can have up to 4 such tiles ("Item 1".."Item 4" below); walking a
+# map can have up to 4 such tiles ("Tile 1".."Tile 4" in the interface); walking a
 # Treasure-Hunter-equipped unit onto one gives either its Rare or Common
 # item. Per FFHacktics' research into the original game's formula, lower
 # Brave means better odds of the Rare item - see https://ffhacktics.com/

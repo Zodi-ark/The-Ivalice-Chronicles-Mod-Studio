@@ -32,7 +32,8 @@ from PySide6.QtWidgets import (
 )
 
 from ... import (
-    audiomog, ff16tools, game_install, modconfig, nxd_data, paths, reloaded)
+    audiomog, ff16tools, game_install, modconfig, nxd_data, paths, reloaded,
+    ui_settings)
 from ... import sound_data as sd, texture_data as td
 from ..widgets.field_rows import CollapsibleSection
 from ..widgets.form_scroll import FormScrollArea
@@ -70,7 +71,10 @@ class AdoptFolderWorker(Worker):
         nxd_dir = self.folder / "nxd"
         if nxd_dir.is_dir():
             result["nxd_dir"] = nxd_dir
-            self.log.emit(f"Found {nxd_dir} - the game data is here.")
+            # Just the path. "- the game data is here" restated what the
+            # word "Found" had already said, on a line that is mostly a
+            # long Windows path to begin with.
+            self.log.emit(f"Found {nxd_dir}")
         else:
             # Said out loud rather than left as an empty tab later. A folder
             # unpacked with a filter that skipped nxd is a perfectly normal
@@ -527,9 +531,8 @@ class SetupPage(QWidget):
         outer.addWidget(heading)
 
         blurb = QLabel(
-            "Editing a mod? Open it below and you're done. Starting fresh? "
-            "Unpack your game files so the editing tabs have something to work "
-            "with.")
+            "Unpack your game files so the editor interface has full "
+            "functionality. Editing a mod? Open it below.")
         blurb.setProperty("role", "intro")
         blurb.setWordWrap(True)
         outer.addWidget(blurb)
@@ -589,9 +592,9 @@ class SetupPage(QWidget):
         column = QVBoxLayout(box)
 
         note = QLabel(
-            "Most tabs need game files. This unpacks them to an editable "
-            "database once per version. Your game files are only read, never "
-            "modified.")
+            "Most pages need game files. This unpacks them to an editable "
+            "database once per version. Your game files are only read and "
+            "never modified.")
         note.setProperty("role", "muted")
         note.setWordWrap(True)
         column.addWidget(note)
@@ -1555,11 +1558,76 @@ class SetupPage(QWidget):
             self.state.audiomog_exe_path = Path(path)
             self._log(f"Using AudioMog at {path}")
 
+    # -- remembering where things are -----------------------------------------
+
+    #: Folders `_restore_folders` put back this run. See `_restore_folders`.
+    _restored_folders: set = frozenset()
+
+    def _remember_folders(self) -> None:
+        """
+        Writes the two chosen folders to `ui_settings.json`.
+
+        The same store the view toggles and the appearance use, rather than
+        a second one - two files answering "what did this person choose"
+        would drift, and the settings file already survives restarts and
+        already degrades safely when it is missing.
+
+        Blank is written as blank on purpose: clearing the field is a
+        choice too, and a save that skipped empty values could never undo a
+        folder once set.
+        """
+        ui_settings.save(
+            game_data_folder=self.folder_field.text().strip(),
+            unpack_output_folder=self.output_field.text().strip())
+
+    def _restore_folders(self) -> list:
+        """
+        Puts the remembered folders back, if they are still there.
+
+        **A remembered path that no longer exists is dropped, not restored.**
+        An external drive that is not plugged in, or a folder since deleted,
+        would otherwise fill the field with somewhere nothing can be read
+        from - and the person would have to work out that the tool was
+        quoting them their own stale answer.
+
+        Only fills a field that is EMPTY. Autodetection runs before this and
+        may already have found the game; overwriting a live answer with a
+        remembered one is how a tool tells somebody about an install they
+        no longer have.
+
+        Returns notes for the log.
+        """
+        notes = []
+        # Which folders this put back, so the recovery below can tell
+        # whether a path has already been named. Set every call, not
+        # appended to, because the page can run this more than once.
+        self._restored_folders = set()
+        saved = ui_settings.load()
+        pairs = ((self.folder_field, saved.get("game_data_folder", ""),
+                  "game data folder"),
+                 (self.output_field, saved.get("unpack_output_folder", ""),
+                  "unpack folder"))
+        for field, remembered, label in pairs:
+            remembered = (remembered or "").strip()
+            if not remembered or field.text().strip():
+                continue
+            if not Path(remembered).is_dir():
+                notes.append(f"The {label} you chose last time is no longer "
+                             f"there, so it has been left blank: "
+                             f"{remembered}")
+                continue
+            field.setText(remembered)
+            self._restored_folders.add(Path(remembered))
+            notes.append(f"Using the {label} you chose last time: "
+                         f"{remembered}")
+        return notes
+
     def _browse_output(self, _checked=False, path: str | None = None) -> None:
         if path is None:
             path = QFileDialog.getExistingDirectory(self, "Unpack into")
         if path:
             self.output_field.setText(path)
+            self._remember_folders()
 
     def check_reference_tables(self) -> None:
         """
@@ -1744,6 +1812,7 @@ class SetupPage(QWidget):
         if not path:
             return
         self.folder_field.setText(path)
+        self._remember_folders()
         folder = Path(path)
         looks_right = True
         checker = getattr(game_install, "looks_like_pack_folder", None)
@@ -2057,6 +2126,10 @@ class SetupPage(QWidget):
 
         destination = Path(self.output_field.text().strip()
                            or (paths.local_data_dir() / "UnpackedGame"))
+        # Remembered at the moment they are USED, not only when browsed.
+        # A path typed into the field rather than picked through the dialog
+        # is just as much a choice, and it was the one being forgotten.
+        self._remember_folders()
         custom = self.unpack_filter()
         filters = ([custom] if custom
                    else game_install.filters_for_folders(self.chosen_folders()))
@@ -2353,6 +2426,11 @@ class SetupPage(QWidget):
         self.progress.setVisible(False)
         self.adopt_button.setEnabled(True)
         self.state.nxd_unpack_dir = result["folder"]
+        # Adopting a folder is choosing one, so it is remembered like the
+        # other two. Without this, someone who only ever adopts an existing
+        # unpack got the `local_data` fallback on every restart.
+        self.output_field.setText(str(result["folder"]))
+        self._remember_folders()
         if result["texture_tree"] is not None:
             self.state.texture_tree = result["texture_tree"]
         if result["sound_tree"] is not None:
@@ -2407,26 +2485,72 @@ class SetupPage(QWidget):
         found = []
         local = paths.local_data_dir()
 
-        unpacked = local / "UnpackedGame"
-        try:
-            has_content = unpacked.is_dir() and any(unpacked.iterdir())
-        except OSError:
-            has_content = False
-        if getattr(self.state, "nxd_unpack_dir", None) is None and has_content:
-            self.state.nxd_unpack_dir = unpacked
-            self.folder_field.setText(str(unpacked))
-            # The trees are what Textures and Sounds read; without them
-            # those two tabs stay empty even with the folder set.
-            try:
-                self.state.texture_tree = td.scan_texture_tree(unpacked)
-            except Exception:                                 # noqa: BLE001
-                pass
-            try:
-                self.state.sound_tree = sd.scan_sound_tree(unpacked)
-            except Exception:                                 # noqa: BLE001
-                pass
-            found.append(f"Reusing the unpacked game folder from a previous "
-                         f"session: {unpacked}")
+        # What the person CHOSE, before anything this tool guesses.
+        #
+        # The order matters and is the whole fix. The recovery below adopts
+        # `local_data/UnpackedGame` when nothing else has set a folder, and
+        # nothing else ever had, because the choice was never written down -
+        # so every restart quietly relocated the person's work into a cache
+        # this tool deletes. Restoring first turns that recovery back into
+        # the last resort it was written to be.
+        found.extend(self._restore_folders())
+
+        # Where the unpacked game actually is, in order of authority: the
+        # folder now in the field - restored above, or typed - and only then
+        # the tool's own default.
+        #
+        # Reading ONLY the default was a fault of the same shape as the one
+        # `_restore_folders` fixes, moved one step along: the field said the
+        # person's folder while `nxd_unpack_dir` pointed at
+        # `local_data/UnpackedGame`, so Textures, Sounds and Abilities were
+        # reading a different folder from the one the page displayed.
+        candidates = []
+        chosen = self.output_field.text().strip()
+        if chosen:
+            candidates.append(Path(chosen))
+        default = local / "UnpackedGame"
+        if default not in candidates:
+            candidates.append(default)
+
+        if getattr(self.state, "nxd_unpack_dir", None) is None:
+            for unpacked in candidates:
+                try:
+                    if not (unpacked.is_dir() and any(unpacked.iterdir())):
+                        continue
+                except OSError:
+                    continue
+                self.state.nxd_unpack_dir = unpacked
+                # Into "Unpack into", not "Game data folder".
+                #
+                # This wrote the unpacked path into the field that means
+                # "where the game's .pac files are", which is a different
+                # folder and the wrong one: it is what the person SAW move
+                # into `local_data`, and `start_unpack` reads that field as
+                # its SOURCE - so a recovered session offered to unpack the
+                # unpacked folder.
+                if not self.output_field.text().strip():
+                    self.output_field.setText(str(unpacked))
+                # The trees are what Textures and Sounds read; without them
+                # those two tabs stay empty even with the folder set.
+                try:
+                    self.state.texture_tree = td.scan_texture_tree(unpacked)
+                except Exception:                             # noqa: BLE001
+                    pass
+                try:
+                    self.state.sound_tree = sd.scan_sound_tree(unpacked)
+                except Exception:                             # noqa: BLE001
+                    pass
+                # Said once per folder.
+                #
+                # When the folder came back from `_restore_folders` it has
+                # already been named, and adding this line printed the same
+                # path twice under two different explanations - which reads
+                # as two folders until you compare them character by
+                # character.
+                if unpacked not in self._restored_folders:
+                    found.append(f"Reusing the unpacked game folder from a "
+                                 f"previous session: {unpacked}")
+                break
 
         database = local / "fft_data.sqlite"
         if (getattr(self.state, "nxd_sqlite_path", None) is None

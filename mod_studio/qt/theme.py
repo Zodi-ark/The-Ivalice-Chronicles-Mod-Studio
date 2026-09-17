@@ -584,6 +584,70 @@ def stylesheet(dark, backdrop=False) -> str:
     QFrame#SidebarDivider {{ background: {c['border']}; max-height: 1px; }}
 
     /*
+      The child tab list's scrollbar.
+
+      The list scrolls because 14 tabs want 390px and the sidebar has 319
+      at the 1100x640 minimum - 71px, nearly three rows. The obvious first
+      move was to claw that back from the spine's own spacing so no bar
+      appeared at all, and it was measured rather than assumed: the logo
+      block, the gap under it, the bottom margin and the divider spacing
+      come to about 38px between them, and the layout's expanding spacer is
+      already at 0, meaning the column is fully compressed. 38 is not 71,
+      and shrinking the logo to buy the rest would be a visible loss at
+      every window size to fix one. So the bar stays, and is styled.
+
+      What it stops being is Qt's default: a wide, bright, always-there
+      slab with arrow buttons at both ends, against a dark sidebar. What it
+      becomes is the restrained indicator Apple and Adobe converge on -
+      narrow, no track drawn, a low-contrast handle that brightens under
+      the pointer, and no arrows.
+
+      **Scoped to this one scroll area, deliberately.** Applying it to
+      every QScrollBar was measured first: `PM_ScrollBarExtent` stays at 14
+      whatever the stylesheet says, so a narrower bar app-wide would leave
+      `FormScrollArea` reserving 14px for an 8px bar - the reservation and
+      the render disagreeing, quietly, on every editing page. That is a
+      change worth making on purpose with its own measurement, not a side
+      effect of tidying the sidebar.
+
+      No alpha, because the plain stylesheet carries none anywhere and
+      `test_qt_settings` asserts it. `transparent` is a keyword rather than
+      an alpha channel, which is why the track can vanish without one; the
+      handle's low contrast comes from picking a colour near the sidebar
+      rather than from fading into it.
+    */
+    QScrollArea#SidebarTabs QScrollBar:vertical {{
+        background: transparent;
+        width: 8px;
+        margin: 0px;
+        border: none;
+    }}
+    QScrollArea#SidebarTabs QScrollBar::handle:vertical {{
+        background: {c['border']};
+        border-radius: 4px;
+        min-height: 24px;
+    }}
+    QScrollArea#SidebarTabs QScrollBar::handle:vertical:hover {{
+        background: {c['sidebar_text']};
+    }}
+    /*
+      The arrow buttons and the track above and below the handle. Qt draws
+      all four by default; every one of them is furniture this list has no
+      use for. Height 0 removes the buttons rather than hiding them, so the
+      handle gets the full run of the bar.
+    */
+    QScrollArea#SidebarTabs QScrollBar::add-line:vertical,
+    QScrollArea#SidebarTabs QScrollBar::sub-line:vertical {{
+        height: 0px;
+        border: none;
+        background: transparent;
+    }}
+    QScrollArea#SidebarTabs QScrollBar::add-page:vertical,
+    QScrollArea#SidebarTabs QScrollBar::sub-page:vertical {{
+        background: transparent;
+    }}
+
+    /*
       QTreeView belongs here and was missing, which cost two faults on the
       Textures and Sounds tabs.
 

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import constants as c
+from . import paths
 from .xml_io import format_flag_value, parse_flag_value  # noqa: F401 - re-exported for callers
 
 
@@ -678,6 +679,15 @@ ALL_SPECS = {
     "item_shield": ITEM_SHIELD_SPEC,
     "item_accessory": ITEM_ACCESSORY_SPEC,
     "item_equip_bonus": ITEM_EQUIP_BONUS_SPEC,
+    # Derived, not declared. The mod loader bundles an `ItemOptions`
+    # model that states the field order, the types and the `Effects`
+    # flag enum, and `derive_spec` reads the max id (127) from the
+    # table itself - so a hand-written TableSpec here would be a second
+    # copy of a schema we already read. Falls back to None if the
+    # bundled XML ever goes missing, and `load_table_tabs` reports that
+    # the same way it reports any other table failing to load.
+    "item_options": derive_spec(
+        paths.bundled_data_dir() / c.TABLE_FILENAMES["item_options"]),
     "item_shops": ITEM_SHOPS_SPEC,
     "map_trap": MAP_TRAP_SPEC,
     "ability_effect": ABILITY_EFFECT_SPEC,

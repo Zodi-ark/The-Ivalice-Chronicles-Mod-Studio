@@ -356,7 +356,7 @@ CONTENT_GROUPS: tuple[ContentGroup, ...] = (
         key="game_data",
         label="Game data",
         detail=(
-            "Jobs, Job Commands, Abilities, Items, Encounters, Poaching, Treasure Hunter - "
+            "Jobs, Job Commands, Abilities, Items, Encounters, Poaching, Treasure Hunter, "
             "everything that becomes the editable database."
         ),
         folders=("nxd",),
@@ -375,7 +375,7 @@ CONTENT_GROUPS: tuple[ContentGroup, ...] = (
     ContentGroup(
         key="sounds",
         label="Sounds and music",
-        detail="Music, voice lines and sound effect banks, for the Sounds tab.",
+        detail="Music, voice lines and sound effect banks, for the Sounds page.",
         folders=("sound",),
         default_on=True,
     ),

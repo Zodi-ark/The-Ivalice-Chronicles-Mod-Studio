@@ -33,6 +33,49 @@ FACE_TEXTURE_PATH_FRAGMENT = "ui/ffto/common/face/texture/"
 # rest get exported as R8G8B8A8_UNORM internally).
 REPLACEMENT_IMAGE_EXTENSIONS = (".dds", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga", ".webp")
 
+#: What each kind of game texture may be replaced WITH.
+#:
+#: The two are not interchangeable and the game does not treat them alike.
+#: A `.tga` slot is raw and is swapped for another `.tga`; a `.tex` is
+#: re-encoded through FF16Tools, which takes `.png` or `.dds`. Offering
+#: every readable image format for both let somebody pick a `.png` for a
+#: `.tga` slot, which produces a mod that builds and a texture that does
+#: not appear.
+REPLACEMENT_EXTENSIONS_BY_TARGET = {
+    # A `.tga` slot is raw. It is swapped for another `.tga` and nothing
+    # else re-encodes into one.
+    ".tga": (".tga",),
+    # A `.tex` is re-encoded by FF16Tools, so it accepts everything that
+    # tool's own `img-conv` accepts - quoted from its help text: "Converts
+    # image files to .tex. Supported: .dds (recommended), .png, .jpg, .gif,
+    # .bmp, .tga, .webp".
+    #
+    # This listed only `.png` and `.dds` at first, which was a guess dressed
+    # as a rule: it refused six formats the converter handles, and `.dds`
+    # being the recommended one is not the same as the others being
+    # unsupported. Taken from the tool that does the work, not from what
+    # seemed likely.
+    ".tex": (".dds", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tga",
+             ".webp"),
+}
+
+
+def allowed_replacements(relative_path) -> tuple:
+    """
+    The extensions this target accepts, or everything readable if it is
+    neither kind.
+
+    The fallback is deliberate rather than defensive: the tree is built from
+    whatever the unpacked game holds, and refusing to offer a replacement
+    for a file type nobody has catalogued yet would be worse than offering
+    too much.
+    """
+    suffix = str(relative_path).lower()
+    for target, allowed in REPLACEMENT_EXTENSIONS_BY_TARGET.items():
+        if suffix.endswith(target):
+            return allowed
+    return REPLACEMENT_IMAGE_EXTENSIONS
+
 
 def is_face_texture(relative_path: str) -> bool:
     return FACE_TEXTURE_PATH_FRAGMENT in relative_path.replace("\\", "/").lower()
@@ -226,7 +269,61 @@ def load_game_texture_preview(path: Path, cli_path: Optional[Path], cache_dir: P
                 raise ValueError(
                     f"FF16Tools.CLI tex-conv failed converting {path.name} for preview (exit code {code})."
                 )
+            # Bounded AFTER writing, so the entry just made is counted and
+            # the oldest go first. Nothing pruned this before, and a preview
+            # of a .tex leaves TWO files behind - a copy of the .tex and its
+            # .dds - so browsing the texture tree grew this folder without
+            # limit. The game ships 10,011 textures; at a few megabytes a
+            # pair that is tens of gigabytes for someone who scrolls
+            # through looking for something.
+            prune_preview_cache(cache_dir)
         return load_any_image(dds_path)
+
+
+#: How much converted-preview data to keep on disk.
+#:
+#: A cache, not an archive: its only job is to stop the SAME texture being
+#: re-converted while someone clicks back and forth between a few of them.
+#: 512MB holds hundreds of pairs, which is far more than that needs, and is
+#: small enough that nobody finds it by wondering where their disk went.
+PREVIEW_CACHE_BYTES = 512 * 1024 * 1024
+
+
+def prune_preview_cache(cache_dir: Path,
+                        limit: int = PREVIEW_CACHE_BYTES) -> list:
+    """
+    Deletes the least recently used entries until the cache fits `limit`.
+
+    Returns what it removed, for the log and for checking.
+
+    **Never raises.** This runs as a side effect of showing a picture, so a
+    locked file or a folder someone deleted underneath it must cost the
+    cleanup and nothing else - failing to prune is a disk that fills slowly,
+    while raising here is a preview that does not appear at all.
+
+    Least-recently-USED rather than oldest-created, by mtime touched on
+    read, so the textures someone is actually working with survive a sweep
+    that clears the ones they passed through once.
+    """
+    removed = []
+    try:
+        entries = [(f.stat().st_mtime, f.stat().st_size, f)
+                   for f in cache_dir.iterdir() if f.is_file()]
+    except OSError:
+        return removed
+    total = sum(size for _mtime, size, _f in entries)
+    if total <= limit:
+        return removed
+    for _mtime, size, path in sorted(entries):
+        if total <= limit:
+            break
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size
+        removed.append(path.name)
+    return removed
 
     raise ValueError(f"Unsupported texture extension for preview: {path.suffix}")
 

@@ -12,12 +12,13 @@ so the shell can be judged at full size without pretending the pages exist.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import (
     QGuiApplication, QIcon, QKeySequence, QPixmap, QShortcut)
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QStackedWidget, QTabWidget, QVBoxLayout,
+    QWidget,
 )
 
 from .. import paths, ui_settings
@@ -47,7 +48,9 @@ UTILITIES = ["Game Updates", "Settings"]
 #   already there.
 EDIT_TABS = [
     "Jobs", "Job Commands", "Abilities", "Items", "Equip Bonus",
-    "Poaching", "Treasure Hunter", "Encounters", "Textures", "Sounds",
+    "Inflict Status",
+    "Poaching", "Treasure Hunter", "Encounters", "Unit Names", "Textures", "Sounds",
+
     # Last, and one entry rather than 550. The tables above have hand-built
     # controls because they are what most mods change; everything else in
     # the game data is reachable through this one searchable page. See
@@ -60,6 +63,39 @@ EDIT_TABS = [
     # not a strip, and the strip is what could not fit an eleventh.
     "Find Text",
 ]
+
+
+class _TabScrollArea(QScrollArea):
+    """
+    The child tab list's scroll area, whose height preference follows its
+    CONTENT.
+
+    A plain `QScrollArea` reports a fixed, modest `sizeHint` no matter what
+    is inside it. In a sidebar that also holds an expanding stretch, that
+    is the whole story: the stretch takes every pixel past the hint, so the
+    list was pinned near 360px and its 390px of tabs scrolled - at 1032
+    tall exactly as much as at 640. The bar was not a small-window
+    compromise, it was permanent, which is why it reads as furniture rather
+    than as a response to running out of room.
+
+    Asking for the content's height instead lets the layout give the list
+    what it needs when the window has it, and the stretch still collects
+    whatever is left over. At the 1100x640 minimum there is genuinely not
+    enough - 390 wanted against 319 - so the bar appears there, which is
+    what a scrollbar is for.
+
+    `minimumSizeHint` is deliberately NOT touched. It is what lets the
+    sidebar shrink to the window minimum, and raising it here would raise
+    the whole application's minimum height to fit a tab list.
+    """
+
+    def sizeHint(self) -> QSize:
+        base = super().sizeHint()
+        inner = self.widget()
+        if inner is None:
+            return base
+        return QSize(base.width(),
+                     inner.sizeHint().height() + 2 * self.frameWidth())
 
 
 class Placeholder(QWidget):
@@ -263,10 +299,25 @@ class MainWindow(QMainWindow):
         # ten are right by construction and none can drift from its tab's
         # name.
         #
-        # Left margin 24 to line up with the 24 every page's content uses;
-        # right margin 0 so the toggles stay exactly where they were.
+        # Left margin 24 to line up with the 24 every page's content uses,
+        # and right margin 24 for the same reason.
+        #
+        # The toggles used to have no right margin at all. Measured on a
+        # 1920 window: the toggle bar's right edge sat at **x=1919** while
+        # every page's content ended at **x=1895** - the scroll area on all
+        # four tabs checked, and the "Copy to other languages" button on the
+        # two that have one. So the toggles were not 24px off the BUTTON;
+        # they were flush against the window edge while everything else on
+        # the page respected a 24px margin.
+        #
+        # That distinction decides the fix. Aligned to the BUTTON, the
+        # toggles would land somewhere else on Equip Bonus, Treasure Hunter
+        # and every other page without one - which is the inconsistency
+        # being removed. Aligned to the MARGIN they sit in the same place on
+        # every page, and matching the button falls out for free where there
+        # is one, because the button respects the same margin.
         title_row = QHBoxLayout()
-        title_row.setContentsMargins(24, 0, 0, 0)
+        title_row.setContentsMargins(24, 0, 24, 0)
         title_row.setSpacing(8)
         self.tab_title = QLabel(EDIT_TABS[0])
         self.tab_title.setProperty("role", "heading")
@@ -434,15 +485,58 @@ class MainWindow(QMainWindow):
                 # making a mod consists of; hidden until asked for keeps
                 # that spine clean and still puts every tab one click away
                 # from anywhere in the tool.
+                #
+                # The CHILD rows live in their own scroll area; the spine
+                # does not. Measured at the 1100x640 minimum with the step
+                # expanded: the sidebar wants 19 rows plus a logo and a
+                # divider, about 42px more than it has, and a QVBoxLayout
+                # buys that back by shrinking whatever can shrink. What
+                # could shrink was the five STEP rows - 36px each down to
+                # 27 - so their labels were cut through the glyphs. The
+                # tabs, at a fixed 26, were untouched.
+                #
+                # Reported with a screenshot, and the old check missed it
+                # completely because it summed the SQUEEZED heights and
+                # compared them to the budget: 502 of 520, comfortably
+                # inside, while five rows were visibly clipped (rule 18 -
+                # measuring the container proves nothing about the
+                # content).
+                #
+                # Scrolling only the children is what makes the trade
+                # local. The spine is what teaches a newcomer the shape of
+                # the job and it must never be cut; the child list is the
+                # part that grows a row or two a release, so that is the
+                # part that absorbs the overflow. Whole-sidebar scrolling
+                # was tried and is worse - it puts the spine on a
+                # scrollbar too.
+                self.tab_scroll = _TabScrollArea()
+                self.tab_scroll.setObjectName("SidebarTabs")
+                self.tab_scroll.setWidgetResizable(True)
+                self.tab_scroll.setFrameShape(QFrame.NoFrame)
+                self.tab_scroll.setHorizontalScrollBarPolicy(
+                    Qt.ScrollBarAlwaysOff)
+                self.tab_scroll.setVerticalScrollBarPolicy(
+                    Qt.ScrollBarAsNeeded)
+                self.tab_scroll.viewport().setAutoFillBackground(False)
+                self.tab_scroll.setSizePolicy(QSizePolicy.Preferred,
+                                              QSizePolicy.Expanding)
+                tab_holder = QWidget()
+                tab_holder.setAttribute(Qt.WA_TranslucentBackground, True)
+                tab_column = QVBoxLayout(tab_holder)
+                tab_column.setContentsMargins(0, 0, 0, 0)
+                tab_column.setSpacing(2)
+                self.tab_scroll.setWidget(tab_holder)
+                self.tab_scroll.setVisible(False)
                 for j, tab in enumerate(EDIT_TABS):
                     button = QPushButton("   " + tab)
                     button.setProperty("role", "subnav")
                     button.setCursor(Qt.PointingHandCursor)
                     button.clicked.connect(
                         lambda _=False, k=j: self._select_tab(k))
-                    button.setVisible(False)
                     self._tab_buttons.append(button)
-                    layout.addWidget(button)
+                    tab_column.addWidget(button)
+                tab_column.addStretch(0)
+                layout.addWidget(self.tab_scroll)
 
         layout.addStretch(1)
 
@@ -474,7 +568,11 @@ class MainWindow(QMainWindow):
             button.style().polish(button)
         editing = STEPS[index] == "Edit Game Data" if index < len(STEPS) else False
         for button in self._tab_buttons:
-            button.setVisible(editing)
+            button.setVisible(True)
+        # The holder is what hides and shows now, not each button. Hiding
+        # the buttons individually would leave an empty scroll area taking
+        # up the space they used to.
+        self.tab_scroll.setVisible(editing)
         if editing and self._active_tab is None:
             self._select_tab(0)
 

@@ -107,7 +107,8 @@ class ColumnFormLayout(QLayout):
 
     def __init__(self, parent=None, min_column_width: int = DEFAULT_MIN_COLUMN_WIDTH,
                  spacing: int = 2, column_gap: int = COLUMN_GAP,
-                 max_columns: int = 0, hug_contents: bool = False):
+                 max_columns: int = 0, hug_contents: bool = False,
+                 row_major: bool = False):
         super().__init__(parent)
         self._items: list = []
         self._min_column_width = int(min_column_width)
@@ -126,6 +127,7 @@ class ColumnFormLayout(QLayout):
         # which would have the same effect at today's window sizes and
         # silently stop working on a wider one.
         self._max_columns = max(0, int(max_columns))
+        self._row_major = bool(row_major)
         # Columns no wider than the widest thing in them.
         #
         # Normally a column form SHARES the available width equally, which
@@ -168,6 +170,28 @@ class ColumnFormLayout(QLayout):
         return Qt.Orientations(Qt.Orientation(0))
 
     # -- the reflow ---------------------------------------------------------
+
+    def refresh_layout(self) -> None:
+        """
+        Recomputes after something changed INSIDE a row.
+
+        The event filter above catches a row being shown or hidden, which
+        covers the view toggles. It cannot catch a row getting shorter
+        because its own children were hidden - the filter is installed on
+        the rows, not on everything beneath them, and watching a whole
+        subtree would fire on every keystroke in every field.
+
+        So a page that reshapes the inside of a row says so. Job Commands
+        does: a monster skillset has four ability slots where a job has
+        sixteen, and hiding the other twelve shrinks the Abilities section
+        without the body hearing about it. The reserved height stayed at
+        the job-sized one and "Other fields" sat stranded below a gap until
+        the window was resized - which is exactly the shape of a cached
+        height that nothing invalidated.
+        """
+        self.form.invalidate()
+        self.updateGeometry()
+        self._sync_height()
 
     def set_min_column_width(self, width: int) -> None:
         """
@@ -277,6 +301,16 @@ class ColumnFormLayout(QLayout):
 
         if columns == 1:
             assignment = [0] * len(items)
+        elif self._row_major:
+            # Straight across, then down: 1 2 / 3 4.
+            #
+            # The balanced fill below is right for a FORM - a newspaper
+            # column of unequal rows, where what matters is that the columns
+            # end level. It is wrong for a set of equal peers, where it
+            # produces 1 2 down the left and 3 4 down the right, so reading
+            # order runs vertically and "Tile 2" sits under "Tile 1" instead
+            # of beside it. Reported from real use on Treasure Hunter.
+            assignment = [index % columns for index in range(len(items))]
         else:
             total = sum(heights) + spacing * (len(items) - 1)
             target = math.ceil(total / columns)
@@ -336,11 +370,13 @@ class ColumnFormBody(QWidget):
     def __init__(self, parent=None,
                  min_column_width: int = DEFAULT_MIN_COLUMN_WIDTH,
                  spacing: int = 2, margins: tuple = (0, 0, 0, 0),
-                 max_columns: int = 0, hug_contents: bool = False):
+                 max_columns: int = 0, hug_contents: bool = False,
+                 row_major: bool = False):
         super().__init__(parent)
         self.form = ColumnFormLayout(self, min_column_width=min_column_width,
                                      spacing=spacing, max_columns=max_columns,
-                                     hug_contents=hug_contents)
+                                     hug_contents=hug_contents,
+                                     row_major=row_major)
         self.form.setContentsMargins(*margins)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
 
@@ -366,6 +402,28 @@ class ColumnFormBody(QWidget):
             self.updateGeometry()
             self._sync_height()
         return super().eventFilter(watched, event)
+
+    def refresh_layout(self) -> None:
+        """
+        Recomputes after something changed INSIDE a row.
+
+        The event filter above catches a row being shown or hidden, which
+        covers the view toggles. It cannot catch a row getting shorter
+        because its own children were hidden - the filter is installed on
+        the rows, not on everything beneath them, and watching a whole
+        subtree would fire on every keystroke in every field.
+
+        So a page that reshapes the inside of a row says so. Job Commands
+        does: a monster skillset has four ability slots where a job has
+        sixteen, and hiding the other twelve shrinks the Abilities section
+        without the body hearing about it. The reserved height stayed at
+        the job-sized one and "Other fields" sat stranded below a gap until
+        the window was resized - which is exactly the shape of a cached
+        height that nothing invalidated.
+        """
+        self.form.invalidate()
+        self.updateGeometry()
+        self._sync_height()
 
     def set_min_column_width(self, width: int) -> None:
         self.form.set_min_column_width(width)

@@ -33,9 +33,9 @@ from ... import nxd_data
 from ... import ui_settings
 from ..widgets.actions import (
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, TransientNote,
-    copy_edits_to_languages, ensure_language_loaded, language_order,
+    copy_edits_to_languages, ensure_language_loaded, language_combo, language_order,
     page_intro,
-    ViewToggles, apply_view_toggles, mark_edited)
+    ViewToggles, apply_view_toggles, mark_edited, edit_counter_text)
 from ..widgets.column_form import (
     DEFAULT_MIN_COLUMN_WIDTH, NARROW_MIN_COLUMN_WIDTH, ColumnFormBody,
 )
@@ -44,6 +44,7 @@ from ..widgets.field_rows import (
     TextFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.layout_settle import settle_layout
 
 #: Lines given to a prose box in the single-column Name and Description
@@ -81,7 +82,17 @@ def _groups_for(field_name: str, choices: list) -> dict:
     return {"Elements": choices}
 
 
-class JobsPage(QWidget):
+#: How many innate ability slots a job has.
+#:
+#: DERIVED shape, not a guess: `JobData.xml` carries `InnateAbilityId1`
+#: through `InnateAbilityId4` and nothing past 4, and a diff of this page's
+#: rows against a real job record named those four as the only fields in the
+#: file with no control anywhere on the page. `test_qt_jobs` re-derives it
+#: from the record rather than trusting this number.
+INNATE_ABILITY_SLOTS = 4
+
+
+class JobsPage(RefreshesWhenVisible, QWidget):
     edits_changed = Signal()
     navigate_requested = Signal(str, object)
 
@@ -108,11 +119,8 @@ class JobsPage(QWidget):
         # every language, and job.<lang>.nxd, which is not.
         top = QHBoxLayout()
         top.addWidget(QLabel("Language:"))
-        self.language_box = QComboBox()
-        self.language_box.addItems(language_order(c.NXD_JOB_FILENAMES))
+        self.language_box = language_combo(c.NXD_JOB_FILENAMES)
         self.language_box.currentTextChanged.connect(self._on_language)
-        self.language_box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.language_box.setMinimumWidth(72)
         top.addWidget(self.language_box)
 
         self.copy_button = QPushButton(COPY_LANGUAGES_LABEL)
@@ -134,8 +142,8 @@ class JobsPage(QWidget):
         # fix rather than shorter copy.
         outer.addLayout(page_intro(
             "Pick a job on the left, then edit it on the right. Only the "
-            "fields you tick are written into your mod. The job's name and "
-            "description are per-language - pick the language first.",
+            "fields ticked are written into your mod. Copy to other "
+            "languages copies everything except the text fields.",
             self.language_controls))
 
         self.action_note = TransientNote()
@@ -361,6 +369,70 @@ class JobsPage(QWidget):
                                expanded=True))
         self.form.addWidget(self.sections[-1])
 
+        # The four innate ability slots.
+        #
+        # Diffed against a real job record: `InnateAbilityId1` to
+        # `InnateAbilityId4` were the ONLY four of the 29 fields with no row
+        # anywhere on this page. A job's innate abilities are what it can do
+        # without spending JP - the Squire's Focus, a Monk's Martial Arts -
+        # so a page that edits everything else about a job and not these was
+        # missing a whole category of edit rather than a stray column.
+        #
+        # `DropdownFieldRow` with a jump, matching the R/S/M slots on Job
+        # Commands exactly - same widget, same "Edit ->" label, same
+        # tooltip wording, same signal. A bare number box would have meant
+        # knowing that 183 is Martial Arts, which is the thing every other
+        # id field on this interface stopped requiring.
+        #
+        # Its own section, and BELOW Basic Stats - measured, not reasoned.
+        #
+        # It was written above, on the argument that what a job can DO is
+        # not a stat, which is why the skillset dropdown sits up there. That
+        # argument does not survive a 4-row section: above Basic Stats it
+        # pushed a stat row below the fold at both narrow widths - 13
+        # visible to 12 at 1100, 17 to 16 at 1500 - to show fields most
+        # edits do not touch. Below it costs nothing anywhere and still
+        # gains four at 1920 and 2560:
+        #
+        #     placement        1100   1500   1920   2560
+        #     (before)           13     17     21     21
+        #     above stats        12     16     25     25
+        #     below stats        13     17     25     25
+        #
+        # Expanded, though. A slot showing "(None / Unset)" behind a
+        # collapsed header is hard to tell from a slot that does not exist,
+        # which is the state this page was in - and the measurement says
+        # expanding costs nothing here.
+        # One column. Four slots of the same kind are a LIST - "which four
+        # abilities does this job start with" - and a list reads down.
+        # Reflowed into two columns they read across, which puts slot 3
+        # under slot 1 and invites the eye to pair 1 with 2 as if the
+        # numbering meant something.
+        #
+        # The opposite call from Treasure Hunter's tiles, and for the
+        # opposite reason: a tile is a self-contained thing with its own
+        # heading, so four of them side by side is four objects. These are
+        # four rows of one object.
+        innate_body = ColumnFormBody(min_column_width=DEFAULT_MIN_COLUMN_WIDTH,
+                                     max_columns=1)
+        self.column_bodies.append(innate_body)
+        self.innate_rows = []
+        for slot in range(1, INNATE_ABILITY_SLOTS + 1):
+            row = DropdownFieldRow(
+                f"InnateAbilityId{slot}", f"Innate ability {slot}",
+                jump_label="Edit \u2192",
+                jump_tooltip="Open this ability on the Abilities tab")
+            row.edited.connect(self._on_field_edited)
+            row.jump_requested.connect(self._jump_to_ability)
+            self.rows[row.field_name] = row
+            self.innate_rows.append(row)
+            innate_body.add_row(row)
+        self.sections.append(
+            CollapsibleSection("Innate Abilities", innate_body,
+                               expanded=True))
+        self.form.addWidget(self.sections[-1])
+
+
         # The flag fields, grouped the way the engine groups them.
         for field_name, (choices, label) in c.FLAG_FIELDS.items():
             groups = _groups_for(field_name, choices)
@@ -523,6 +595,39 @@ class JobsPage(QWidget):
             "Grants: " + ", ".join(granted) if granted
             else "That skillset has no abilities in it.")
 
+    def set_ability_choices(self, id_to_name: dict) -> None:
+        """
+        Fills the four innate ability dropdowns once the ability table is
+        known.
+
+        Separate from construction for the same reason
+        `set_command_choices` is: that table is read during setup and does
+        not exist when this page is built. Refilled on a rename too, so an
+        ability renamed on the Abilities tab shows its new name here rather
+        than only after a restart - the fault the skillset picker had.
+
+        The caller decides what goes in - `app.innate_ability_choices`,
+        which is narrower than the full ability list. Only decimal 454-485
+        function as Innate Abilities per FFTPatcher, plus the movement and
+        monster-only traits vanilla monster jobs reuse these fields for.
+        Offering all 512 would be a list of mostly wrong answers, which is
+        the reason Job Commands scopes its R/S/M slots too.
+        """
+        for row in getattr(self, "innate_rows", []):
+            row.set_choices(id_to_name)
+
+    def _jump_to_ability(self, ability_id: int) -> None:
+        """
+        Opens Abilities at the slot whose button was pressed.
+
+        The id arrives from the row rather than from a remembered "current
+        slot", exactly as on Job Commands: there are four of these and no
+        notion of which is active, so anything this page remembered would be
+        a second source of truth for something the row already knows.
+        """
+        if ability_id:
+            self.navigate_requested.emit("Abilities", int(ability_id))
+
     def _jump_to_command(self, command_id: int) -> None:
         """
         Opens Job Commands at the skillset currently selected.
@@ -535,6 +640,22 @@ class JobsPage(QWidget):
         self.navigate_requested.emit("Job Commands", int(command_id))
 
     # -- editing -------------------------------------------------------------
+
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected job when this page comes back on screen.
+
+        `load_job` fills the numeric rows from `state.edits` and calls
+        `_load_text_rows` for the per-language half, so one call covers both
+        stores All Game Data can write. The list is not rebuilt and the
+        selection is not moved - see `widgets/visible_refresh.py`.
+        """
+        if self.current_job_id is None:
+            return
+        self.load_job(self.current_job_id)
+        self._relabel_list()
+        self._mark_edited()
+        self._update_counter()
 
     def _on_field_edited(self) -> None:
         if self.current_job_id is None:
@@ -718,7 +839,7 @@ class JobsPage(QWidget):
               for per_language in self.state.nxd_edits_for("job").values()
               for job_id, fields in per_language.items() if fields),
         })
-        self.counter.setText(f"{edited} of {total} jobs have pending edits")
+        self.counter.setText(edit_counter_text(edited, total, "jobs"))
 
     # -- view toggles ---------------------------------------------------------
 

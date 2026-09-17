@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from ... import constants as c
 from ... import item_xml_io as ix
+from ... import reference_names
 from ... import texture_data as td
 from ..widgets import actions
 from ..widgets.actions import (
@@ -56,11 +57,12 @@ from ..widgets.actions import (
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, ViewToggles,
     apply_view_toggles, copy_edits_to_languages,
     ensure_language_loaded, mark_edited, select_list_row,
-    set_empty_state, language_order,)
+    set_empty_state, language_combo, language_order, edit_counter_text)
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, FlagFieldPanel, NumericFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.texture_slot import InlineTextureSlot
 from .poaching import TextFieldRow
 
@@ -81,6 +83,58 @@ LINKED_TABLES = {
 # Headgear before Armor before Accessory, matching the Tkinter tab's own
 # search order - an item flagged both Weapon and Rare is a weapon.
 TYPE_PRIORITY = ("weapon", "shield", "headgear", "armor", "accessory")
+
+
+def linked_table_key(values: dict) -> str | None:
+    """
+    Which Additional Data table THIS item's `AdditionalDataId` indexes.
+
+    `AdditionalDataId` is an index into the item's OWN category table, not
+    a global weapon index. Row 8 of `ItemWeaponData` and row 8 of
+    `ItemArmorData` are different rows about different items, and the only
+    thing that says which one an item means is its `TypeFlags`.
+
+    Getting that wrong is not a display fault. The "Used by" list on
+    Inflict Status read every item through `item_weapon` regardless of
+    type, so Aegis Shield, Platinum Helm, Genji Gloves and Maiden's Kiss -
+    all of which happen to carry `AdditionalDataId=8` - inherited
+    Assassin's Dagger's status effect and were listed as inflicting Doom.
+    None of them do.
+
+    Returns `None` for an item with none of the five type flags. That is
+    not an error and not a fallback to weapon: Maiden's Kiss is flagged
+    only `Rare`, so it has no Additional Data row at all, and answering
+    "weapon" for it is how it ended up under Doom.
+
+    **`TypeFlags` decides, not `ItemCategory`.** Genji Gloves are category
+    `Armguard` and flagged `Accessory`; Platinum Helm is category `Helmet`
+    and flagged `Headgear`. The category is a display grouping, the flag is
+    the thing the game reads.
+
+    One function rather than a rule per caller. `rebuild_linked_section`
+    and `table_usage` both need this answer, and two mechanisms answering
+    the same question would fight silently - which is the whole shape of
+    the bug above.
+    """
+    # The engine's own parser, the same one `_type_flags` uses on the live
+    # form. A second splitter here would be a second answer to "what are
+    # this item's flags", and "None" would parse as the flag `None`.
+    flags = ix.parse_flag_value(values.get("TypeFlags") or "")
+    for name in TYPE_PRIORITY:
+        if name.capitalize() not in flags:
+            continue
+        # Headgear and Armor share `ItemArmorData` - the same HPBonus/
+        # MPBonus shape despite being distinct type flags. That rule lives
+        # in the engine's `ITEM_TYPE_TO_ADDITIONAL_TABLE` and is read from
+        # there rather than restated, which is what this page used to do.
+        target = c.ITEM_TYPE_TO_ADDITIONAL_TABLE[name.capitalize()]
+        return LINKED_TABLES[target][0]
+    return None
+
+
+#: `LINKED_TABLES` by table key, for callers holding the key rather than the
+#: type name. Derived, so the two cannot disagree about what a table holds.
+LINKED_BY_KEY = {spec[0]: spec for spec in LINKED_TABLES.values()}
 
 # The base row's fields, in the order somebody fills an item in rather than
 # the order the columns happen to sit in. `ITEM_FIELD_ORDER` is the file's
@@ -115,11 +169,16 @@ _COMMENT_TOOLTIP = (
     "game reads, so editing it changes nothing in play - it is here because a "
     "mod that ships the row should ship the row as it found it.")
 
-class ItemsPage(QWidget):
+class ItemsPage(RefreshesWhenVisible, QWidget):
     """The Items tab: a list, and three sub-tabs of editors for one item."""
 
     edits_changed = Signal()
     jump_to_equip_bonus = Signal(int)
+    jump_to_inflict_status = Signal(int)
+    # Where the Inflict Status row goes when Formula makes it an ability.
+    # A separate signal rather than a shared `navigate_requested`, matching
+    # the two above - this page names its destinations.
+    jump_to_ability = Signal(int)
     jump_to_texture = Signal(str)
 
     def __init__(self, state, parent=None):
@@ -154,14 +213,8 @@ class ItemsPage(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Language:"))
-        self.language_box = QComboBox()
-        self.language_box.addItems(language_order())
+        self.language_box = language_combo()
         self.language_box.currentTextChanged.connect(self._on_language)
-        # The widest entry is two characters; a
-        # minimum keeps the arrow from crowding it.
-        self.language_box.setSizePolicy(
-            QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.language_box.setMinimumWidth(72)
         top.addWidget(self.language_box)
         self.copy_button = QPushButton(COPY_LANGUAGES_LABEL)
         self.copy_button.setToolTip(COPY_LANGUAGES_NOTE)
@@ -183,8 +236,8 @@ class ItemsPage(QWidget):
         self.language_controls.setSizePolicy(QSizePolicy.Maximum,
                                              QSizePolicy.Preferred)
         outer.addLayout(page_intro(
-            "Stats are shared across languages; names and descriptions are "
-            "per language.", self.language_controls))
+            "All items, their stats, and respective textures.",
+            self.language_controls))
 
         self.view_toggles = ViewToggles()
         self.view_toggles.changed.connect(self._apply_view)
@@ -381,19 +434,16 @@ class ItemsPage(QWidget):
         bonus_box = QGroupBox("Equip Bonus")
         bonus_column = QVBoxLayout(bonus_box)
         bonus_column.setSpacing(2)
-        low, high, label, hint = c.ITEM_XML_NUMERIC_FIELDS["EquipBonusId"]
-        bonus_row = NumericFieldRow("EquipBonusId", label, low, high, hint)
+        label = c.ITEM_XML_NUMERIC_FIELDS["EquipBonusId"][2]
+        bonus_row = DropdownFieldRow(
+            "EquipBonusId", label,
+            jump_label="Edit \u2192",
+            jump_tooltip="Open this row on the Equip Bonus tab")
+        bonus_row.set_choices(self._equip_bonus_choices())
         bonus_row.edited.connect(self._on_equip_bonus_edited)
+        bonus_row.jump_requested.connect(self.jump_to_equip_bonus.emit)
         self.base_rows["EquipBonusId"] = bonus_row
         bonus_column.addWidget(bonus_row)
-        self.bonus_preview = QLabel("")
-        self.bonus_preview.setProperty("role", "muted")
-        self.bonus_preview.setWordWrap(True)
-        bonus_column.addWidget(self.bonus_preview)
-        self.bonus_jump = QPushButton("Edit this Equip Bonus \u2192")
-        self.bonus_jump.clicked.connect(
-            lambda: self.jump_to_equip_bonus.emit(self._equip_bonus_id()))
-        bonus_column.addWidget(self.bonus_jump, 0, Qt.AlignLeft)
         column.addWidget(bonus_box)
 
         # Shop availability - its own table, keyed by the same item id.
@@ -460,9 +510,16 @@ class ItemsPage(QWidget):
 
     # -- the dynamic Additional Data section --------------------------------
 
-    def _type_flags(self) -> set:
-        return ix.parse_flag_value(
-            self.base_rows["TypeFlags"].get_value_str())
+    def _linked_key_now(self) -> str | None:
+        """
+        This item's Additional Data table, read from the LIVE form.
+
+        The form rather than the record, because `TypeFlags` is being
+        edited: changing an item from Armor to Weapon has to change which
+        table its Additional Data id points into before anything is saved.
+        """
+        return linked_table_key(
+            {"TypeFlags": self.base_rows["TypeFlags"].get_value_str()})
 
     def _additional_id(self) -> int:
         try:
@@ -490,16 +547,14 @@ class ItemsPage(QWidget):
                 widget.deleteLater()
         self.linked_rows = {}
 
-        flags = self._type_flags()
-        base_type = next(
-            (name for name in TYPE_PRIORITY if name.capitalize() in flags),
-            None)
-        # Headgear and Armor share ItemArmorData - the same HPBonus/MPBonus
-        # shape despite being distinct type flags.
-        target = "armor" if base_type == "headgear" else base_type
+        # `linked_table_key` is the one place that answers "which table does
+        # this item's AdditionalDataId index". The rule used to be restated
+        # here as well, and the copy in `table_usage` that disagreed with it
+        # is what put Doom on four items that do not inflict it.
+        table_key = self._linked_key_now()
         self._linked_row_id = self._additional_id()
 
-        if target is None:
+        if table_key is None:
             self._linked_table_key = None
             self.linked_caption.setText(
                 "This item has no linked Weapon/Armor/Shield/Accessory data "
@@ -507,7 +562,7 @@ class ItemsPage(QWidget):
                 "Armor or Accessory.")
             return
 
-        table_key, max_id, field_order, label = LINKED_TABLES[target]
+        _key, max_id, field_order, label = LINKED_BY_KEY[table_key]
         self._linked_table_key = table_key
         row_id = self._linked_row_id
 
@@ -536,6 +591,22 @@ class ItemsPage(QWidget):
                 row = FlagFieldPanel("Elements", "Elements",
                                      {"Elements": c.ELEMENT_FLAGS}, columns=1)
                 default = "None"
+            elif field_name == "Formula":
+                # A dropdown, not a number box. `Formula` selects one of the
+                # game's hardcoded damage routines, and 7 tells a beginner
+                # nothing about what it does while "Heal_[Weapon]" does.
+                #
+                # Safe to constrain here in a way EffectId is not: the 107
+                # named routines ARE the domain, and a number outside them
+                # names nothing the game can run.
+                row = DropdownFieldRow("Formula", "Formula", zero_is_none=False)
+                row.set_choices(reference_names.formula_names())
+                default = "0"
+            elif field_name == "OptionsAbilityId":
+                # Built by its own method, because this row is two fields
+                # wearing one column. See `_make_options_row`.
+                row = self._make_options_row()
+                default = "0"
             else:
                 low, high, flabel, note = c.ITEM_XML_NUMERIC_FIELDS[field_name]
                 row = NumericFieldRow(
@@ -547,8 +618,202 @@ class ItemsPage(QWidget):
             row.edited.connect(self._on_linked_edited)
             self.linked_rows[field_name] = row
             self.linked_column.addWidget(row)
+            if field_name == "Formula":
+                # Formula decides what the row below MEANS, so changing it
+                # has to change that row - live, without reloading the item.
+                row.edited.connect(self._sync_options_kind)
+            if field_name == "OptionsAbilityId":
+                # No caption and no separate button underneath.
+                #
+                # The list names the row - "011 - Doom" - so a line of prose
+                # repeating that in other words was saying the same thing
+                # twice, and the button belongs beside the control it acts
+                # on rather than on a line of its own. Same row shape as a
+                # Job Commands ability slot.
+                row.edited.connect(self.refresh_inflict_status)
+                self.refresh_inflict_status()
         apply_view_toggles(list(self.linked_rows.values()),
                            *self.view_toggles.state())
+
+    def _inflict_choices(self) -> dict:
+        """
+        Every Inflict Status row, named the way the Inflict Status page
+        names it.
+
+        Through `inflict_status_descriptor`, the same function that page
+        builds its own list from, so the two cannot describe one row
+        differently. A number box asked the person to know that 11 is Doom;
+        the list says so.
+        """
+        from .table_editor import inflict_status_descriptor
+
+        records = (self.state.item_table_records or {}).get(
+            "item_options", [])
+        edits = (self.state.item_table_edits or {}).get("item_options", {})
+        choices = {}
+        for record in records:
+            values = {**record.values, **edits.get(record.item_id, {})}
+            choices[record.item_id] = inflict_status_descriptor(values)
+        return choices
+
+    def _equip_bonus_choices(self) -> dict:
+        """Every Equip Bonus row, summarised the way the page summarises it."""
+        records = (self.state.item_table_records or {}).get(
+            "item_equip_bonus", [])
+        return {r.item_id: self._equip_bonus_summary(r.item_id)
+                for r in records}
+
+    def _make_options_row(self):
+        """
+        The control for `OptionsAbilityId`, which is two fields in one column.
+
+        Normally it is an Inflict Status row id - a number into
+        `ItemOptionsData.xml`. When `Formula` is 2 the game reads the same
+        byte as an ABILITY id and the item casts that spell instead.
+
+        The page used to show one number box labelled `Inflict Status` with
+        a caption explaining the exception. That is honest, and it still
+        asks a beginner to hold two meanings in their head and to know
+        which one is in force. So the control says which: at Formula 2 the
+        label is **Cast Spell** and the box becomes a list of ability names,
+        because a name is the thing you can recognise and 183 is not.
+
+        The ability names come from `app.ability_choices`, which is the same
+        source the Abilities tab lists from - so renaming an ability there
+        renames it here. Poaching's Produces / Unlocks Item does exactly
+        this; a second list would be a second set of names to go stale.
+        """
+        from ..app import ability_choices
+
+        flabel = c.ITEM_XML_NUMERIC_FIELDS["OptionsAbilityId"][2]
+        if self._uses_ability_formula():
+            row = DropdownFieldRow(
+                "OptionsAbilityId", "Cast Spell",
+                jump_label="Edit \u2192",
+                jump_tooltip="Open this ability on the Abilities tab")
+            row.set_choices(ability_choices(self.state))
+            row.lists_abilities = True
+        else:
+            row = DropdownFieldRow(
+                "OptionsAbilityId", flabel,
+                jump_label="Edit \u2192",
+                jump_tooltip="Open this row on the Inflict Status tab")
+            row.set_choices(self._inflict_choices())
+            row.lists_abilities = False
+        row.jump_requested.connect(self._on_options_jump)
+        return row
+
+    def _sync_options_kind(self) -> None:
+        """
+        Swaps the options control when Formula crosses into or out of 2.
+
+        In place, not by rebuilding the Additional Data section: the change
+        is triggered BY the Formula box, and tearing down the whole column
+        would delete the widget under the cursor mid-edit.
+
+        Does nothing while the kind is unchanged, so typing 1 -> 1 or
+        3 -> 4 leaves the row alone rather than replacing it on every
+        keystroke and dropping whatever was selected.
+        """
+        old = self.linked_rows.get("OptionsAbilityId")
+        if old is None:
+            return
+        # What the row currently IS, recorded rather than inferred.
+        #
+        # This used to ask `isinstance(old, DropdownFieldRow)`, which worked
+        # only while one of the two states was a number box. Both are
+        # dropdowns now - they differ in what they LIST - so the type stopped
+        # telling them apart and the swap silently never happened.
+        wants_ability = self._uses_ability_formula()
+        if wants_ability == getattr(old, "lists_abilities", False):
+            self.refresh_inflict_status()
+            return
+        index = self.linked_column.indexOf(old)
+        if index < 0:
+            return
+        value, included = old.get_value_str(), old.included
+        self.linked_column.takeAt(index)
+        old.setParent(None)
+        old.deleteLater()
+        row = self._make_options_row()
+        # The value carries across. The byte does not change when the
+        # formula does - what changes is what it means - so blanking it
+        # here would silently discard the item's data.
+        row.load(value, included)
+        row.edited.connect(self._on_linked_edited)
+        row.edited.connect(self.refresh_inflict_status)
+        self.linked_rows["OptionsAbilityId"] = row
+        self.linked_column.insertWidget(index, row)
+        apply_view_toggles([row], *self.view_toggles.state())
+        self.refresh_inflict_status()
+
+    def _on_options_jump(self, _row_id=None) -> None:
+        """
+        Sends the jump wherever the field currently points.
+
+        One button, two destinations, decided by the same rule the label
+        follows - a button that always went to Inflict Status would, at
+        Formula 2, open a status row that has nothing to do with the spell
+        the item casts.
+        """
+        if self._uses_ability_formula():
+            self.jump_to_ability.emit(self._options_ability_id())
+            return
+        self.jump_to_inflict_status.emit(self._options_ability_id())
+
+    def _options_ability_id(self) -> int:
+        row = self.linked_rows.get("OptionsAbilityId")
+        try:
+            return int(row.get_value_str()) if row is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _uses_ability_formula(self) -> bool:
+        """Formula 2 makes OptionsAbilityId an ability id, not an option."""
+        row = self.linked_rows.get("Formula")
+        try:
+            return int(row.get_value_str()) == 2 if row is not None else False
+        except (TypeError, ValueError):
+            return False
+
+    def refresh_inflict_status(self) -> None:
+        """
+        Keeps the control's LIST matching what it currently means.
+
+        There is nothing to caption any more - the row names its own value.
+        What still has to happen is the swap between two different lists:
+        status rows normally, abilities when Formula is 2. That swap is
+        `_sync_options_kind`; this only refreshes the entries, so a status
+        row renamed on its own tab is renamed here too.
+        """
+        from ..app import ability_choices
+
+        row = self.linked_rows.get("OptionsAbilityId")
+        if not isinstance(row, DropdownFieldRow):
+            return
+        current, included = row.get_value_str(), row.included
+        row.set_choices(ability_choices(self.state)
+                        if self._uses_ability_formula()
+                        else self._inflict_choices())
+        row.load(current, included)
+
+    def _inflict_status_summary(self, option_id: int) -> str:
+        """
+        What that row does, in the words the Inflict Status page uses.
+
+        Imported from the page rather than re-derived, so the two cannot
+        describe the same row differently.
+        """
+        from .table_editor import inflict_status_descriptor
+
+        record = (self.state.item_table_records_by_id("item_options")
+                  .get(option_id))
+        baseline = record.values if record else {}
+        edits = (self.state.item_table_edits.get("item_options", {})
+                 .get(option_id, {}))
+        if not baseline and not edits:
+            return "No such row in the loaded table."
+        return inflict_status_descriptor({**baseline, **edits})
 
     def _equip_bonus_summary(self, bonus_id: int) -> str:
         """A one-glance summary of the bonus row, so the id is not alone."""
@@ -591,17 +856,18 @@ class ItemsPage(QWidget):
         return "; ".join(parts) if parts else "No bonuses set on this row."
 
     def refresh_equip_bonus(self) -> None:
-        bonus_id = self._equip_bonus_id()
-        if bonus_id > c.MAX_ITEM_EQUIP_BONUS_ID:
-            self.bonus_preview.setText(
-                f"Id {bonus_id} is out of range "
-                f"(0-{c.MAX_ITEM_EQUIP_BONUS_ID}) - fix the Equip Bonus Id.")
-            self.bonus_jump.setEnabled(False)
+        """
+        Keeps the Equip Bonus list matching the rows that exist.
+
+        The out-of-range warning is gone with the number box that made it
+        possible: a list cannot hold a value that is not in it.
+        """
+        row = self.base_rows.get("EquipBonusId")
+        if not isinstance(row, DropdownFieldRow):
             return
-        self.bonus_preview.setText(
-            f"ItemEquipBonusData.xml, row {bonus_id} (0 conventionally means "
-            f"no bonus). {self._equip_bonus_summary(bonus_id)}")
-        self.bonus_jump.setEnabled(True)
+        current, included = row.get_value_str(), row.included
+        row.set_choices(self._equip_bonus_choices())
+        row.load(current, included)
 
     # -- records ------------------------------------------------------------
 
@@ -897,6 +1163,20 @@ class ItemsPage(QWidget):
     def _on_texture_changed(self) -> None:
         self._after_edit()
 
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected item when this page comes back on screen.
+
+        `load_record` fills the per-language text rows, the base row and the
+        shop rows from their stores, so one call re-ticks whatever All Game
+        Data wrote. See `widgets/visible_refresh.py`.
+        """
+        if self.current_item_id is None:
+            return
+        self.load_record(self.current_item_id)
+        self._mark_edited()
+        self._update_counter()
+
     def _after_edit(self) -> None:
         self._mark_edited()
         self._update_counter()
@@ -959,22 +1239,22 @@ class ItemsPage(QWidget):
             mark_edited(item, self._is_edited(item.data(Qt.UserRole)))
 
     def _update_counter(self) -> None:
-        state = self.state
-        label = c.NXD_LANGUAGE_LABELS.get(self.language, self.language)
-        icons = sum(1 for record in self.records()
-                    if (td.item_art_texture_path(record.item_id)
-                        in (state.texture_edits or {})
-                        or td.item_sprite_texture_path(record.item_id)
-                        in (state.texture_edits or {})))
+        # One number, like every other page.
+        #
+        # This listed seven: text, base, weapon, armor, shield, accessory,
+        # shop and icons. Every one of them is true and nobody learning the
+        # tool could tell what any of it meant - an item edited in two of
+        # those tables is still ONE item somebody changed, which is the
+        # question the line is being asked. The breakdown lives in Export
+        # Mod's Mod Contents, where it is what somebody is actually
+        # checking.
+        # `_is_edited` is the same rule the LIST uses to bold a row, so the
+        # count and the bolding cannot disagree - which they would if this
+        # added up table counts separately.
+        edited = sum(1 for record in self.records()
+                     if self._is_edited(record.item_id))
         self.counter.setText(
-            f"{state.edited_item_text_count(self.language)} edited in "
-            f"{label}; {state.edited_item_table_count('item')} base, "
-            f"{state.edited_item_table_count('item_weapon')} weapon, "
-            f"{state.edited_item_table_count('item_armor')} armor, "
-            f"{state.edited_item_table_count('item_shield')} shield, "
-            f"{state.edited_item_table_count('item_accessory')} accessory, "
-            f"{state.edited_item_table_count('item_shops')} shop; "
-            f"{icons} with icon replacements.")
+            edit_counter_text(edited, self.list.count(), "items"))
 
     # -- view toggles -------------------------------------------------------
 

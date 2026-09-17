@@ -2,11 +2,16 @@
 Small persistent store for UI preferences that should survive closing the
 app.
 
-Only view preferences live here - which toggles are ticked. Nothing about a
-mod, nothing about the game install, nothing that affects what gets
-exported. If this file is missing, unreadable, or full of nonsense, every
-setting falls back to its default and the app carries on; a preferences file
-must never be a reason the tool fails to start.
+What lives here is anything the person CHOSE that should still be true next
+time they open the tool - which toggles are ticked, which appearance they
+picked, and the two folders they pointed the unpacker at. Nothing about a
+mod and nothing that affects what gets exported: a mod's contents are
+per-session and per-mod by design.
+
+If this file is missing, unreadable, or full of nonsense, every setting
+falls back to its default and the app carries on; a preferences file must
+never be a reason the tool fails to start. The same applies to the folders:
+a remembered path that no longer exists is ignored, not restored.
 
 Kept deliberately separate from the mod state in gui/app.py, which is
 per-session and per-mod by design.
@@ -47,6 +52,18 @@ DEFAULTS = {
     # Kept here rather than in local_data/cache so that clearing the cache
     # doesn't silently turn every launch back into a download.
     "tables_last_checked": 0.0,
+    # The two folders General Setup asks for: where the game's .pac files
+    # are, and where to unpack them to. Empty means "not chosen yet".
+    #
+    # These are here because NOT remembering them had a consequence worse
+    # than a wrong default. The page has a last-resort recovery that adopts
+    # `local_data/UnpackedGame` when no folder is set, and no folder was set
+    # on every fresh start - so a person who unpacked to their own drive
+    # reopened the tool and found all three locations pointing inside
+    # `local_data`, which is a cache this tool deletes. The fallback was
+    # right; the gap it was filling should not have existed.
+    "game_data_folder": "",
+    "unpack_output_folder": "",
 }
 
 

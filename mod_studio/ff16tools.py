@@ -296,6 +296,36 @@ def run_tex_to_dds(
     return _run_streaming(command, line_cb)
 
 
+def build_pzd_conv_command(cli_path: Path, input_path: Path) -> list[str]:
+    return [str(cli_path), "pzd-conv", "-i", str(input_path)]
+
+
+def run_pzd_conv(
+    cli_path: Path, input_path: Path,
+    line_cb: Optional[Callable[[str], None]] = None
+) -> int:
+    """
+    Runs `FF16Tools.CLI pzd-conv`, which converts `.pzd <-> .yaml`.
+
+    One verb, both directions - the CLI decides by the input's extension,
+    the way `tex-conv` does. Mod Studio only ever uses the yaml -> pzd
+    direction: it reads `.pzd` natively (see `pzd_data`, and the reasons
+    there), and hands the writing back to FF16Tools because that is the
+    half that can corrupt a game file.
+
+    Like `tex-conv` there is no -o: the output lands beside the input with
+    the other extension.
+
+    Present in FF16Tools 1.13.3, whose own help text reads "Converts Panzer
+    (localization/voice lines) files .pzd <-> .yaml". An older CLI will not
+    know the verb, which is why the caller checks the exit code rather than
+    assuming the file appeared.
+    """
+    command = _for_platform(cli_path,
+                            build_pzd_conv_command(cli_path, input_path))
+    return _run_streaming(command, line_cb)
+
+
 def build_img_to_tex_command(cli_path: Path, input_path: Path) -> list[str]:
     return [str(cli_path), "img-conv", "-i", str(input_path)]
 

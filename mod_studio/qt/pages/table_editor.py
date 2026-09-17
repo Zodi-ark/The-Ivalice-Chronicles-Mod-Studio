@@ -33,12 +33,15 @@ from ... import item_xml_io as ix
 from ..widgets.actions import (
     page_intro,
     ViewToggles, apply_view_toggles, mark_edited, select_list_row,
-    set_empty_state)
+    set_empty_state, edit_counter_text)
 from ..widgets.field_rows import (
+    ChoiceFieldRow,
     DropdownFieldRow,
     CollapsibleSection, FlagFieldPanel, NumericFieldRow, split_words,
 )
+from ..widgets.column_form import ColumnFormBody
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 
 # A field's value is text in the XML, so the editor needs a range. Anything
 # not named here gets a byte's worth, which is what the great majority of
@@ -62,7 +65,28 @@ def _range_for(field_name: str) -> tuple:
     return DEFAULT_RANGE
 
 
-def flag_choices(field_name: str) -> list:
+def enum_choices(field_name: str, entry_tag: str = "") -> list:
+    """
+    The named values a plain-enum field can hold, or `[]`.
+
+    Resolved through the loader's OWN declaration of the property's type -
+    `ItemOptions.OptionType` is declared `ItemOptionsType` - not by gluing
+    the entry tag to the field name. That convention works for the flag
+    enums by luck of naming and would have missed this one entirely:
+    `ItemOptionsOptionType` does not exist.
+    """
+    from ... import xml_models
+
+    model = xml_models.model_for(entry_tag) if entry_tag else None
+    if model is None:
+        return []
+    for field in model.fields:
+        if field.name == field_name:
+            return list(xml_models.choice_enums().get(field.csharp_type, ()))
+    return []
+
+
+def flag_choices(field_name: str, entry_tag: str = "") -> list:
     """
     The set of flags a field can hold.
 
@@ -90,6 +114,23 @@ def flag_choices(field_name: str) -> list:
         return list(c.ELEMENT_FLAGS)
     if field_name == "AttackFlags":
         return list(c.ITEM_ATTACK_FLAGS)
+
+    # Last, and only if nothing above matched: the mod loader's own enum,
+    # read from its bundled `Tables/Models`. `ItemOptions.Effects` resolves
+    # this way and is the only field that does - measured across every flag
+    # field of every spec.
+    #
+    # LAST, deliberately. The hand-written lists above are not a worse copy
+    # of these: they were cross-checked against the real struct sources and
+    # they DISAGREE with the derived enums in two places on purpose -
+    # `ItemTypeFlags` has 8 derived against 7 here, `AbilityFlags` 4 against
+    # 3. Letting the derived enum win would silently re-add bits somebody
+    # removed on evidence. So this fills gaps; it never overrides.
+    if entry_tag:
+        from ... import xml_models
+        derived = xml_models.flag_enums().get(f"{entry_tag}{field_name}")
+        if derived:
+            return list(derived)
     return []
 
 
@@ -97,7 +138,18 @@ def _groups_for(field_name: str, choices: list) -> dict:
     """Reuses the engine's own grouping where it has one."""
     if field_name == "EquippableItems":
         return c.EQUIP_GROUPS
-    if field_name in ("InnateStatus", "ImmuneStatus", "StartingStatus"):
+    if field_name in ("InnateStatus", "ImmuneStatus", "StartingStatus",
+                      "Effects"):
+        # `Effects` joins them because all 40 of its values ARE those
+        # statuses - checked, 40 of 40 - so it gets the engine's own
+        # grouping rather than a second one invented here.
+        #
+        # Ungrouped it was one box of 40 checkboxes in a single tall
+        # column, which is what prompted the request for columns. Five
+        # groups of eight reflow side by side as the window allows, and
+        # they are the sets the game itself uses; chunking into four tens
+        # would look tidier and would be a grouping nothing else in the
+        # data agrees with.
         return c.STATUS_GROUPS
     return {humanise(field_name): list(choices)}
 
@@ -117,6 +169,32 @@ USAGE_LIST_LIMIT = 12
 # about what the row does: every item defaults to it, and what it means is
 # that the item grants no equip bonus at all.
 ROW_NAME_OVERRIDES = {"item_equip_bonus": {0: "No bonus"}}
+
+#: The narrowest a treasure-tile column may be before the layout drops to
+#: fewer columns.
+#:
+#: A tile holds an X and a Y spin box, two item dropdowns and a three-column
+#: flag grid, and the flag grid is what sets the floor - the trap names run
+#: to "Sleeping Gas" and "Steel Needle" across three columns. Measured
+#: against the tile body's own size hint rather than guessed; see
+#: `test_qt_table_editor`, which asserts the tiles actually reflow and that
+#: nothing is clipped at the 1100 minimum.
+TILE_COLUMN_WIDTH = 460
+
+#: The narrowest a tile's item dropdown may be.
+#:
+#: Inside a hugged tile column the combo fell back to `DropdownFieldRow`'s
+#: 160px floor while its widest entry - "000 - Featherweave Cloak" - needs
+#: 210px, so item names were clipped. Reported from real use.
+#:
+#: 210, which is that measurement. It was 240 first, copied from Job
+#: Commands' `SLOT_COMBO_WIDTH` on the "same job, same number" argument -
+#: and that put the whole row at 470px inside the 454px a tile gets at the
+#: 1100 minimum, trading a clipped name for a clipped row. Copying a
+#: sibling's number is not the same as measuring your own (rule 19); the
+#: sibling's combo holds ability names, which are longer.
+TILE_COMBO_WIDTH = 210
+
 
 #: How wide the row list is.
 #:
@@ -231,6 +309,132 @@ def equip_bonus_effects(values: dict, field_order,
     return phrases
 
 
+#: How many statuses a row label names before it says "+N more".
+#:
+#: MEASURED against `LIST_WIDTH`, not chosen, and re-measured when the row
+#: grew. Equip Bonus shipped 27 of 85 rows cut mid-word because its labels
+#: were measured for readability and never for fit; this table is worse -
+#: the naive label runs to 576px against 308px of usable row width.
+#:
+#: It was 2, correctly, when the label was just the id and the statuses.
+#: Then the row gained a "Used by" suffix - `  . unused` or `  . 5 items`,
+#: about 55px - and `Cancel ` became `Cancel: `, and 2 no longer fit:
+#:
+#: Measured three times now, and it has moved twice - which is the whole
+#: lesson. A label measurement is only valid for the row it was taken on,
+#: and ANY change to that row invalidates it, additions and removals alike.
+#:
+#:     cap   widest   clipped   when
+#:      2     266px    0 of 128   before any usage suffix existed
+#:      1     277px    0 of 128   with ". unused" / ". 5 items"
+#:      2     353px    8 of 128   (so the cap dropped to 1)
+#:      2     288px    0 of 128   with the empty-row suffix removed
+#:      3     344px    6 of 128
+#:
+#: So it is back to 2. The suffix that forced it down to 1 said "no items"
+#: on every row nothing used, and that suffix is gone - this table cannot
+#: make that claim, because an ability's base Inflict Status is hardcoded in
+#: the game and was never data this tool held. The warning lives in the
+#: page description now, and the rows got their second status back.
+#:
+#: The tooltip still carries every status either way. A clipped label loses
+#: information silently; "+7 more" loses it visibly and points at where to
+#: look.
+INFLICT_STATUS_CAP = 2
+
+#: The option type that is NOT written into the label.
+#:
+#: `AllOrNothing` is 75 of 128 rows. Near-constant text earns no width - the
+#: same reason Equip Bonus dropped its "(1 item)" suffix. What a person
+#: scanning this list needs to spot is the row that behaves DIFFERENTLY, and
+#: `Cancel` is not a variation on inflicting a status, it is the opposite of
+#: it: "Cancel Poison" removes poison where "Poison" applies it. Getting
+#: those two the wrong way round is the worst mistake this page can cause,
+#: so the verb is spelled out on every row where it is not the plain case.
+#:
+#: The tooltip always names the type in full, including this one, so nothing
+#: is hidden - only the constant is left unsaid.
+INFLICT_STATUS_PLAIN_TYPE = "AllOrNothing"
+
+#: How each option type reads at the front of a row label.
+INFLICT_STATUS_VERBS = {
+    # All three punctuate the same way. "Cancel Poison" against "Random:
+    # Poison" made the colon look like it meant something - reported from
+    # real use - when it is only the separator between the verb and the
+    # list it applies to.
+    "Cancel": "Cancel: ",
+    "Random": "Random: ",
+    "Separate": "Separately: ",
+    "AllOrNothing": "",
+    "None": "",
+}
+
+
+def inflict_statuses(values: dict) -> list:
+    """
+    The statuses a row lists, as a list of names.
+
+    The loader has already flattened `Effects1`-`Effects5` into one
+    comma-separated `Effects` node - the bundled XML says so in its own
+    header - so this splits rather than walking five fields. `"None"` is the
+    table's way of writing "nothing", not a status called None.
+    """
+    raw = (values.get("Effects") or "").strip()
+    if not raw or raw == "None":
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def inflict_status_descriptor(values: dict, field_order=None) -> str:
+    """
+    What a row of `ItemOptionsData.xml` DOES, in a few words.
+
+    Every row of this table is anonymous - it has an id and nothing else -
+    so without this the list reads "000 - (unnamed)" 128 times over and the
+    only way to find the option you want is to click all of them. Same
+    problem Equip Bonus had and the same answer.
+    """
+    statuses = inflict_statuses(values)
+    if not statuses:
+        return "(no effect)"
+    kind = (values.get("OptionType") or "").strip()
+    verb = INFLICT_STATUS_VERBS.get(kind, f"{kind}: " if kind else "")
+    if len(statuses) <= INFLICT_STATUS_CAP:
+        body = ", ".join(statuses)
+    else:
+        body = (f"{', '.join(statuses[:INFLICT_STATUS_CAP])} "
+                f"+{len(statuses) - INFLICT_STATUS_CAP} more")
+    return f"{verb}{body}"
+
+
+def inflict_status_tooltip(values: dict) -> str:
+    """
+    The whole row, for hover - every status, and the type spelled out.
+
+    Progressive disclosure rather than truncation: the label answers "which
+    row is this", the tooltip answers "what exactly does it do". Eleven
+    statuses do not fit in 308px and never will.
+    """
+    statuses = inflict_statuses(values)
+    kind = (values.get("OptionType") or "").strip() or "None"
+    meaning = {
+        "AllOrNothing": "All of these land together, or none of them do.",
+        "Cancel": "REMOVES these statuses rather than inflicting them.",
+        "Separate": "Each of these is rolled for separately.",
+        "Random": "One of these is picked at random.",
+        "None": "Does nothing.",
+    }.get(kind, "")
+    lines = [f"Option type: {kind}"]
+    if meaning:
+        lines.append(meaning)
+    if statuses:
+        lines.append("")
+        lines.append(f"{len(statuses)} status"
+                     f"{'es' if len(statuses) != 1 else ''}: "
+                     + ", ".join(statuses))
+    return "\n".join(lines)
+
+
 def equip_bonus_descriptor(values: dict, field_order) -> str:
     """A row's effects as one line, or "(no effect)" when it has none."""
     phrases = equip_bonus_effects(values, field_order)
@@ -243,6 +447,251 @@ def equip_bonus_descriptor(values: dict, field_order) -> str:
         return _BONUS_JOIN.join(phrases)
     shown = _BONUS_JOIN.join(phrases[:_BONUS_EFFECTS_NAMED])
     return f"{shown} +{len(phrases) - _BONUS_EFFECTS_NAMED} more"
+
+
+#: The `Formula` value that repurposes an options id as an ABILITY id.
+#:
+#: From `ItemWeaponData.xml`'s own header, which the tool ships: "If using
+#: Formula 02, <OptionsAbilityId> should be set to an ability id; otherwise,
+#: <OptionsAbilityId> should be set to an 'item options' id or 0."
+FORMULA_CASTS_ABILITY = 2
+
+#: Columns that hold an ability id rather than a table row under that rule.
+#:
+#: One definition, because four places need the answer and they must agree:
+#: the Items form's caption and control, the Abilities form's copy of the
+#: same field, the "Used by" index, and the "unused" label built from it.
+#: The rule was written out separately in the first two and absent from the
+#: last two, which is why Lightning Bow was listed as inflicting Blind.
+#:
+#: Both names are here because the same field is called `OptionsAbilityId`
+#: on `ItemWeaponData` and `InflictStatus` on `OverrideAbilityActionData`.
+ABILITY_WHEN_FORMULA_2 = frozenset({"OptionsAbilityId", "InflictStatus"})
+
+#: Item column -> the column abilities reach the same rows through.
+#:
+#: The two tables name one concept differently, and assuming they agreed is
+#: a mistake this made once already: reading `OptionsAbilityId` off an
+#: override row returns nothing at all, silently, so every ability
+#: reference was missed and the rows went on reading as unused.
+ABILITY_USAGE_COLUMN = {"OptionsAbilityId": "InflictStatus"}
+
+
+def _is_formula_2(values: dict) -> bool:
+    """
+    Whether this row's `Formula` makes its options id an ability id.
+
+    Absent or unreadable `Formula` is NOT formula 2. On the ability
+    override table `Formula` is `-1` when the row does not override it, and
+    a row that declines to set a formula has not set it to 2.
+    """
+    try:
+        return int(values.get("Formula", -1)) == FORMULA_CASTS_ABILITY
+    except (TypeError, ValueError):
+        return False
+
+
+#: What each table-editor page calls its rows in the green counter.
+#:
+#: Written out rather than derived from the title, because "Equip Bonus"
+#: pluralises to "Equip Bonus rows" and "Treasure Hunter" to "maps" - a
+#: title is what the tab is called, not what the rows are. Anything not
+#: listed falls back to "rows", which is true of every table here.
+COUNTER_NOUNS = {
+    "item_equip_bonus": "equip bonus rows",
+    "item_options": "inflict status rows",
+    "map_trap": "maps",
+    "item_shops": "shops",
+}
+
+#: Which item column points at which table, for the "Used by" list.
+#:
+#: Two tables ask the same question now - "which items use this row" - so
+#: the answer is one function taking the column name rather than two
+#: near-identical ones. Inflict Status needs it for the reason Equip Bonus
+#: did: a row can be shared by several items, and editing it changes all of
+#: them, so a page that cannot say which is asking you to guess.
+USAGE_COLUMNS = {
+    # table key: (column, linked table the column lives on)
+    "item_equip_bonus": ("EquipBonusId", ""),
+    "item_options": ("OptionsAbilityId", "item_weapon"),
+}
+
+#: What a row's suffix calls its users, and what it says when there are none.
+#:
+#: Per table, because the two tables can prove different things. Every
+#: reference to an Equip Bonus row is an item, and the item table is fully
+#: loaded, so "unused" there is a fact.
+#:
+#: Inflict Status cannot say that and never will be able to.
+#: `AbilityActionData.xml` ships empty by design - an ability's base Inflict
+#: Status is hardcoded in the game - so the tool sees ability references
+#: only where an override row sets one. "no items" is chosen because it is
+#: TRUE in both states, loaded and not: it reports what was checked instead
+#: of what was concluded. A suffix that changed with the load state would
+#: also be a label whose width changed with it, and the cap below is
+#: measured on this row.
+USAGE_NOUNS = {
+    "item_equip_bonus": ("items", "unused"),
+    # Inflict Status says NOTHING when no item uses a row.
+    #
+    # It said "no items", which was true and still read as a verdict on the
+    # row - and this is the one table where no verdict is possible.
+    # `AbilityActionData.xml` ships empty by design, so an ability's base
+    # Inflict Status is hardcoded in the game and is not data this tool has
+    # ever held. A row with no items may still be the one an ability
+    # depends on.
+    #
+    # The page's own description now carries that warning once, where it
+    # belongs, instead of 128 rows each carrying a fragment of it.
+    "item_options": ("users", ""),
+}
+
+
+def table_usage(state, column: str, through: str = "") -> dict:
+    """
+    `row id -> [(item_id, name)]`, the reverse of one item column.
+
+    `through` names a LINKED table to read the column from instead of the
+    item row. `EquipBonusId` sits on the item itself; `OptionsAbilityId`
+    does not - it lives on the item's weapon row in `ItemWeaponData.xml`,
+    reached by the item's `AdditionalDataId`.
+
+    That distinction is not cosmetic. Reading `OptionsAbilityId` off the
+    item row returns "0" for every item, so the first version of this
+    reported all 261 items as users of row 0 and every other row as unused -
+    confidently, and wrongly, which is worse than not showing usage at all.
+
+    **`through` is a filter, not a destination.** `AdditionalDataId` indexes
+    the item's OWN category table, so only items whose own linked table IS
+    `through` are read through it. The second version got this wrong in the
+    other direction: it sent every item through `item_weapon` whatever the
+    item was, and since row 8 of the weapon table inflicts Doom, four items
+    that merely share the index 8 - Aegis Shield, Platinum Helm, Genji
+    Gloves, Maiden's Kiss - were reported as inflicting Doom. Only the
+    dagger does.
+
+    An item with no linked table at all counts for nothing rather than
+    counting as row 0. Maiden's Kiss is flagged only `Rare`: it has no
+    Additional Data row, so it uses no Inflict Status row.
+
+    `formula_column` on a spec means the column is only a real reference
+    when that column is not 2. `Formula` 2 makes `OptionsAbilityId` an
+    ABILITY id - Lightning Bow casts Thundara - so it is not a user of the
+    options row that happens to carry the same number.
+    """
+    from .items import linked_table_key
+
+    usage: dict = {}
+    records = (state.item_table_records or {}).get("item", [])
+    edits = (state.item_table_edits or {}).get("item", {})
+    linked = (state.item_table_records_by_id(through) if through else {})
+    linked_edits = ((state.item_table_edits or {}).get(through, {})
+                    if through else {})
+    for record in records:
+        pending = edits.get(record.item_id, {})
+        if through:
+            # The item's OWN table, from its pending TypeFlags edit if it
+            # has one - retyping an item from Weapon to Armor takes it out
+            # of this index immediately, which is what the page shows.
+            values = {**record.values, **pending}
+            if linked_table_key(values) != through:
+                continue
+            try:
+                linked_id = int(values.get("AdditionalDataId", "0"))
+            except (TypeError, ValueError):
+                continue
+            source = linked.get(linked_id)
+            if source is None:
+                continue
+            values = {**source.values, **linked_edits.get(linked_id, {})}
+        else:
+            values = {**record.values, **pending}
+        if column in ABILITY_WHEN_FORMULA_2 and _is_formula_2(values):
+            continue
+        try:
+            row_id = int(values.get(column, "0"))
+        except (TypeError, ValueError):
+            row_id = 0
+        usage.setdefault(row_id, []).append(
+            (record.item_id, getattr(record, "name", "") or "(unnamed)"))
+    return usage
+
+
+def ability_usage(state, column: str) -> dict:
+    """
+    `row id -> [(ability_id, name)]` from the ability OVERRIDE table.
+
+    The other half of who uses an Inflict Status row, and the half the
+    index could not see. `OverrideAbilityActionData` carries its own
+    `InflictStatus` column, so an ability can point at one of these rows
+    without any item being involved - and a row that only an ability uses
+    read as `unused`, which invites exactly the edit that breaks it.
+
+    Only rows that SET the column count. `-1` is the sentinel for "do not
+    override", so it is not a reference to row -1 and not a reference to
+    row 0 either.
+
+    **A row whose own `Formula` override is 2 is excluded**, by the same
+    rule items follow: at 2 the id is an ability to cast, not a status row.
+    A row that does not override `Formula` at all is KEPT, and that is a
+    deliberate lean rather than an oversight - see `usage_certainty`.
+
+    Empty when the ability overrides are not loaded, which is the normal
+    state before the game is unpacked. `usage_certainty` is what stops that
+    emptiness being reported as "nothing uses this row".
+    """
+    usage: dict = {}
+    override_column = ABILITY_USAGE_COLUMN.get(column)
+    if override_column is None:
+        return usage
+    edits = getattr(state, "override_action_edits", None) or {}
+    for record in (getattr(state, "override_action_records", None) or []):
+        pending = edits.get(record.key, {})
+        values = {**(record.scalars or {}), **pending}
+        if _is_formula_2(values):
+            continue
+        try:
+            row_id = int(values.get(override_column, c.OVERRIDE_NOT_SET))
+        except (TypeError, ValueError):
+            continue
+        if row_id < 0:
+            continue
+        usage.setdefault(row_id, []).append(
+            (record.key, ability_display_name(state, record.key)))
+    return usage
+
+
+def ability_display_name(state, ability_id: int) -> str:
+    """
+    An ability's name as the Abilities tab shows it, pending renames and all.
+
+    Through `app.ability_choices` rather than reading the table here, so
+    renaming an ability on its own tab renames it in this list too - the
+    same wiring Poaching uses for Produces / Unlocks Item.
+    """
+    from ..app import ability_choices
+
+    return ability_choices(state).get(ability_id) or f"Ability {ability_id}"
+
+
+def usage_certainty(state) -> bool:
+    """
+    Whether the tool can see ability references at all right now.
+
+    `AbilityActionData.xml` ships EMPTY on purpose - the loader's own
+    comment says it exists only to point at `OverrideAbilityActionData` -
+    so an ability's base Inflict Status is hardcoded in the game and is not
+    data this tool has ever held. What it CAN see is the override table,
+    and only once the game is unpacked and converted.
+
+    So there are three honest states for a row, not two: used, not used by
+    anything visible, and not knowable yet. Saying "unused" in the third
+    case is a claim about data the tool does not have, and a beginner who
+    repurposes a row on the strength of it breaks an ability - the exact
+    failure the label exists to prevent.
+    """
+    return bool(getattr(state, "override_action_records", None))
 
 
 def equip_bonus_usage(state) -> dict:
@@ -318,7 +767,20 @@ def humanise(field_name: str) -> str:
     return "".join(out)
 
 
-class TableEditorPage(QWidget):
+#: Tables whose rows have no names of their own, and the function that says
+#: what each row DOES instead.
+#:
+#: A registry rather than `table_key == "..."`, because there are two now and
+#: the second one arriving is exactly when a name test quietly becomes a
+#: place a third gets forgotten. Both signatures take `(values, field_order)`
+#: so the call site does not have to know which it got.
+DESCRIBED_TABLES = {
+    "item_equip_bonus": equip_bonus_descriptor,
+    "item_options": inflict_status_descriptor,
+}
+
+
+class TableEditorPage(RefreshesWhenVisible, QWidget):
     """Master-detail over one `TableSpec` table."""
 
     edits_changed = Signal()
@@ -339,7 +801,10 @@ class TableEditorPage(QWidget):
         # stand alone. Kept as an attribute rather than recomputed per row
         # so building an 85-row list is one pass over the item table, not
         # eighty-five.
-        self.shows_usage = table_key == "item_equip_bonus"
+        # Both describing tables answer "which items use this row".
+        self.shows_usage = table_key in USAGE_COLUMNS
+        self._usage_column, self._usage_through = USAGE_COLUMNS.get(
+            table_key, ("", ""))
         # Whether this table's rows are named by what they DO.
         #
         # A separate flag from `shows_usage` even though both are true of
@@ -347,8 +812,16 @@ class TableEditorPage(QWidget):
         # anything point at this row" and "what does this row do" - and a
         # second table wanting one without the other would otherwise have to
         # untangle them first.
-        self.describes_rows = table_key == "item_equip_bonus"
+        # Two tables now, which is why this was kept separate from
+        # `shows_usage` in the first place. Both answer "what does this
+        # row do" for a table whose rows have no names of their own.
+        self.counter_noun = COUNTER_NOUNS.get(table_key, "rows")
+        self.describes_rows = table_key in DESCRIBED_TABLES
         self._usage: dict = {}
+        # The ability half of the same question, and whether it could be
+        # read. Both set together in `_recompute_usage`.
+        self._ability_usage: dict = {}
+        self._usage_seen = True
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 20)
@@ -397,13 +870,23 @@ class TableEditorPage(QWidget):
         # has to word-wrap, and a row of separate widgets cannot. Qt gives
         # link clicks back through `linkActivated` with the href, so the
         # item id rides in the href and nothing has to be looked up again.
-        self.usage_label = QLabel("")
+        # Parented at construction, not by `addWidget`.
+        #
+        # `right` is a bare QVBoxLayout that is not attached to a widget
+        # until much further down, so adding to it does NOT give this label
+        # a parent - and `setVisible` on a parentless widget makes a
+        # top-level WINDOW. Passing the parent here is what actually closes
+        # that, and it holds however the layout is wired later.
+        self.usage_label = QLabel("", self)
         self.usage_label.setProperty("role", "muted")
         self.usage_label.setWordWrap(True)
         self.usage_label.setTextFormat(Qt.RichText)
         self.usage_label.linkActivated.connect(self._on_usage_link)
-        self.usage_label.setVisible(self.shows_usage)
+        # Parented before being hidden or shown - a parentless
+        # `setVisible` makes a top-level WINDOW, which is what flashed at
+        # startup. See `CollapsibleSection.__init__`.
         right.addWidget(self.usage_label)
+        self.usage_label.setVisible(self.shows_usage)
 
         # These tables come from XML bundled with the tool, not from the
         # game, so "no records" here means the reference data failed to
@@ -438,15 +921,34 @@ class TableEditorPage(QWidget):
         # flag_fields is a tuple of names; a name with no known choice list
         # is treated as a plain field rather than dropped, because the value
         # is still editable even when the individual bits are not named.
-        flag_names = {n for n in (self.spec.flag_fields or ()) if flag_choices(n)}
+        flag_names = {n for n in (self.spec.flag_fields or ())
+                      if flag_choices(n, self.spec.entry_tag)}
         self.unresolved_flags = [n for n in (self.spec.flag_fields or ())
-                                 if not flag_choices(n)]
+                                 if not flag_choices(n, self.spec.entry_tag)]
         for field_name in self.spec.field_order:
             if field_name in flag_names:
                 continue
-            low, high = _range_for(field_name)
-            row = NumericFieldRow(field_name, humanise(field_name), low, high,
-                                  unknown=field_name.lower().startswith("unknown"))
+            # A field the loader declares as a PLAIN enum is a choice from a
+            # list, so it gets a dropdown of the names it can hold.
+            #
+            # Without this, `ItemOptions.OptionType` - declared
+            # `ItemOptionsType` with five named values - got a spin box. Its
+            # value in the XML is the word `Cancel`, which the box read as
+            # 0, so opening a row and touching anything wrote an integer
+            # into a column that holds a name, and the integer then showed
+            # up in the row's own label. Reported from real use.
+            #
+            # `flag_enums` already documented this case - "a plain enum is a
+            # choice from a list and belongs in a dropdown" - and there was
+            # simply no function for that half until `choice_enums`.
+            names = enum_choices(field_name, self.spec.entry_tag)
+            if names:
+                row = ChoiceFieldRow(field_name, humanise(field_name), names)
+            else:
+                low, high = _range_for(field_name)
+                row = NumericFieldRow(
+                    field_name, humanise(field_name), low, high,
+                    unknown=field_name.lower().startswith("unknown"))
             row.edited.connect(self._on_field_edited)
             self.rows[field_name] = row
             plain_column.addWidget(row)
@@ -468,6 +970,8 @@ class TableEditorPage(QWidget):
             # a fifth slot or a renamed field arrives from the engine
             # without this file changing.
             self.sections = []
+            self.tiles = []
+            self.tile_headings = []
             for slot in c.MAPTRAP_SLOTS:
                 body = QWidget()
                 body_column = QVBoxLayout(body)
@@ -482,7 +986,7 @@ class TableEditorPage(QWidget):
                     if pair[0] in SLOT_FIELD_ORDER else len(SLOT_FIELD_ORDER))
                 for base, label in ordered:
                     field_name = f"{base}{slot}"
-                    choices = flag_choices(field_name)
+                    choices = flag_choices(field_name, self.spec.entry_tag)
                     if choices:
                         widget = FlagFieldPanel(
                             field_name, label,
@@ -495,6 +999,15 @@ class TableEditorPage(QWidget):
                         # The Tkinter tab shows names and so does every other
                         # id field in this interface.
                         widget = DropdownFieldRow(field_name, label)
+                        # Wide enough for the names it holds. MEASURED: the
+                        # combo rendered at its 160px floor inside a hugged
+                        # tile column while its widest entry - "000 -
+                        # Featherweave Cloak" - needs 210px, so item names
+                        # were being cut off. Reported from real use.
+                        #
+                        # See TILE_COMBO_WIDTH: 210 is that measurement, and
+                        # 240 copied from Job Commands did not fit at 1100.
+                        widget.combo.setMinimumWidth(TILE_COMBO_WIDTH)
                         widget.set_choices(self._item_choices())
                         self.item_dropdowns.append(widget)
                     else:
@@ -503,12 +1016,43 @@ class TableEditorPage(QWidget):
                     widget.edited.connect(self._on_field_edited)
                     self.rows[field_name] = widget
                     body_column.addWidget(widget)
-                # Only the first is open. Four expanded slots is more than
-                # fits, and a map usually has treasure in one or two.
-                section = CollapsibleSection(f"Item {slot}", body,
-                                             expanded=slot == 1)
-                self.sections.append(section)
-                form.addWidget(section)
+                # NO collapsible wrapper. The data is always exposed.
+                #
+                # Three of the four tiles used to start collapsed, on the
+                # reasoning that a map usually has treasure in one or two.
+                # That reasoning was about VERTICAL room and stopped being
+                # true when the tiles started sitting side by side - four
+                # of them now fit at once, so hiding three costs a click
+                # each and buys nothing. Reported from real use.
+                heading = QLabel(f"Tile {slot}")
+                heading.setStyleSheet("font-weight: 600;")
+                body.layout().insertWidget(0, heading)
+                self.tile_headings.append(heading)
+                self.tiles.append(body)
+            # The four tiles sit SIDE BY SIDE when the window can hold them.
+            #
+            # They ran down a single column with the rest of the width
+            # empty: measured at 1920 the form was 1296px wide and used 437,
+            # so 859px - two thirds of the page - was blank. At 2560 it was
+            # 1499 of 1936.
+            #
+            # Job Commands solved exactly this for its ability and R/S/M
+            # columns, so this reuses `ColumnFormBody` rather than growing a
+            # second answer to one question. `hug_contents=True` is the part
+            # that made that version work and matters here for the same
+            # reason: without it a vertical scrollbar appearing resizes the
+            # controls underneath it.
+            #
+            # `max_columns` is not capped. Four tiles are peers - there is
+            # no reading order across them the way there is between
+            # Abilities and R/S/M - so the layout takes as many as fit and
+            # falls back to one at the 1100 minimum.
+            self.slots_body = ColumnFormBody(
+                min_column_width=TILE_COLUMN_WIDTH, spacing=8,
+                hug_contents=True, row_major=True)
+            for tile in self.tiles:
+                self.slots_body.add_row(tile)
+            form.addWidget(self.slots_body)
             form.addStretch(1)
             scroll.setWidget(holder)
             self.scroll = scroll
@@ -523,7 +1067,7 @@ class TableEditorPage(QWidget):
         form.addWidget(self.sections[0])
 
         for field_name in (self.spec.flag_fields or ()):
-            choices = flag_choices(field_name)
+            choices = flag_choices(field_name, self.spec.entry_tag)
             if not choices:
                 continue
             label = humanise(field_name)
@@ -531,9 +1075,18 @@ class TableEditorPage(QWidget):
                                    _groups_for(field_name, choices), columns=3)
             panel.edited.connect(self._on_field_edited)
             self.rows[field_name] = panel
-            section = CollapsibleSection(label, panel, expanded=False)
-            self.sections.append(section)
-            form.addWidget(section)
+            if self.table_key == "item_options":
+                # Always visible. This page has exactly two fields, and
+                # putting the one that matters behind a disclosure meant it
+                # opened showing a dropdown and a closed header - nothing
+                # you could do. A section earns its collapse when there is
+                # something else competing for the space; here there is
+                # not. Reported from real use.
+                form.addWidget(panel)
+            else:
+                section = CollapsibleSection(label, panel, expanded=False)
+                self.sections.append(section)
+                form.addWidget(section)
 
         form.addStretch(1)
         scroll.setWidget(holder)
@@ -570,7 +1123,7 @@ class TableEditorPage(QWidget):
         self.list.clear()
         # Built once per refresh, before the rows that read it. Recomputing
         # inside `_item_for` would walk the whole item table 85 times.
-        self._usage = equip_bonus_usage(self.state) if self.shows_usage else {}
+        self._recompute_usage()
         for record in self.records():
             self.list.addItem(self._item_for(record))
         # The treasure dropdowns depend on a DIFFERENT table from the one
@@ -586,6 +1139,38 @@ class TableEditorPage(QWidget):
         self._update_counter()
         if self.list.count():
             self.list.setCurrentRow(0)
+
+    def _recompute_usage(self) -> None:
+        """
+        Rebuilds both halves of the reverse index.
+
+        Two sources, one index. Items reach these rows through their
+        Additional Data row; abilities reach them through their own
+        override column. Counting only the first is what made rows that an
+        ability depends on read as `unused`.
+
+        `_usage_seen` records whether the ability half could be read at
+        all, so a row with no users can say which of the two things it
+        means.
+        """
+        if not self.shows_usage:
+            self._usage = {}
+            self._ability_usage = {}
+            self._usage_seen = True
+            return
+        self._usage = table_usage(self.state, self._usage_column,
+                                  self._usage_through)
+        self._ability_usage = ability_usage(self.state, self._usage_column)
+        # Equip Bonus has no ability half, so its item index IS the whole
+        # answer and nothing about it is uncertain. Only a column abilities
+        # can reach depends on the overrides being loaded.
+        self._usage_seen = (self._usage_column not in ABILITY_USAGE_COLUMN
+                            or usage_certainty(self.state))
+
+    def _users_of(self, row_id: int) -> int:
+        """How many things point at this row, items and abilities together."""
+        return (len(self._usage.get(row_id, []))
+                + len(self._ability_usage.get(row_id, [])))
 
     def select_record(self, record_id) -> None:
         """
@@ -611,15 +1196,52 @@ class TableEditorPage(QWidget):
         """
         if not self.shows_usage:
             return
-        self._usage = equip_bonus_usage(self.state)
+        self._recompute_usage()
+        self._redress_rows()
+        if self.current_id is not None:
+            self._show_usage(self.current_id)
+
+    def _redress_rows(self) -> None:
+        """
+        Rewrites every row's text and tooltip in place.
+
+        In place, not `refresh_records`: the list keeps its rows, so the
+        selection and the scroll position stay where the person left them.
+        Shared with `refresh_from_store`, because a row's derived name comes
+        from its VALUES - so an edit made on another page changes what a row
+        should be called here, not only whether it is marked.
+        """
         by_id = {r.item_id: r for r in self.records()}
         for i in range(self.list.count()):
             item = self.list.item(i)
             record = by_id.get(item.data(Qt.UserRole))
             if record is not None:
                 self._dress_item(item, record)
-        if self.current_id is not None:
-            self._show_usage(self.current_id)
+
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected row when this page comes back on screen.
+
+        Every row is re-dressed, not just the selected one: All Game Data
+        reaches any row of this table, and `describes_rows` derives a row's
+        NAME from its values - so "001 - MA +2" beside a store that now says
+        7 is the same stale-display fault one row over.
+
+        The list is not rebuilt and the selection is not moved. See
+        `widgets/visible_refresh.py`.
+        """
+        if self.current_id is None:
+            return
+        self.load_record(self.current_id)
+        if self.shows_usage:
+            # Recomputes the reverse index as well, and re-dresses the rows
+            # itself. Called rather than duplicated so there is one answer
+            # to "what does a row say" instead of two.
+            self.refresh_usage()
+        elif self.describes_rows:
+            self._redress_rows()
+        self._mark_edited()
+        self._update_counter()
 
     def _effective_values(self, record) -> dict:
         """
@@ -647,8 +1269,8 @@ class TableEditorPage(QWidget):
         if name:
             return name
         if self.describes_rows:
-            return equip_bonus_descriptor(self._effective_values(record),
-                                          self.spec.field_order)
+            return DESCRIBED_TABLES[self.table_key](
+                self._effective_values(record), self.spec.field_order)
         return "(unnamed)"
 
     def _label_for(self, record) -> str:
@@ -667,15 +1289,31 @@ class TableEditorPage(QWidget):
         on hover, and the detail pane's "Used by" line always names the
         items outright.
         """
-        label = f"{record.item_id:03d} - {self.display_name(record)}"
+        return (f"{record.item_id:03d} - {self.display_name(record)}"
+                + self.usage_suffix(record.item_id))
+
+    def usage_suffix(self, row_id: int) -> str:
+        """
+        The `  . no items` / `  . 5 users` tail, or "" when the row is
+        unremarkable.
+
+        Public and separate because the width check has to measure the row
+        as it will actually be drawn. It used to rebuild this suffix by
+        hand, which is two mechanisms answering one question - and the one
+        that drifts is the one nothing is looking at.
+        """
         if not self.shows_usage:
-            return label
-        users = self._usage.get(record.item_id, [])
+            return ""
+        users = self._users_of(row_id)
+        noun, empty = USAGE_NOUNS[self.table_key]
         if not users:
-            return f"{label}  \u00b7 unused"
-        if len(users) > 1:
-            return f"{label}  \u00b7 {len(users)} items"
-        return label
+            # An empty word means this table does not comment on rows
+            # nothing uses. Not the same as having nothing to say about
+            # rows that ARE used - the count below still appears.
+            return f"  \u00b7 {empty}" if empty else ""
+        if users > 1:
+            return f"  \u00b7 {users} {noun}"
+        return ""
 
     def _tooltip_for(self, record) -> str:
         """
@@ -688,6 +1326,13 @@ class TableEditorPage(QWidget):
         """
         if not self.describes_rows:
             return ""
+        if self.table_key == "item_options":
+            # The usage line belongs here too, not only on Equip Bonus: the
+            # row label caps at one status, so hover is where both the rest
+            # of the statuses and the rest of the users come back.
+            return (f"{record.item_id:03d}\n"
+                    + inflict_status_tooltip(self._effective_values(record))
+                    + "\n\n" + self._usage_tooltip_line(record.item_id))
         # Every value, not the two a list row has room for. This is the
         # whole point of the tooltip: "Immune 18 statuses" is readable and
         # lossy, and hovering is where the eighteen come back. Without the
@@ -703,6 +1348,22 @@ class TableEditorPage(QWidget):
             lines.append("Worn by: " + (", ".join(n for _id, n in users)
                                         if users else "nothing"))
         return "\n".join(lines)
+
+    def _usage_tooltip_line(self, row_id: int) -> str:
+        """Who uses this row, for the hover text, items and abilities both."""
+        users = self._usage.get(row_id, [])
+        abilities = self._ability_usage.get(row_id, [])
+        if not users and not abilities:
+            return ("Used by: no items"
+                    + ("" if self._usage_seen
+                       else " (ability overrides not loaded)"))
+        parts = []
+        if users:
+            parts.append("Items: " + ", ".join(n for _id, n in users))
+        if abilities:
+            parts.append("Abilities: "
+                         + ", ".join(n for _id, n in abilities))
+        return "Used by - " + "; ".join(parts)
 
     def _dress_item(self, item: QListWidgetItem, record) -> None:
         """
@@ -737,9 +1398,11 @@ class TableEditorPage(QWidget):
                 # Searching an Equip Bonus row by the item that wears it.
                 # The rows are mostly unnamed, so "Angel Ring" is the only
                 # handle most people have on the one they want.
+                row_id = item.data(Qt.UserRole)
                 haystack += " " + " ".join(
                     name.lower() for _id, name
-                    in self._usage.get(item.data(Qt.UserRole), []))
+                    in (self._usage.get(row_id, [])
+                        + self._ability_usage.get(row_id, [])))
             item.setHidden(needle not in haystack)
 
     def _on_selection(self, current, _previous) -> None:
@@ -775,26 +1438,57 @@ class TableEditorPage(QWidget):
         swallow the rest of the line.
         """
         users = self._usage.get(bonus_id, [])
-        if not users:
+        abilities = self._ability_usage.get(bonus_id, [])
+        if not users and not abilities:
             self.usage_label.setText(
-                "Not currently used by any item, counting any pending "
-                "EquipBonusId edits.")
+                f"Not used by any item, counting any pending "
+                f"{self._usage_column} edits.{self._unseen_note()}")
             return
+        parts = []
+        if users:
+            parts.append("Used by: " + self._links("Items", users))
+        if abilities:
+            parts.append("Used by abilities: "
+                         + self._links("Abilities", abilities))
+        self.usage_label.setText(
+            " &nbsp; ".join(parts) + self._unseen_note())
+
+    def _links(self, page: str, users: list) -> str:
+        """
+        Up to `USAGE_LIST_LIMIT` names, each a link to `page`.
+
+        The page rides in the href beside the id because this line now
+        names two KINDS of user, and a bare id could not say which tab it
+        belonged to - clicking an ability would have opened the item with
+        that number.
+        """
         shown = users[:USAGE_LIST_LIMIT]
         links = " ".join(
-            f'<a href="{item_id}">{escape(name)}</a>'
+            f'<a href="{page}:{row_id}">{escape(name)}</a>'
             + ("," if index < len(shown) - 1 else "")
-            for index, (item_id, name) in enumerate(shown))
+            for index, (row_id, name) in enumerate(shown))
         remaining = len(users) - len(shown)
-        tail = f", and {remaining} more" if remaining > 0 else ""
-        self.usage_label.setText(f"Used by: {links}{tail}")
+        return links + (f", and {remaining} more" if remaining > 0 else "")
+
+    def _unseen_note(self) -> str:
+        """
+        The part of the answer this tool does not have, said out loud.
+
+        Only when it applies: once the ability overrides are loaded this is
+        empty, and on Equip Bonus it never appears at all.
+        """
+        if self._usage_seen:
+            return ""
+        return (" Abilities can also use these rows, and that table is not "
+                "loaded yet - unpack the game files to include it.")
 
     def _on_usage_link(self, href: str) -> None:
+        page, _, raw = href.rpartition(":")
         try:
-            item_id = int(href)
+            row_id = int(raw)
         except (TypeError, ValueError):
             return
-        self.navigate_requested.emit("Items", item_id)
+        self.navigate_requested.emit(page or "Items", row_id)
 
     def _on_field_edited(self) -> None:
         if self.current_id is None:
@@ -857,7 +1551,7 @@ class TableEditorPage(QWidget):
         # them in once made sibling tabs inflate each other's figures.
         edited = self.state.edited_item_table_count(self.table_key)
         self.counter.setText(
-            f"{edited} of {self.list.count()} have pending edits")
+            edit_counter_text(edited, self.list.count(), self.counter_noun))
 
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool,

@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QHBoxLayout, QLabel, QSizePolicy, QWidget)
+    QCheckBox, QComboBox, QHBoxLayout, QLabel, QSizePolicy, QWidget)
 
 from ... import constants as c
 from ... import nxd_data
@@ -652,6 +652,58 @@ def language_order(available=None) -> list:
     ordered = [lang for lang in c.NXD_LANGUAGES if lang in have]
     ordered += [lang for lang in sorted(have) if lang not in c.NXD_LANGUAGES]
     return ordered or list(c.NXD_LANGUAGES)
+
+
+#: Minimum width of a Language dropdown, in pixels.
+#:
+#: The widest entry is two characters, so this is about leaving the arrow
+#: room rather than fitting text. Named because it used to be the literal
+#: 72 written out on four pages.
+LANGUAGE_COMBO_WIDTH = 72
+
+
+def edit_counter_text(edited: int, total: int, noun: str,
+                      verb: str = "have pending edits") -> str:
+    """
+    The green line under a page's title, worded the same on every page.
+
+    Reported from real use: twelve pages, six phrasings - "pending edits",
+    "edited", "edited in en", "rows edited", a Sounds page that counted
+    archives instead of changes, and an Items page listing four numbers at
+    once. Somebody learning the tool had to read each one to find out what
+    it meant.
+
+    One shape: `2 of 260 items have pending edits`. Replacements use
+    `verb="replaced"`, because "pending edits" is not what happens to a
+    texture or a sound - `4 of 10,011 textures replaced`, which is the
+    wording Textures already had and the one the others now follow.
+
+    Thousands separators, because these run to five figures.
+    """
+    return f"{edited:,} of {total:,} {noun} {verb}"
+
+
+def language_combo(available=None) -> QComboBox:
+    """
+    The Language picker, built the same way on every page that has one.
+
+    `language_order` already unified the CONTENTS. This unifies the WIDGET,
+    which had drifted for the same reason: Jobs, Job Commands, Abilities and
+    Poaching each carried their own `setSizePolicy(Fixed, Fixed)` and
+    `setMinimumWidth(72)` - copied between pages along with the comment
+    explaining it - and Unit Names, added later, carried neither. So its
+    dropdown sized itself to its contents and came out visibly wider than
+    the other four.
+
+    Four copies of a number is why the fifth page could be wrong without
+    anything noticing. One builder means the next page to gain a language
+    picker cannot be the sixth.
+    """
+    box = QComboBox()
+    box.addItems(language_order(available))
+    box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    box.setMinimumWidth(LANGUAGE_COMBO_WIDTH)
+    return box
 
 
 # The order the formats are OFFERED in, which is not the order they are

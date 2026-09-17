@@ -108,6 +108,46 @@ def _clean_doc(block: str) -> str:
 
 
 @lru_cache(maxsize=1)
+def choice_enums() -> dict:
+    """
+    `{enum name: (member, ...)}` for every PLAIN enum in the loader sources.
+
+    The mirror of `flag_enums`, and the case its docstring already named:
+    "a plain enum is a choice from a list and belongs in a dropdown". There
+    was no function for that half, so a field declared as one - `OptionType`
+    on `ItemOptions`, whose type is `ItemOptionsType` with five named values
+    - fell through to a numeric spin box. Its value in the XML is the word
+    `Cancel`, so the box read it as 0 and editing anything wrote a number
+    into a column that holds a name.
+
+    `None = 0` is KEPT here, unlike in `flag_enums`. For a set of bits,
+    "none" is the empty set and not a member; for a choice, it is one of the
+    things you can choose, and `ItemOptionsType.None` is 10 of the 128 real
+    rows.
+    """
+    found = {}
+    pattern = re.compile(r"\benum\s+(\w+)[^{]*\{(.*?)\}", re.S)
+    flagged = re.compile(r"\[Flags\][^;{]*?\benum\s+(\w+)", re.S)
+    member = re.compile(r"^\s*(\w+)\s*=", re.M)
+    from . import upstream
+    sources = list(upstream.resolve("loader_structures", ".cs").values())
+    sources += list(upstream.resolve("loader_models", ".cs").values())
+    for path in sources:
+        source = path.read_text(encoding="utf-8", errors="replace")
+        # Anything marked [Flags] belongs to the other function. Two
+        # mechanisms answering "what widget does this field get" would fight
+        # silently, and the one that lost would drop every bit but one.
+        is_flags = set(flagged.findall(source))
+        for name, body in pattern.findall(source):
+            if name in is_flags:
+                continue
+            members = tuple(member.findall(body))
+            if members:
+                found[name] = members
+    return found
+
+
+@lru_cache(maxsize=1)
 def flag_enums() -> dict:
     """
     `{enum name: (member, ...)}` for every `[Flags]` enum in Structures.

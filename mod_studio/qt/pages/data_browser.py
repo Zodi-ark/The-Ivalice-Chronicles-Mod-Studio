@@ -63,6 +63,7 @@ from ..widgets.actions import (
 from ..widgets.field_rows import (
     CollapsibleSection, NumericFieldRow, TextFieldRow)
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 
 # Rows are loaded on demand, but a table with tens of thousands of rows
 # would still build tens of thousands of list items. The cap is generous
@@ -100,7 +101,7 @@ NUMERIC_MIN = -2147483648
 NUMERIC_MAX = 2147483647
 
 
-class DataBrowserPage(QWidget):
+class DataBrowserPage(RefreshesWhenVisible, QWidget):
     edits_changed = Signal()
     navigate_requested = Signal(str, object)
 
@@ -141,8 +142,7 @@ class DataBrowserPage(QWidget):
                                           QSizePolicy.Preferred)
 
         outer.addLayout(page_intro(
-            "Every table in the game data, including the ones without their "
-            "own tab. Pick a table, then a row. Only the fields you tick are "
+            "Every editable table. Like always, only the fields ticked are "
             "written into your mod.",
             self.table_controls))
 
@@ -403,9 +403,33 @@ class DataBrowserPage(QWidget):
         return False
 
     def _go_to_curated(self) -> None:
+        """
+        Opens the tab that owns this table, AT THE ROW being looked at.
+
+        It used to emit `(owner, None)`, so pressing "Open Jobs ->" while
+        looking at job 12 landed on the Jobs tab with nothing selected -
+        showing neither the value you left nor the one you were going to
+        see. Landing somewhere that does not show you where you landed is
+        the most basic thing a jump can get wrong.
+
+        The key is carried only where it MEANS the same thing on the other
+        side. For the per-language specs and the override action table it
+        does - `AbilitiesPage._load_override` is keyed by the ability id,
+        which is this row's key. `OverrideEntryData` is the exception:
+        Encounters addresses its records by a tuple, not by a row key, so
+        there is nothing honest to send and it opens the tab without a
+        selection rather than selecting the wrong thing.
+
+        The shell resolves the key through `select_record`, which moves the
+        list as well as the form - see `open_tab`.
+        """
         owner = self._curated_tab_for(self.table or "")
-        if owner:
-            self.navigate_requested.emit(owner, None)
+        if not owner:
+            return
+        key = self.current_key
+        if self.table == c.NXD_OVERRIDE_ENTRY_TABLE:
+            key = None
+        self.navigate_requested.emit(owner, key)
 
     # -- rows -----------------------------------------------------------------
 
@@ -785,6 +809,25 @@ class DataBrowserPage(QWidget):
                     row.load("" if value is None else value, False)
         finally:
             self._loading = False
+
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected row when this page comes back on screen.
+
+        This is the page on the other side of the fault: a curated tab can
+        write the very row this one is showing, and the rewrite in
+        `_on_field_edited` below deletes any field whose tick is off. The
+        tick is off for anything loaded before the other page's edit.
+
+        The table selection is not touched - only the row is re-read, which
+        is what keeps this cheap enough to run on every show. See
+        `widgets/visible_refresh.py`.
+        """
+        if self.current_key is None:
+            return
+        self.load_row(self.current_key)
+        self._mark_edited()
+        self._update_counter()
 
     def _on_field_edited(self) -> None:
         if self._loading or self.current_key is None:

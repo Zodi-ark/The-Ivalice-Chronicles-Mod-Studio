@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
     QPushButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ... import pzd_data
 from ... import constants as c
 from ... import nxd_data
 from ..widgets.actions import page_intro, set_empty_state
@@ -70,6 +71,16 @@ class FindTextPage(QWidget):
     # "either a record id or a table-and-row, depending" works until
     # somebody passes the wrong one.
     locate_requested = Signal(str, object)
+    #: A Panzer text hit: stem, language, line id.
+    locate_text_requested = Signal(str, str, object)
+
+    #: Problems from one search source, kept so they can be shown without
+    #: losing the other source's results.
+    _notes: list = []
+
+    #: The column name `pzd_data.search_text` gives its hits. Used to route
+    #: them, because a text file and a database table need different pages.
+    PZD_COLUMN = "Line"
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -91,8 +102,8 @@ class FindTextPage(QWidget):
         # is exactly the drift that check exists for.
         outer.addLayout(page_intro(
             "Search every line of text in the game data. Type something you "
-            "have seen in game and this finds which table and row it lives "
-            "in, in every language."))
+            "have seen in game and this finds where it is, in every "
+            "language."))
 
         self.empty_note = QLabel("")
         self.empty_note.setWordWrap(True)
@@ -160,11 +171,11 @@ class FindTextPage(QWidget):
         # -- opening -----------------------------------------------------------
         actions = QHBoxLayout()
         self.hint = QLabel(
-            "Double-click a result to open it in All Game Data.")
+            "Double-click a result to open it's location.")
         self.hint.setProperty("role", "muted")
         actions.addWidget(self.hint)
         actions.addStretch(1)
-        self.open_button = QPushButton("Open in All Game Data \u2192")
+        self.open_button = QPushButton("Open Location \u2192")
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self._open_current)
         actions.addWidget(self.open_button)
@@ -218,11 +229,20 @@ class FindTextPage(QWidget):
         per table. That was worth fixing rather than hiding behind a
         thread.
         """
+        # Either source is enough.
+        #
+        # This returned early on a missing database, which was right when
+        # the database was the only thing searched. The Panzer text files
+        # are read straight from the unpacked folder and need no database
+        # at all, so requiring one would have hidden 4,417 files of
+        # dialogue behind a conversion they do not use.
         sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
-        if not sqlite_path:
+        unpack_dir = getattr(self.state, "nxd_unpack_dir", None)
+        if not sqlite_path and not unpack_dir:
             self.summary.setText("No game data loaded yet.")
             return
         needle = self.needle.text().strip()
+        self._notes = []
         self.results.clear()
         self._hits = []
         self.open_button.setEnabled(False)
@@ -231,14 +251,37 @@ class FindTextPage(QWidget):
             return
 
         language = self.language_box.currentData()
+        hits = []
+        if sqlite_path:
+            try:
+                hits = nxd_data.search_text(
+                    sqlite_path, needle,
+                    languages=[language] if language else None,
+                    limit=RESULT_LIMIT)
+            except Exception as exc:                          # noqa: BLE001
+                # Noted, not fatal - the same rule the text files get below.
+                # One source failing must not take the other's results with
+                # it.
+                self._log_note(f"Tables couldn't be searched: {exc}")
+
+        # The Panzer text files too, in the same list.
+        #
+        # 4,417 `.pzd` files hold the game's dialogue, voice lines and
+        # subtitles, and somebody looking for a line does not know whether
+        # the game keeps it in a table or in one of those. Two result lists
+        # would make them ask. Appended rather than merged by relevance,
+        # because the table hits are the ones with an editor behind them.
+        #
+        # Never allowed to break the search it is added to: if the text
+        # folder is missing, unreadable, or full of something unexpected,
+        # the table results still stand on their own.
         try:
-            hits = nxd_data.search_text(
-                sqlite_path, needle,
+            hits = hits + pzd_data.search_text(
+                unpack_dir, needle,
                 languages=[language] if language else None,
-                limit=RESULT_LIMIT)
+                limit=max(0, RESULT_LIMIT - len(hits)))
         except Exception as exc:                              # noqa: BLE001
-            self.summary.setText(f"Couldn't search: {exc}")
-            return
+            self._log_note(f"Text files couldn't be searched: {exc}")
 
         self._hits = hits
         for hit in hits:
@@ -250,9 +293,33 @@ class FindTextPage(QWidget):
             item.setToolTip(3, hit.value[:2000])
             self.results.addTopLevelItem(item)
 
-        self.summary.setText(self._summarise(hits, needle, language))
+        summary = self._summarise(hits, needle, language)
+        if self._notes:
+            summary = summary + "  " + "  ".join(self._notes)
+        self.summary.setText(summary)
         if hits:
             self.results.setCurrentItem(self.results.topLevelItem(0))
+
+    def text_path_for(self, stem: str, language: str) -> str:
+        """
+        The `.pzd` path a hit came from, rebuilt from what the hit carries.
+
+        The hit holds the stem and the language because that is what reads
+        like a table name; the folder is recoverable because the 631 stems
+        are unique across all eight folders and each begins with its own
+        folder's name.
+        """
+        tree = pzd_data.scan_text_tree(
+            getattr(self.state, "nxd_unpack_dir", None))
+        for (folder, found_stem), by_language in tree.items():
+            if found_stem == stem:
+                return by_language.get(language) or next(
+                    iter(by_language.values()), "")
+        return ""
+
+    def _log_note(self, message: str) -> None:
+        """A problem with one source, said without losing the other's results."""
+        self._notes.append(message)
 
     def _summarise(self, hits: list, needle: str, language) -> str:
         """
@@ -319,11 +386,28 @@ class FindTextPage(QWidget):
         return item.data(0, Qt.UserRole) if item is not None else None
 
     def _on_activated(self, item, _column=0) -> None:
-        hit = item.data(0, Qt.UserRole) if item is not None else None
-        if hit is not None:
-            self.locate_requested.emit(hit.table, hit.key)
+        # Through the SAME method the button uses.
+        #
+        # This emitted `locate_requested` directly, so double-clicking a
+        # subtitle opened All Game Data while the button beside it opened
+        # Sounds - two ways to do one thing, and the copy nobody was looking
+        # at was the one most people use.
+        self._open_hit(item.data(0, Qt.UserRole) if item is not None else None)
 
     def _open_current(self) -> None:
-        hit = self.current_hit()
-        if hit is not None:
-            self.locate_requested.emit(hit.table, hit.key)
+        self._open_hit(self.current_hit())
+
+    def _open_hit(self, hit) -> None:
+        if hit is None:
+            return
+        # A Panzer text hit goes to the Text page, not All Game Data.
+        #
+        # Told apart by where it CAME FROM rather than by the shape of its
+        # name: `column == "Line"` is what `pzd_data.search_text` sets and
+        # nothing in the database uses, so a table that one day gains a
+        # column called Line cannot be mistaken for one of these.
+        if hit.column == self.PZD_COLUMN:
+            self.locate_text_requested.emit(hit.base_table, hit.language,
+                                            hit.key)
+            return
+        self.locate_requested.emit(hit.table, hit.key)

@@ -51,6 +51,10 @@ class WizardState:
     table_source_detail: str = ""
     job_command_records: list = field(default_factory=list)   # list[xml_io.JobCommandRecord]
     job_command_version: str = "1"
+    #: Version of MonsterJobCommandData.xml. Its records live in
+    #: `job_command_records` alongside the job ones - see
+    #: `xml_io.load_monster_job_command_table` for why they share a list.
+    monster_job_command_version: str = "1"
     ability_names: dict = field(default_factory=dict)          # live names from AbilityData.xml
     ability_types: dict = field(default_factory=dict)           # live AbilityType from AbilityData.xml
     # job_id -> {field_name: new_string_value}, only fields explicitly included
@@ -167,6 +171,7 @@ class WizardState:
         self.job_command_preserved = {}
         self.job_preserved = {}
         self.table_preserved = {}
+        self.pzd_edits = {}
         self.texture_edits = {}
         self.sound_file_replacements = {}
         self.other_file_replacements = {}
@@ -565,6 +570,16 @@ class WizardState:
     texture_tree: object = None   # texture_data.TextureTreeNode, cached after first scan
     # relative_path (forward-slashed, e.g. "ui/ffto/common/face/texture/blkface_05_04_uitx.tex")
     # -> {"source_path": Path, "is_face_texture": bool}
+    #: Edited Panzer text lines:
+    #: `{relative_path: {line_id: {field: value}}}`.
+    #:
+    #: Keyed by the file's path under the unpack folder, the way texture and
+    #: sound edits are, so one language of one stem is one entry. Only the
+    #: LINES somebody changed are stored - the rest are read from the game
+    #: file at export time, which keeps an edit small and keeps it correct
+    #: when the game updates underneath it.
+    pzd_edits: dict = field(default_factory=dict)
+
     texture_edits: dict = field(default_factory=dict)
 
     def rebased_table_count(self) -> int:
@@ -585,6 +600,19 @@ class WizardState:
 
     def edited_texture_count(self) -> int:
         return len(self.texture_edits)
+
+    def edited_pzd_file_count(self) -> int:
+        return sum(1 for edits in self.pzd_edits.values() if edits)
+
+    def edited_pzd_line_count(self) -> int:
+        return sum(len(edits) for edits in self.pzd_edits.values())
+
+    def edited_pzd_field_count(self) -> int:
+        return sum(len(fields) for lines in self.pzd_edits.values()
+                   for fields in lines.values())
+
+    def has_any_pzd_edits(self) -> bool:
+        return self.edited_pzd_file_count() > 0
 
     def has_any_texture_edits(self) -> bool:
         return bool(self.texture_edits)

@@ -40,6 +40,26 @@ from ... import nxd_data
 NXD_NOTE = ("Binary .nxd - rebuilt through FF16Tools, so this is a summary "
             "of what will change rather than a diff.")
 
+#: Heading for files a mod carries through without this tool editing them.
+#:
+#: Deliberately NOT named after a page. Every other section is named for an
+#: Edit Game Data tab one-for-one, so "UI (carried through, not edited
+#: here)" read as a page that does not exist - and produced one heading per
+#: read-only table on top of that. These files are real and must stay
+#: visible, so they get a region instead of a fake page.
+CARRIED_THROUGH_SECTION = "Carried through"
+
+#: What a text row is, since a .pzd is not rebuilt the way an .nxd is.
+PZD_NOTE = ("Panzer text files - written as YAML and converted back by "
+            "FF16Tools, so this is a summary of which lines change rather "
+            "than a diff.")
+
+#: What that section means, shown on each file under it.
+CARRIED_THROUGH_NOTE = (
+    "Copied from the mod you opened, unchanged. Nothing in Mod Studio edits "
+    "these - they travel with the mod so that a mod shipping its own copies "
+    "keeps them.")
+
 
 class _SummaryView(QPlainTextEdit):
     """
@@ -195,7 +215,14 @@ class ModContentsPane(QWidget):
             ("Job Commands", [
                 ("JobCommandData.xml", None, False,
                  page.job_command_diff_xml_text,
-                 lambda: state.edited_job_command_count() > 0),
+                 lambda: self._edited_commands_of_kind(monsters=False) > 0),
+                # Monster skillsets edit on the same page but write to their
+                # own file - four slots and a different element name - so
+                # the pane shows both, and each appears only when it has
+                # something in it. One page, two files, both named.
+                ("MonsterJobCommandData.xml", None, False,
+                 page.monster_job_command_diff_xml_text,
+                 lambda: self._edited_commands_of_kind(monsters=True) > 0),
                 self._nxd_row("job_command", "job command names/descriptions"),
             ]),
             ("Abilities", [
@@ -204,13 +231,22 @@ class ModContentsPane(QWidget):
                  *table("ability_effect")),
                 ("AbilityTypeData.xml", None, False,
                  *table("ability_animation")),
-                self._nxd_row(
-                    "ability", "abilities",
-                    extra_summary=lambda: (
-                        "the shared override table "
-                        f"({state.edited_override_count()} ability(s))"
-                        if state.override_touched() else None),
-                    extra_shown=lambda: state.edited_override_count() > 0),
+                self._nxd_row("ability", "abilities"),
+                # Its own row, not a sentence tacked onto the end of the
+                # ability names file.
+                #
+                # It was written as "...plus the shared override table (2
+                # ability(s))" on `ability.<lang>.nxd`, so the pane named
+                # one file and shipped two - and the second was the one
+                # carrying Range, Formula and Inflict Status. Somebody
+                # checking what their mod contains had no row to look at for
+                # the edits they had just made.
+                #
+                # `overrideentrydata.nxd` on Encounters is the same kind of
+                # table and has always had its own row; this is that shape.
+                (c.NXD_OVERRIDE_ACTION_FILENAME, NXD_NOTE, True,
+                 self._override_summary,
+                 lambda: state.edited_override_count() > 0),
             ]),
             ("Items", [
                 ("ItemData.xml", None, False, *table("item")),
@@ -236,7 +272,13 @@ class ModContentsPane(QWidget):
                 ("overrideentrydata.nxd", NXD_NOTE, True,
                  self._entry_summary,
                  lambda: state.changed_entry_row_count() > 0),
-                self._nxd_row("chara_name", "unit names"),
+                # `charaname.<lang>.nxd` is NOT listed here any more. It was,
+                # and that was right while Unit Names was a sub-tab of this
+                # page; it is its own page now, and the derived pass below
+                # files it under `CURATED_NXD_SPECS["chara_name"].label`,
+                # which already reads "Unit Names". Leaving the hand-written
+                # row here would have pinned it to the wrong page and hidden
+                # the fact that the derivation was already correct.
             ]),
             ("Textures", [
                 ("Replaced textures",
@@ -245,6 +287,14 @@ class ModContentsPane(QWidget):
                  lambda: bool(state.texture_edits)),
             ]),
             ("Sounds", [
+                # Subtitles ship under Sounds because Sounds is where they
+                # are edited - the pane's rule is that a section exists
+                # because a page does. One row for all of them, not one per
+                # file: a retranslation touches hundreds, and a section with
+                # 600 tabs in it is a section nobody reads.
+                ("nxd/text/*.pzd", PZD_NOTE, True,
+                 self._text_summary,
+                 lambda: state.edited_pzd_file_count() > 0),
                 ("Replaced sounds",
                  "Each edited .sab is unpacked and repacked with AudioMog.",
                  True, self._sound_summary,
@@ -254,29 +304,145 @@ class ModContentsPane(QWidget):
 
     def _with_every_registered_table(self, sections: list) -> list:
         """
-        Adds a row for any registered `.nxd` table the curated list missed.
+        Files the tables the curated list above missed, UNDER THEIR PAGE.
 
-        `_nxd_row` was already built from the registry, so adding a table
-        was supposed to be free. It was not: the HELPER was generic and the
-        CALL SITES were typed out by hand, five of them for six registered
-        tables. `jobcommand` was the sixth. A Job Command rename was
-        counted by `_nxd_backed_edit_count`, would have been written by the
-        exporter, and appeared nowhere on this pane - so the only thing the
-        person could see said their edit did not exist.
+        Two levels, always: the Mod Studio page you would have made the edit
+        on, then the file it becomes. That is what a modder checking their
+        own work is actually asking - "where did I do this, and what does it
+        write" - and it is derived here rather than curated, so a page added
+        next year appears without this file being edited.
 
-        Curation still decides placement and order for every table somebody
-        thought about. This decides that a table nobody thought about is
-        still mentioned, under its own heading, rather than silently
-        omitted. `dev/audit_table_wiring.py` checks the outcome by planting
-        a real edit in each table and asking this pane whether it can see
-        it.
+        Both halves of the derivation come from things that already exist:
+
+        - a `.nxd` table's owning page is `CURATED_NXD_SPECS[key].label`,
+          and a table with no curated spec is reachable only through All
+          Game Data, so that is where it goes
+        - an XML table's owning page is its entry in `app`'s tab table,
+          which is the same list `build_window` builds the tabs from
+
+        Before this, every one of the 45 uncurated `.nxd` tables got its own
+        TOP-LEVEL heading - "Zodiac Stone", "Novel03", "Launcher Guide" -
+        so the pane read as a list of 58 pages when the tool has 14, and
+        none of those headings named anywhere you could go. Worse, the
+        derivation only covered `.nxd`: **Inflict Status had no row at all**,
+        because it is an XML table and the XML half was hand-written. An
+        edit made there appeared nowhere in Mod Contents, which reads as the
+        edit having been lost - the exact fault this method was written to
+        prevent, in the half it did not cover.
         """
         listed = {row[0] for _section, rows in sections for row in rows}
+        by_section = {name: rows for name, rows in sections}
+
+        def place(section: str, row) -> None:
+            if row[0] in listed:
+                return
+            listed.add(row[0])
+            if section in by_section:
+                by_section[section].append(row)
+            else:
+                by_section[section] = [row]
+                sections.append((section, by_section[section]))
+
         for key, spec in nxd_data.ALL_NXD_SPECS.items():
-            if f"{spec.nxd_stem}.<lang>.nxd" in listed:
+            row = self._nxd_row(key, spec.label.lower())
+            if spec.nxd_stem in self._read_only_stems():
+                # ONE section, and it is not named after a page.
+                #
+                # The rule this pane follows is that a section exists
+                # because an Edit Game Data page exists. These files have no
+                # page - nothing in the interface edits the UI strings; they
+                # are staged because key 3737 holds the game's version
+                # string, and a mod shipping its own copies has them carried
+                # through untouched. Heading them "UI (carried through, not
+                # edited here)" put a page-shaped thing where no page is,
+                # and gave one per table on top of that.
+                #
+                # NOT hidden, which was tried and caught by
+                # `audit_table_wiring`: opening the reference mod recovers
+                # five real `ui` entries, and hiding the row makes those
+                # invisible - the "my edit was lost" fault this whole method
+                # exists to prevent.
+                #
+                # So they get a region of their own, named for what it is
+                # rather than for somewhere you could go, and sorted to the
+                # end where the page sections stop.
+                # The note is replaced too. `NXD_NOTE` explains a rebuild
+                # through FF16Tools, which is not what happens to these -
+                # they are copied, not rebuilt, and saying so is the whole
+                # point of the section.
+                label, _note, wrap, provider, predicate = row
+                place(CARRIED_THROUGH_SECTION,
+                      (label, CARRIED_THROUGH_NOTE, wrap, provider,
+                       predicate))
                 continue
-            sections.append((spec.label, [self._nxd_row(key, spec.label.lower())]))
-        return sections
+            curated = nxd_data.CURATED_NXD_SPECS.get(key)
+            place(curated.label if curated else "All Game Data", row)
+
+        for title, table_key, filename in self._xml_pages():
+            place(title, (filename, None, False,
+                          lambda k=table_key: self.page.table_diff_xml_text(k),
+                          lambda k=table_key:
+                              self.state.edited_item_table_count(k) > 0))
+        return self._in_sidebar_order(sections)
+
+    @staticmethod
+    def _in_sidebar_order(sections: list) -> list:
+        """
+        Summary, Mod Config, the pages in SIDEBAR order, then carried
+        through.
+
+        Sorted by `EDIT_TABS.index(...)` rather than by a second list, so
+        **reordering the sidebar reorders this pane** and nobody has to
+        remember that two orders exist. They came out in the curated list's
+        order with the derived ones appended, which put Unit Names and
+        Inflict Status at the end purely because of how they were found.
+
+        Mod Config leads because it is not a page either - it is the
+        manifest every mod has - and it is the one thing here that is
+        always written.
+
+        Find Text is not in the pane and would not be even if it had files:
+        it searches All Game Data rather than editing anything, which is
+        why it is excluded from the sidebar order too.
+
+        A section matching no tab sorts before the carried-through block and
+        after the pages, rather than being dropped. Losing a heading here
+        loses the files under it.
+        """
+        from ..shell import EDIT_TABS
+
+        def rank(entry) -> tuple:
+            label = entry[0]
+            if label == "Mod Config":
+                return (0, 0, label)
+            if label == CARRIED_THROUGH_SECTION:
+                return (3, 0, label)
+            try:
+                return (1, EDIT_TABS.index(label), label)
+            except ValueError:
+                return (2, 0, label)
+
+        return sorted(sections, key=rank)
+
+    @staticmethod
+    def _read_only_stems() -> set:
+        """The `.nxd` stems this tool stages but never writes."""
+        return {name.split(".")[0] for name in c.NXD_ALL_UI_FILENAMES}
+
+    @staticmethod
+    def _xml_pages() -> list:
+        """
+        `[(page title, table key, filename)]` for every XML table with a tab.
+
+        Read from the same list `build_window` builds the tabs from, so a
+        new table page is in Mod Contents the moment it is in the sidebar.
+        Imported inside the function because `app` imports the pages that
+        import this widget.
+        """
+        from .. import app as qt_app
+
+        return [(title, key, filename)
+                for title, key, filename, *_rest in qt_app.TABLE_TABS]
 
     # -- .nxd summaries -----------------------------------------------------
 
@@ -299,7 +465,10 @@ class ModContentsPane(QWidget):
             return self._nxd_summary(
                 noun, state.touched_nxd_languages(key), filenames,
                 state.edited_nxd_total_count(key),
-                extra=extra_summary() if extra_summary else None)
+                extra=extra_summary() if extra_summary else None,
+                # The key, so the preview can list WHICH rows changed and
+                # not merely how many files it will write.
+                key=key)
 
         def shown():
             if state.edited_nxd_total_count(key) > 0:
@@ -328,8 +497,61 @@ class ModContentsPane(QWidget):
         return (f"Edited on the All Game Data tab: " + ", ".join(parts)
                 + ".")
 
+    #: How many changed rows an .nxd preview lists before it stops counting.
+    #:
+    #: A `.nxd` table can run to thousands of rows, so the whole file is
+    #: never the useful thing to show - but "1 poaching entries edited"
+    #: told a modder nothing about WHAT they had changed, which was the
+    #: complaint. The changed rows are the answer, and there are almost
+    #: never many: an edit is something a person typed.
+    #:
+    #: A cap all the same, because "almost never" is not never - a
+    #: copy-to-all-languages across a big table can touch hundreds, and a
+    #: preview pane is not a place to render them.
+    MAX_LISTED_ROWS = 40
+
+    def _changed_rows(self, key, language) -> list:
+        """
+        `[(row id, {field: new value})]` for one table in one language.
+
+        Read from the same edit store the exporter writes from, so what this
+        lists and what the file contains cannot drift apart.
+        """
+        store = self.state.nxd_edits_for(key) or {}
+        rows = store.get(language) or {}
+        return [(row_id, fields) for row_id, fields in sorted(rows.items())
+                if fields]
+
+    def _row_detail(self, key, languages) -> list:
+        """
+        The changed rows, as lines, for every language that has any.
+
+        This is the half that was missing. The pane said which FILES it
+        would write and said nothing about what was in them, so a modder
+        checking their own work had to export and diff to find out - and
+        the one thing Mod Contents exists to answer is "what is in my mod".
+        """
+        lines = []
+        for language in languages:
+            changed = self._changed_rows(key, language)
+            if not changed:
+                continue
+            label = c.NXD_LANGUAGE_LABELS.get(language, language)
+            lines.append("")
+            lines.append(f"Changed rows ({label}):")
+            for row_id, fields in changed[:self.MAX_LISTED_ROWS]:
+                for field, value in sorted(fields.items()):
+                    shown = " ".join(str(value).split())
+                    if len(shown) > 60:
+                        shown = shown[:57] + "..."
+                    lines.append(f"  row {row_id}  {field} = {shown}")
+            if len(changed) > self.MAX_LISTED_ROWS:
+                lines.append(f"  ...and {len(changed) - self.MAX_LISTED_ROWS} "
+                             f"more row(s)")
+        return lines
+
     def _nxd_summary(self, noun, languages, filenames, count,
-                     extra=None) -> str:
+                     extra=None, key=None) -> str:
         languages = list(languages)
         if not languages and not extra:
             return f"No {noun} edited, so no .nxd file will be written."
@@ -341,6 +563,8 @@ class ModContentsPane(QWidget):
             lines.append(f"  {filenames[language]}   ({label})")
         if extra:
             lines.append(f"  ...plus {extra}")
+        if key is not None:
+            lines.extend(self._row_detail(key, languages))
         lines.append("")
         lines.append(
             "Each is produced by applying your edits to a copy of your "
@@ -363,6 +587,72 @@ class ModContentsPane(QWidget):
                          f"count is unchanged.")
         lines.append("")
         lines.append(f"Writes {c.NXD_OVERRIDE_ENTRY_FILENAME}.")
+        return "\n".join(lines)
+
+    def _edited_commands_of_kind(self, monsters: bool) -> int:
+        """
+        How many edited skillsets belong in one file or the other.
+
+        `edited_job_command_count()` counts both together, so using it for
+        either row would show `JobCommandData.xml` for a mod that edits only
+        a Chocobo - naming a file the mod does not contain.
+        """
+        by_id = {r.command_id: r
+                 for r in (self.state.job_command_records or [])}
+
+        def is_monster(cid) -> bool:
+            # An id with no record loaded counts as a JOB command.
+            #
+            # Dropping it instead would hide a file the mod really does
+            # contain whenever the reference tables have not loaded - which
+            # is the state an opened mod is in before setup completes. The
+            # pane's job is to name what will be written, and being wrong
+            # about WHICH file is better than claiming there is none.
+            record = by_id.get(cid)
+            return bool(record.is_monster) if record is not None else False
+
+        return sum(1 for cid, fields
+                   in (self.state.job_command_edits or {}).items()
+                   if fields and is_monster(cid) is bool(monsters))
+
+    def _text_summary(self) -> str:
+        """Which text files change, and how many lines in each."""
+        edits = {path: lines
+                 for path, lines in (self.state.pzd_edits or {}).items()
+                 if lines}
+        if not edits:
+            return "No text lines edited."
+        total = sum(len(lines) for lines in edits.values())
+        out = [f"{total} line(s) edited across {len(edits)} file(s).", ""]
+        for path in sorted(edits):
+            ids = ", ".join(str(i) for i in sorted(edits[path])[:12])
+            more = ("" if len(edits[path]) <= 12
+                    else f", and {len(edits[path]) - 12} more")
+            out.append(f"{path}")
+            out.append(f"    line(s) {ids}{more}")
+        return "\n".join(out)
+
+    def _override_summary(self) -> str:
+        """
+        What the ability override table will contain.
+
+        Names the abilities and the fields changed on each, rather than
+        counting them. "2 ability(s)" told somebody checking their own work
+        nothing about WHICH two, which is the same complaint that made every
+        other nxd row list its changed rows.
+        """
+        state = self.state
+        edits = {key: fields
+                 for key, fields in (state.override_action_edits or {}).items()
+                 if fields}
+        if not edits:
+            return "No ability overrides set."
+        lines = [f"{len(edits)} ability override(s) set.", ""]
+        for key in sorted(edits):
+            names = ", ".join(sorted(edits[key]))
+            lines.append(f"Ability {key}: {names}")
+        lines.append("")
+        lines.append(f"Writes {c.NXD_OVERRIDE_ACTION_FILENAME}.")
         return "\n".join(lines)
 
     def _texture_summary(self) -> str:

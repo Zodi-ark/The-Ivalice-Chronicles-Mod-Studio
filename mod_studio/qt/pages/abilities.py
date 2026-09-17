@@ -41,15 +41,15 @@ from ..widgets.actions import (
     page_intro,
     TransientNote,
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, ViewToggles,
-    apply_view_toggles, language_order, select_list_row,
+    apply_view_toggles, language_combo, language_order, select_list_row,
     set_empty_state,
-    copy_edits_to_languages, ensure_language_loaded, mark_edited,
-)
+    copy_edits_to_languages, ensure_language_loaded, mark_edited, edit_counter_text)
 from ..widgets.field_rows import (
     AnnotatedNumberRow, CollapsibleSection, DropdownFieldRow, FlagFieldPanel,
     NamedNumberRow, NumericFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.texture_slot import InlineTextureSlot
 from .poaching import TextFieldRow
 
@@ -125,37 +125,37 @@ class OverrideScalarRow(NumericFieldRow):
     """
     An override scalar, where **-1 means "inherit vanilla"**.
 
-    A plain spin box cannot express that: its minimum would have to be -1,
-    and -1 would then look like an ordinary value one step below zero. So
-    the row carries an explicit "Inherit" state, and the number is only
-    meaningful when that is off.
+    The number shown is the number in the file. `-1` is displayed as `-1`,
+    because that is what `overrideabilityactiondata.nxd` holds and what
+    every other tool working on the same data shows.
 
-    This matters more than it looks. Writing 0 here does not leave the
-    ability alone - it sets the value to zero, which for Range or MP Cost is
-    a real and very different ability.
+    There used to be an "Inherit / Set to" dropdown in front of the value,
+    with the value greyed out until you chose "Set to". It was well meant -
+    writing 0 here does not leave the ability alone, it sets the value to
+    zero, which for Range or MP Cost is a real and very different ability -
+    but it made the page disagree with the file it edits. Ability 13 Wall
+    has `-1` in Range; this showed "Inherit" and a greyed 0, so checking the
+    tool against the data meant translating between them, and the one field
+    where the translation broke down (`Formula`) read `001` for a row that
+    actually said `-1`.
+
+    So the sentinel is shown, not hidden, and the note below the field
+    carries the warning the dropdown used to make structural.
     """
+
+    #: Said once, under any override field that has the sentinel.
+    INHERIT_NOTE = ("-1 leaves the ability's own value alone. Any other "
+                    "number replaces it - including 0, which is a real "
+                    "value and not the same as leaving it alone.")
 
     def __init__(self, field_name: str, label: str, low: int, high: int,
                  note: str = "", parent=None):
-        super().__init__(field_name, label, low, high, note, parent=parent)
-        self.inherit = QComboBox()
-        self.inherit.addItems(["Inherit", "Set to"])
-        self.inherit.currentIndexChanged.connect(self._on_inherit)
-        self.layout().insertWidget(2, self.inherit)
-        self.value.setEnabled(False)
-
-    def _on_inherit(self, index: int) -> None:
-        self.value.setEnabled(index == 1)
-        if self._loading:
-            return
-        if not self.include.isChecked():
-            self.include.setChecked(True)
-            return
-        self.edited.emit()
+        # The floor is the sentinel, not the field's own minimum - without
+        # that the box cannot hold what the file holds.
+        super().__init__(field_name, label, c.OVERRIDE_NOT_SET, high,
+                         note or self.INHERIT_NOTE, parent=parent)
 
     def get_value_str(self) -> str:
-        if self.inherit.currentIndex() == 0:
-            return str(c.OVERRIDE_NOT_SET)
         return str(self.value.value())
 
     def load(self, raw_value, included: bool) -> None:
@@ -165,16 +165,58 @@ class OverrideScalarRow(NumericFieldRow):
                 number = int(str(raw_value).strip() or c.OVERRIDE_NOT_SET)
             except (TypeError, ValueError):
                 number = c.OVERRIDE_NOT_SET
-            inheriting = number == c.OVERRIDE_NOT_SET
-            self.inherit.setCurrentIndex(0 if inheriting else 1)
-            self.value.setEnabled(not inheriting)
-            self.value.setValue(self.value.minimum() if inheriting else number)
+            self.value.setValue(number)
             self.include.setChecked(bool(included))
         finally:
             self._loading = False
 
 
-class AbilitiesPage(QWidget):
+class OverrideChoiceRow(DropdownFieldRow):
+    """
+    An override field picked from a named list, with **Inherit as an entry**.
+
+    Three fields use it. `Formula` selects one of the game's hardcoded
+    damage routines, where 7 tells a beginner nothing and
+    "007 - Heal_[Weapon]" tells them what it does. `InflictStatus` is
+    dual-purpose in exactly the way the item field is: normally it names a
+    row of `ItemOptionsData.xml`, and when this ability's `Formula` is 2
+    the same byte is an ability to cast.
+
+    **Inherit is the first entry rather than a separate control.** The
+    dropdown already has to show one of several named things; "inherit" is
+    one more named thing, and a second widget in front of it to say which
+    kind of answer this is was the arrangement that made `Formula` read
+    `001` for a row holding `-1`. The list cannot misreport the file,
+    because the file's value IS one of the entries.
+
+    A `DropdownFieldRow` like every other picker on this page and on Job
+    Commands, so the Edit button, the 200px label and the include checkbox
+    are the same furniture in the same places.
+    """
+
+    #: What the sentinel is called in the list.
+    INHERIT_LABEL = "Inherit (leave the ability's own value)"
+
+    def __init__(self, field_name: str, label: str, choices: dict,
+                 jump_label: str | None = None, jump_tooltip: str = "",
+                 parent=None):
+        super().__init__(field_name, label, parent=parent,
+                         jump_label=jump_label, jump_tooltip=jump_tooltip,
+                         zero_is_none=False)
+        self.set_override_choices(choices)
+
+    def set_override_choices(self, choices: dict) -> None:
+        """
+        The named values, with Inherit in front.
+
+        `zero_is_none` is off for these lists: 0 is an ordinary value here -
+        formula 0 is a real routine and status row 0 is a real row - and the
+        thing that means "nothing" is -1, which has its own entry.
+        """
+        self.set_choices({c.OVERRIDE_NOT_SET: self.INHERIT_LABEL, **choices})
+
+
+class AbilitiesPage(RefreshesWhenVisible, QWidget):
     edits_changed = Signal()
     # Asks the shell to open another tab at a particular record. The page
     # does not know what tabs exist; it says where it wants to go and the
@@ -210,15 +252,9 @@ class AbilitiesPage(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Language:"))
-        self.language_box = QComboBox()
-        self.language_box.addItems(language_order(
-            getattr(c, "NXD_ABILITY_FILENAMES", {"en": ""})))
+        self.language_box = language_combo(
+            getattr(c, "NXD_ABILITY_FILENAMES", {"en": ""}))
         self.language_box.currentTextChanged.connect(self._on_language)
-        # The widest entry is two characters; a
-        # minimum keeps the arrow from crowding it.
-        self.language_box.setSizePolicy(
-            QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.language_box.setMinimumWidth(72)
         top.addWidget(self.language_box)
 
         # One button. See the note on Poaching's - the second one ("Copy
@@ -244,8 +280,8 @@ class AbilitiesPage(QWidget):
         self.language_controls.setSizePolicy(QSizePolicy.Maximum,
                                              QSizePolicy.Preferred)
         outer.addLayout(page_intro(
-            "Every ability in the game. Names and descriptions are per-language; "
-            "range, area and formula come from a separate override layer.", self.language_controls))
+            "Every ability in the game select one to make changes.",
+            self.language_controls))
 
         self.action_note = TransientNote()
         outer.addWidget(self.action_note)
@@ -384,10 +420,24 @@ class AbilitiesPage(QWidget):
             spec = c.OVERRIDE_SCALAR_FIELDS[field_name]
             low, high, label = spec[0], spec[1], spec[2]
             note = spec[3] if len(spec) > 3 else ""
-            row = OverrideScalarRow(field_name, label, low, high, note)
+            if field_name == "InflictStatus":
+                row = self._make_inflict_row()
+            elif field_name == "Formula":
+                # The same dropdown the Items page gives the same field,
+                # from the same list - two pages naming one concept
+                # differently is two things to learn.
+                row = OverrideChoiceRow(field_name, label,
+                                        reference_names.formula_names())
+            else:
+                row = OverrideScalarRow(field_name, label, low, high, note)
             row.edited.connect(self._on_override_edited)
+            if field_name == "Formula":
+                # Formula decides what Inflict Status MEANS, so changing it
+                # has to change that row without reloading the ability.
+                row.edited.connect(self._sync_inflict_kind)
             self.override_rows[field_name] = row
             override_column.addWidget(row)
+        self.override_column = override_column
 
         # -- the three ordinary XML tables --------------------------------
         #
@@ -816,6 +866,102 @@ class AbilitiesPage(QWidget):
             row.setText(label)
         self.editing_label.setText(f"Editing: {label}")
 
+    def _uses_ability_formula(self) -> bool:
+        """
+        Whether this ability's Formula override makes Inflict Status an
+        ability id.
+
+        Reads the same rule the Items page and the usage index read, from
+        one definition, so the three cannot disagree about what Formula 2
+        means.
+        """
+        from .table_editor import FORMULA_CASTS_ABILITY
+
+        row = self.override_rows.get("Formula")
+        if row is None:
+            return False
+        try:
+            return int(row.get_value_str()) == FORMULA_CASTS_ABILITY
+        except (TypeError, ValueError):
+            return False
+
+    def _inflict_choices(self) -> dict:
+        """
+        Every Inflict Status row, named as the Inflict Status page names it.
+
+        Same source as the Items page uses for the same field, so one row
+        cannot be described two ways in one tool.
+        """
+        from .table_editor import inflict_status_descriptor
+
+        records = (self.state.item_table_records or {}).get(
+            "item_options", [])
+        edits = (self.state.item_table_edits or {}).get("item_options", {})
+        return {r.item_id: inflict_status_descriptor(
+            {**r.values, **edits.get(r.item_id, {})}) for r in records}
+
+    def _make_inflict_row(self):
+        """The control for `InflictStatus`, chosen by the current Formula."""
+        from ..app import ability_choices
+
+        label = c.OVERRIDE_SCALAR_FIELDS["InflictStatus"][2]
+        if self._uses_ability_formula():
+            row = OverrideChoiceRow(
+                "InflictStatus", "Cast Spell", ability_choices(self.state),
+                jump_label="Edit \u2192",
+                jump_tooltip="Open this ability on the Abilities tab")
+            row.jump_requested.connect(self._jump_to_own_ability)
+            row.lists_abilities = True
+            return row
+        row = OverrideChoiceRow(
+            "InflictStatus", label, self._inflict_choices(),
+            jump_label="Edit \u2192",
+            jump_tooltip="Open this row on the Inflict Status tab")
+        # Through the page's general router, which every other cross-tab
+        # jump on this page already uses.
+        row.jump_requested.connect(
+            lambda row_id: self.navigate_requested.emit(
+                "Inflict Status", int(row_id)))
+        row.lists_abilities = False
+        return row
+
+    def _jump_to_own_ability(self, ability_id: int) -> None:
+        """Opens the spell this ability casts, on this same tab."""
+        if ability_id >= 0:
+            self.select_record(ability_id)
+
+    def _sync_inflict_kind(self) -> None:
+        """
+        Swaps the Inflict Status control when Formula crosses into or out of 2.
+
+        In place, like the Items page: the change is triggered BY the
+        Formula row, and rebuilding the column would delete widgets around
+        the one being edited. Does nothing while the kind is unchanged.
+        """
+        old = self.override_rows.get("InflictStatus")
+        if old is None:
+            return
+        # What the row currently LISTS, recorded rather than inferred from
+        # its type - both states are the same widget class now.
+        if self._uses_ability_formula() == getattr(old, "lists_abilities",
+                                                   False):
+            return
+        index = self.override_column.indexOf(old)
+        if index < 0:
+            return
+        value, included = old.get_value_str(), old.included
+        self.override_column.takeAt(index)
+        old.setParent(None)
+        old.deleteLater()
+        row = self._make_inflict_row()
+        # The byte does not change when the formula does - what changes is
+        # what it means - so the value carries across rather than resetting.
+        row.load(value, included)
+        row.edited.connect(self._on_override_edited)
+        self.override_rows["InflictStatus"] = row
+        self.override_column.insertWidget(index, row)
+        apply_view_toggles([row], *self.view_toggles.state())
+
     def _on_override_edited(self) -> None:
         if self.current_key is None:
             return
@@ -864,6 +1010,21 @@ class AbilitiesPage(QWidget):
     def _on_base_stat_edited(self) -> None:
         self._commit_xml_table("ability", self.base_stat_rows)
 
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected ability when this page comes back on screen.
+
+        `load_record` covers all five stores an ability is spread across -
+        the per-language text, the JP cost pair, the override, and the three
+        XML tables - so one call re-ticks whatever another page wrote. See
+        `widgets/visible_refresh.py` for why a stale tick is a deletion.
+        """
+        if self.current_key is None:
+            return
+        self.load_record(self.current_key)
+        self._mark_edited()
+        self._update_counter()
+
     def _after_edit(self) -> None:
         self._mark_edited()
         self._update_counter()
@@ -901,7 +1062,7 @@ class AbilitiesPage(QWidget):
                 k for k, v
                 in self.state.item_table_edits.get(table_key, {}).items() if v)
         edited = len(text_edits | overrides | tables)
-        self.counter.setText(f"{edited} of {total} abilities edited")
+        self.counter.setText(edit_counter_text(edited, total, "abilities"))
 
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool,

@@ -34,14 +34,14 @@ from ..widgets.actions import (
     page_intro,
     TransientNote, record_name,
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, ViewToggles,
-    apply_view_toggles, language_order, set_empty_state,
-    copy_edits_to_languages, ensure_language_loaded, mark_edited,
-)
+    apply_view_toggles, language_combo, language_order, set_empty_state,
+    copy_edits_to_languages, ensure_language_loaded, mark_edited, edit_counter_text)
 from ..widgets.field_rows import TextFieldRow as _TextFieldRow
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 
 # The id that means "produces nothing". NOT -1 - see the module docstring.
 PRODUCED_ITEM_NONE = 0
@@ -75,7 +75,7 @@ class BoolFieldRow(NumericFieldRow):
             self._loading = False
 
 
-class PoachingPage(QWidget):
+class PoachingPage(RefreshesWhenVisible, QWidget):
     edits_changed = Signal()
 
     def __init__(self, state, parent=None):
@@ -108,20 +108,14 @@ class PoachingPage(QWidget):
 
         top = QHBoxLayout()
         top.addWidget(QLabel("Language:"))
-        self.language_box = QComboBox()
         # English first - sorting the whole list put "cs" at the top, so the
         # page opened on Czech and looked empty for anyone whose game data
-        # only has English unpacked. `language_order` keeps that and also
-        # makes the ORDER match every other page's; this one used to run
-        # en, cs, ct, de, fr, ja, ko while Items and Encounters ran the
-        # game's own order.
-        self.language_box.addItems(language_order(c.NXD_POACH_FILENAMES))
+        # only has English unpacked. `language_combo` keeps that and also
+        # makes the ORDER and the WIDTH match every other page's; this one
+        # used to run en, cs, ct, de, fr, ja, ko while Items and Encounters
+        # ran the game's own order.
+        self.language_box = language_combo(c.NXD_POACH_FILENAMES)
         self.language_box.currentTextChanged.connect(self._on_language)
-        # The widest entry is two characters; a
-        # minimum keeps the arrow from crowding it.
-        self.language_box.setSizePolicy(
-            QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.language_box.setMinimumWidth(72)
         top.addWidget(self.language_box)
 
         # Numbers do not differ per language, so retyping a price five times
@@ -164,8 +158,8 @@ class PoachingPage(QWidget):
         self.language_controls.setSizePolicy(QSizePolicy.Maximum,
                                              QSizePolicy.Preferred)
         outer.addLayout(page_intro(
-            "What a poached monster leaves behind, and what it's worth. Names "
-            "and descriptions are per-language - pick the language first.", self.language_controls))
+            "What a poached monster leaves behind and what it's worth.",
+            self.language_controls))
 
         self.action_note = TransientNote()
         # Added once. It used to be added before AND after `top`, so the
@@ -240,32 +234,62 @@ class PoachingPage(QWidget):
             self.rows[field_name] = row
             text_column.addWidget(row)
 
+        # The four fields somebody actually comes to this page to set, in
+        # the order they are thought about: what the carcass turns into,
+        # what it is worth to buy and to sell, and what it looks like.
+        #
+        # They were buried in a collapsed section with eleven mostly-unknown
+        # columns, so the page opened showing names and description and
+        # nothing you could DO with a carcass. A hand-picked group, not a
+        # derived one - which is why `test_qt_poaching` asserts every name
+        # here is a real field and that nothing was lost from the page. A
+        # hand-kept list with no check is the thing this project has got
+        # wrong three times.
+        PRODUCES_FIELDS = ("ProducedItemId", "Cost", "SellPrice", "IconId")
+
+        produces_body = QWidget()
+        produces_column = QVBoxLayout(produces_body)
+        produces_column.setContentsMargins(0, 0, 0, 0)
+        produces_column.setSpacing(2)
+
         numbers_body = QWidget()
         numbers_column = QVBoxLayout(numbers_body)
         numbers_column.setContentsMargins(0, 0, 0, 0)
         numbers_column.setSpacing(2)
+
+        def _column_for(field_name: str):
+            """Which of the two number sections a field belongs in."""
+            return (produces_column if field_name in PRODUCES_FIELDS
+                    else numbers_column)
+
         for field_name, spec in c.POACH_NUMERIC_FIELDS.items():
             low, high, label = spec[0], spec[1], spec[2]
             note = spec[3] if len(spec) > 3 else ""
             if field_name == "ProducedItemId":
-                # A NUMBER you type, with the item it points at named beside
-                # it - not a dropdown.
+                # A DROPDOWN of item names, refilled from the Items table.
                 #
-                # It was a `DropdownFieldRow`, which meant the only items
-                # offerable were the ones already in the reference list. A
-                # poached carcass produces an item by id, and a mod author
-                # editing what item 33 IS still wants to point a carcass at
-                # 33; a picker that lists the vanilla name for every id gets
-                # in the way of exactly the person this field is for. Zodi's
-                # call, and it matches how `EffectId` on Abilities stayed a
-                # number for the same reason.
+                # This reverses an earlier call, and the reason it is safe
+                # to reverse is worth writing down. It was a dropdown once,
+                # and was made a number box because "a picker that lists the
+                # vanilla name for every id gets in the way of an author who
+                # is editing what item 33 IS". Two things answer that now:
+                # `DropdownFieldRow` keeps an id it cannot name rather than
+                # snapping it to the first entry, and the names come from
+                # `item_table_records` - the same records the Items page
+                # lists and edits - so renaming an item on that page renames
+                # it here. The author editing item 33 sees THEIR name for
+                # 33, which is the opposite of getting in the way.
                 #
-                # -1 is still not reachable: the range starts at 0, because
-                # -1 is not a valid ItemData id here and writing it would
-                # produce a broken mod file. 0 means "none" and is the
-                # default.
-                row = NumericFieldRow(
-                    field_name, label, max(low, 0), high, note)
+                # Requested from real use, and the readability argument is
+                # the stronger one: every valid id is in the list (261 items
+                # against MAX_ITEM_ID 260), so the picker covers the whole
+                # range a number box allowed.
+                #
+                # -1 is still unreachable and 0 still means "none"; the
+                # choices are built with 0 present and -1 filtered out.
+                row = DropdownFieldRow(field_name, label)
+                row.set_choices(self._produced_item_choices())
+                self._produced_row = row
             else:
                 row = NumericFieldRow(
                     field_name, label, low, high, note,
@@ -275,7 +299,7 @@ class PoachingPage(QWidget):
                 # Live, as it is typed - not only when the record loads.
                 row.edited.connect(self._describe_produced_item)
             self.rows[field_name] = row
-            numbers_column.addWidget(row)
+            _column_for(field_name).addWidget(row)
 
         for field_name, (label, note) in c.POACH_BOOL_FIELDS.items():
             row = BoolFieldRow(field_name, label, note)
@@ -284,11 +308,30 @@ class PoachingPage(QWidget):
                 # Live, as it is typed - not only when the record loads.
                 row.edited.connect(self._describe_produced_item)
             self.rows[field_name] = row
-            numbers_column.addWidget(row)
+            _column_for(field_name).addWidget(row)
+
+        # `POACH_NUMERIC_FIELDS` is a dict and its order is the engine's, so
+        # taking the four out in dict order would have put Cost, Sell Price
+        # and Icon ID above the field they qualify. Re-ordered to
+        # PRODUCES_FIELDS after the fact, which keeps the engine's order
+        # intact for the section that wants it.
+        for position, field_name in enumerate(PRODUCES_FIELDS):
+            row = self.rows.get(field_name)
+            if row is not None:
+                produces_column.insertWidget(position, row)
 
         self.sections = [
-            CollapsibleSection("Names and description", text_body, expanded=True),
-            CollapsibleSection("Numbers", numbers_body, expanded=False),
+            CollapsibleSection("Names and description", text_body,
+                               expanded=True),
+            # Expanded, and immediately after the names: this is the half of
+            # the page with something to set.
+            CollapsibleSection("Produces and Icon", produces_body,
+                               expanded=True),
+            # "Other fields", not "Numbers" - it is what is left over rather
+            # than a category, and two of the things in it are not numbers.
+            # It already started collapsed, and still does: eleven columns,
+            # eight of them called Unknown-something.
+            CollapsibleSection("Other fields", numbers_body, expanded=False),
         ]
         for section in self.sections:
             form.addWidget(section)
@@ -341,6 +384,24 @@ class PoachingPage(QWidget):
                             if k != -1}
         self._describe_produced_item()
 
+    def _produced_item_choices(self) -> dict:
+        """
+        Item id -> name for the Produces / Unlocks Item picker.
+
+        Read from `item_table_records`, which is what the Items page lists,
+        so the two cannot disagree about what an item is called and a rename
+        made there shows up here.
+
+        Plain names: `DropdownFieldRow.set_choices` puts the id in front
+        itself, so including it here would render "033 - (33) Potion".
+        """
+        found = {PRODUCED_ITEM_NONE: "(None)"}
+        for record in (self.state.item_table_records or {}).get("item", []):
+            if record.item_id == PRODUCED_ITEM_NONE:
+                continue
+            found[record.item_id] = getattr(record, "name", "") or "(unnamed)"
+        return found
+
     def _refresh_item_names(self) -> None:
         """
         Re-reads the item names from the loaded tables.
@@ -360,6 +421,12 @@ class PoachingPage(QWidget):
         names = actions.item_names_by_id(self.state)
         if names:
             self._item_names = names
+        # The picker reads the same table, so it is refilled here too -
+        # otherwise a rename on the Items page would reach the note
+        # beside the field and not the field itself.
+        row = getattr(self, "_produced_row", None)
+        if row is not None:
+            row.set_choices(self._produced_item_choices())
 
     def _describe_produced_item(self) -> None:
         """
@@ -371,7 +438,16 @@ class PoachingPage(QWidget):
         row = self.rows.get("ProducedItemId")
         if row is None:
             return
-        value = row.value.value()
+        # The dropdown says the name in the control itself, so there is
+        # nothing left for a note beside it to add - including for an id
+        # nothing answers to, which renders as "033 - (unnamed)" rather than
+        # needing a sentence. Kept as a guard rather than unwired, because
+        # the connection is made in three places and a fourth would be easy
+        # to miss.
+        if not hasattr(row, "set_note"):
+            return
+        value = (row.current_id() if hasattr(row, "current_id")
+                 else row.value.value())
         if value == PRODUCED_ITEM_NONE:
             row.set_note("Nothing - this carcass produces no item.")
             return
@@ -540,6 +616,20 @@ class PoachingPage(QWidget):
 
     # -- editing ----------------------------------------------------------------
 
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected row when this page comes back on screen.
+
+        See `widgets/visible_refresh.py`: a row loaded before another page's
+        edit has its ticks off, and the rewrite below deletes every field
+        whose tick is off.
+        """
+        if self.current_key is None:
+            return
+        self.load_record(self.current_key)
+        self._mark_edited()
+        self._update_counter()
+
     def _on_field_edited(self) -> None:
         if self.current_key is None:
             return
@@ -574,7 +664,7 @@ class PoachingPage(QWidget):
                      in self.state.poach_edits.get(self.language, {}).values()
                      if fields)
         self.counter.setText(
-            f"{edited} of {total} carcasses edited in {self.language}")
+            edit_counter_text(edited, total, "carcasses"))
 
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool,

@@ -7,17 +7,24 @@ raw number in a field tells a user nothing, and every one of these lists is
 published knowledge that just needed converting from hex to the decimal the
 tables actually use.
 
-Three lists live here:
+Four lists live here:
 
   AbilityEffectNames.txt      Abilities -> Effect, "Effect ID"
   ChargeEffectTypeNames.txt   Abilities -> Unit Animations, "Charge Effect Type"
   AnimationIdNames.txt        Abilities -> Unit Animations, "Animation ID"
+  FormulaNames.txt            Items -> Formula, Abilities -> Formula
 
-All three are editable by the user, all three degrade to "just the number"
-if the file is missing or an id isn't in it, and none of them constrain what
-can be typed - EffectId in particular legitimately holds -1 (64 vanilla
-abilities use it) and values well past the end of the named list, so the
-names annotate the field rather than replacing it with a picker.
+All four are editable by the user and all four degrade to "just the number"
+if the file is missing or an id isn't in it.
+
+**Three of them annotate; Formula picks.** EffectId legitimately holds -1
+(64 vanilla abilities use it) and values well past the end of the named
+list, so a picker there would forbid data the game accepts. Formula is the
+opposite shape: it selects one of the game's hardcoded damage routines,
+FFTPatcher documents all 107 of them, and a number outside that range names
+no routine at all. Every weapon in the shipped table uses 1, 2, 3, 4, 6 or
+7. So Formula gets a dropdown and the other three get a suffix - the
+difference is whether the list is the whole domain or a partial gloss on it.
 """
 from __future__ import annotations
 
@@ -28,6 +35,7 @@ from . import paths
 EFFECT_NAMES_FILE = "AbilityEffectNames.txt"
 CHARGE_EFFECT_NAMES_FILE = "ChargeEffectTypeNames.txt"
 ANIMATION_NAMES_FILE = "AnimationIdNames.txt"
+FORMULA_NAMES_FILE = "FormulaNames.txt"
 
 _cache: dict = {}
 
@@ -80,6 +88,10 @@ def charge_effect_names() -> dict:
 
 def animation_names() -> dict:
     return _load(ANIMATION_NAMES_FILE)
+
+
+def formula_names() -> dict:
+    return _load(FORMULA_NAMES_FILE)
 
 
 def describe(names: dict, value) -> str:

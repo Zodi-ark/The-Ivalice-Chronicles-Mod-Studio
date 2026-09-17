@@ -29,10 +29,11 @@ from ..widgets.column_form import (
 from ..widgets.actions import (
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, TransientNote, ViewToggles,
     apply_view_toggles, copy_edits_to_languages, ensure_language_loaded,
-    language_order, mark_edited, select_list_row, page_intro)
+    language_combo, language_order, mark_edited, select_list_row, page_intro, edit_counter_text)
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow, TextFieldRow)
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 
 ABILITY_SLOTS = 16
 RSM_SLOTS = 6
@@ -52,7 +53,7 @@ SLOT_COLUMN_WIDTH = 560
 SLOT_COMBO_WIDTH = 240
 
 
-class JobCommandsPage(QWidget):
+class JobCommandsPage(RefreshesWhenVisible, QWidget):
     edits_changed = Signal()
     navigate_requested = Signal(str, object)
 
@@ -87,11 +88,8 @@ class JobCommandsPage(QWidget):
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(QLabel("Language:"))
-        self.language_box = QComboBox()
-        self.language_box.addItems(language_order(c.NXD_JOBCOMMAND_FILENAMES))
+        self.language_box = language_combo(c.NXD_JOBCOMMAND_FILENAMES)
         self.language_box.currentTextChanged.connect(self._on_language)
-        self.language_box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.language_box.setMinimumWidth(72)
         top.addWidget(self.language_box)
         self.copy_button = QPushButton(COPY_LANGUAGES_LABEL)
         self.copy_button.setToolTip(COPY_LANGUAGES_NOTE)
@@ -104,9 +102,8 @@ class JobCommandsPage(QWidget):
                                              QSizePolicy.Preferred)
 
         outer.addLayout(page_intro(
-            "A job command is a skillset - the abilities a job can use. Pick "
-            "one on the left, then set its slots. Only the slots you tick are "
-            "written into your mod. Names and descriptions are per-language.",
+            "Edit job commands. They contain the set of abilities that a "
+            "specific job can unlock.",
             self.language_controls))
 
         self.action_note = TransientNote()
@@ -240,6 +237,9 @@ class JobCommandsPage(QWidget):
             CollapsibleSection("Reaction / Support / Movement", rsm,
                                expanded=True),
         ]
+        # Named, so a monster skillset can hide the whole section. Monsters
+        # have no Reaction, Support or Movement slots at all.
+        self.rsm_section = self.slot_sections[1]
         # A wider floor for the slot dropdowns, on THESE rows only.
         #
         # Hugging sizes a column to its widest child's size hint, and that
@@ -378,9 +378,18 @@ class JobCommandsPage(QWidget):
         self._load_text_rows(command_id)
 
         already = self.state.job_command_edits.get(command_id, {})
+        # A monster skillset is a different SHAPE: four ability slots and no
+        # Reaction, Support or Movement. The rows that do not exist for this
+        # record are hidden rather than shown empty, because an empty slot
+        # and a slot the table does not have are different things and the
+        # second one cannot be edited into existence.
+        slots = len(record.ability_ids) if record.is_monster else ABILITY_SLOTS
         for i in range(1, ABILITY_SLOTS + 1):
             field_name = f"AbilityId{i}"
             row = self.rows[field_name]
+            row.setVisible(i <= slots)
+            if i > slots:
+                continue
             if field_name in already:
                 row.load(already[field_name], True)
             else:
@@ -388,10 +397,73 @@ class JobCommandsPage(QWidget):
         for i in range(1, RSM_SLOTS + 1):
             field_name = f"ReactionSupportMovementId{i}"
             row = self.rows[field_name]
+            row.setVisible(not record.is_monster)
+            if record.is_monster:
+                continue
             if field_name in already:
                 row.load(already[field_name], True)
             else:
                 row.load(str(record.rsm_ids[i - 1]), False)
+        self._set_section_visible(record)
+
+    def _set_section_visible(self, record) -> None:
+        """
+        Hides the Reaction/Support/Movement heading for a monster, and tells
+        the column body its rows changed shape.
+
+        Hiding the rows but leaving the heading would leave an empty
+        section with a title, which reads as "these exist and are blank"
+        rather than "these do not apply here".
+
+        The `refresh_layout` call is the other half, and it is not
+        optional. The column body watches its rows being shown and hidden,
+        but twelve ability slots disappearing INSIDE the Abilities section
+        is not that - the section is still shown, it is just shorter. The
+        reserved height stayed job-sized, so "Other fields" sat stranded
+        below a gap until the window was resized. Reported from real use,
+        along with the flicker that is the same thing seen mid-flight.
+        """
+        section = getattr(self, "rsm_section", None)
+        if section is not None:
+            section.setVisible(not record.is_monster)
+        # The sections recompute FIRST, then the body is told.
+        #
+        # Order matters and the wrong way round looks like it works. When
+        # `refresh_layout` ran before the Abilities section had taken its
+        # new height, the section still reported the job-sized 541 and the
+        # body faithfully reserved 541 for a 157-tall section. Activating
+        # each section's layout forces that recompute now rather than on a
+        # later pass.
+        #
+        # Synchronously rather than through a queued call, because a queued
+        # one would still be right one repaint LATER - which is the flicker
+        # of the form in the wrong place that was reported alongside this.
+        for section in self.slot_sections:
+            # The section's BODY layout, not the section's own. Activating
+            # the outer one leaves the hint at its old value - the rows that
+            # changed live one level further in, and Qt recomputes that on a
+            # later pass unless asked now. Measured: the section still
+            # reported the job-sized 541 after activating its own layout,
+            # and 157 after activating its body's.
+            body_layout = (section.body.layout()
+                           if getattr(section, "body", None) is not None
+                           else None)
+            if body_layout is not None:
+                body_layout.activate()
+            outer = section.layout()
+            if outer is not None:
+                outer.activate()
+        body = getattr(self, "slots_body", None)
+        if body is not None:
+            body.refresh_layout()
+            # And the form that POSITIONS the body. The three steps above
+            # settle how tall the slot area is; this is what moves "Other
+            # fields" up to meet it. Without it the height is right and the
+            # position is a repaint behind - which is the flicker, not a
+            # separate fault.
+            holder = body.parentWidget()
+            if holder is not None and holder.layout() is not None:
+                holder.layout().activate()
 
     def _jump_to_ability(self, ability_id: int) -> None:
         """
@@ -417,6 +489,26 @@ class JobCommandsPage(QWidget):
             self.load_command(int(command_id))
 
     # -- editing -------------------------------------------------------------
+
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected command when this page comes back on screen.
+
+        Both halves, because All Game Data can write either: `load_command`
+        fills the ability slots from `job_command_edits` AND the text rows
+        from the per-language store. Reloading one would leave the other
+        stale, and a stale row is a row whose tick is off - which is what
+        deletes somebody else's edit on the next keystroke.
+
+        No `refresh_records`: the list is not rebuilt and the selection is
+        not moved. See `widgets/visible_refresh.py`.
+        """
+        if self.current_command_id is None:
+            return
+        self.load_command(self.current_command_id)
+        self._relabel_list()
+        self._mark_edited()
+        self._update_counter()
 
     def _on_field_edited(self) -> None:
         if self.current_command_id is None:
@@ -551,4 +643,4 @@ class JobCommandsPage(QWidget):
               for cid, fields in per_language.items() if fields),
         })
         self.counter.setText(
-            f"{edited} of {self.list.count()} job commands have pending edits")
+            edit_counter_text(edited, self.list.count(), "job commands"))

@@ -254,6 +254,21 @@ class JobCommandRecord:
     name: Optional[str]
     ability_ids: list = field(default_factory=list)   # 16 ints, action-menu abilities
     rsm_ids: list = field(default_factory=list)       # 6 ints, Reaction/Support/Movement
+    #: True for a row of `MonsterJobCommandData.xml` rather than
+    #: `JobCommandData.xml`.
+    #:
+    #: One record type for both, and one list on the page, because the ids
+    #: do not overlap - the monster table's own header says "the id
+    #: continues on top of JobData", 176 to 223, while jobs run 0-175 and
+    #: 224-226. Sorting by id therefore interleaves them correctly with no
+    #: special case.
+    #:
+    #: What differs is the SHAPE: four ability slots, no Reaction, Support
+    #: or Movement, and a different file to write. That is what this flag
+    #: decides, and it is carried on the record rather than worked out from
+    #: the id so that a mod opened with an out-of-range id is still written
+    #: back where it came from.
+    is_monster: bool = False
 
     @property
     def display_name(self) -> str:
@@ -264,6 +279,14 @@ class JobCommandRecord:
 
 _ABILITY_SLOT_NAMES = [f"AbilityId{i}" for i in range(1, 17)]
 _RSM_SLOT_NAMES = [f"ReactionSupportMovementId{i}" for i in range(1, 7)]
+
+#: Monster skillsets have four ability slots and no Reaction/Support/Movement.
+_MONSTER_SLOT_NAMES = [f"AbilityId{i}" for i in range(1, 5)]
+
+#: The id range `MonsterJobCommandData.xml` covers, from its own header:
+#: "Id cannot be more than 223 (hardcoded table size is 48, 176 + 48)".
+MONSTER_COMMAND_FIRST_ID = 176
+MONSTER_COMMAND_LAST_ID = 223
 
 
 def load_job_command_table(xml_path: Path) -> tuple[list[JobCommandRecord], str]:
@@ -306,6 +329,63 @@ def load_job_command_table(xml_path: Path) -> tuple[list[JobCommandRecord], str]
                 rsm_ids=[_read(s) for s in _RSM_SLOT_NAMES],
             )
         )
+
+    records.sort(key=lambda r: r.command_id)
+    return records, version
+
+
+def load_monster_job_command_table(
+        xml_path: Path) -> tuple[list[JobCommandRecord], str]:
+    """
+    Reads `MonsterJobCommandData.xml` into the SAME record type as jobs.
+
+    Monsters are skillsets like any other - Chocobo through Tiamat, ids 176
+    to 223 - and the loader keeps them in a separate file only because the
+    game's table for them is a separate hardcoded block with a different
+    shape: four ability slots and no Reaction, Support or Movement.
+
+    One record type and one page, because the ids are disjoint by
+    construction. The file's own header says so: "the id continues on top
+    of JobData". Giving monsters a tab of their own would split one concept
+    across two places on the strength of an implementation detail.
+
+    `rsm_ids` comes back empty rather than zero-filled. Empty means "this
+    kind of skillset has no such slots"; six zeros would mean "it has them
+    and they are all ability 0", which is a different claim and would be
+    written into a mod as one.
+    """
+    raw_text = xml_path.read_text(encoding="utf-8-sig")
+    root = ET.fromstring(raw_text)
+
+    version_el = root.find("Version")
+    version = (version_el.text.strip()
+               if version_el is not None and version_el.text else "1")
+
+    entries = root.find("Entries")
+    if entries is None:
+        raise ValueError("No <Entries> element found - this doesn't look "
+                         "like a MonsterJobCommandData.xml")
+
+    records: list[JobCommandRecord] = []
+    for cmd_el in entries.findall("MonsterJobCommand"):
+        id_el = cmd_el.find("Id")
+        if id_el is None or id_el.text is None:
+            continue
+        command_id = int(id_el.text.strip())
+
+        def _read(slot_name: str, element=cmd_el) -> int:
+            el = element.find(slot_name)
+            try:
+                return int(el.text.strip()) if el is not None and el.text else 0
+            except ValueError:
+                return 0
+
+        records.append(JobCommandRecord(
+            command_id=command_id,
+            name=_find_name_comment_for_id(raw_text, command_id),
+            ability_ids=[_read(s) for s in _MONSTER_SLOT_NAMES],
+            rsm_ids=[],
+            is_monster=True))
 
     records.sort(key=lambda r: r.command_id)
     return records, version
@@ -404,6 +484,86 @@ def write_diff_xml(
 
 JOB_COMMAND_FIELD_ORDER = _ABILITY_SLOT_NAMES + _RSM_SLOT_NAMES
 
+#: Bit values of `ExtendAbilityIdFlags`, from the loader's own enum.
+#:
+#: **Reversed byte by byte**, which is not a mistake here - the enum says so
+#: itself ("It's.. in reverse, byte per byte"). Ability 1 is bit 7, ability 8
+#: is bit 0, ability 9 is bit 15, ability 16 is bit 8. Transcribed from
+#: `Structures/JOB_COMMAND_DATA.cs` rather than worked out, because a guess
+#: that is wrong here silently gives an ability 256 lower than intended.
+_EXTEND_ABILITY_BITS = {
+    1: 1 << 7, 2: 1 << 6, 3: 1 << 5, 4: 1 << 4,
+    5: 1 << 3, 6: 1 << 2, 7: 1 << 1, 8: 1 << 0,
+    9: 1 << 15, 10: 1 << 14, 11: 1 << 13, 12: 1 << 12,
+    13: 1 << 11, 14: 1 << 10, 15: 1 << 9, 16: 1 << 8,
+}
+
+#: Bit values of `ExtendReactionSupportMovementIdFlags`. Reversed the same way.
+_EXTEND_RSM_BITS = {1: 1 << 7, 2: 1 << 6, 3: 1 << 5,
+                    4: 1 << 4, 5: 1 << 3, 6: 1 << 2}
+
+#: An id at or above this needs its extend bit set.
+_EXTENDED_ID_FLOOR = 256
+
+
+def _flag_text(bits: dict, set_slots: set, name: str) -> str:
+    """
+    The loader's own spelling of a flag set: names, or `0` for none.
+
+    Ordered by bit VALUE ascending, which is how .NET writes a `[Flags]`
+    enum and therefore how every row of the shipped table reads. Matching it
+    means a mod this tool writes and one the loader wrote diff cleanly.
+    """
+    chosen = sorted((bits[slot], slot) for slot in set_slots if slot in bits)
+    if not chosen:
+        return "0"
+    return ", ".join(f"{name}{slot}" for _bit, slot in chosen)
+
+
+def job_command_extend_flags(baseline_ids: list, edits: dict,
+                             slot_names: list, bits: dict,
+                             flag_name: str) -> str:
+    """
+    The extend-flag element for a row, computed from its EFFECTIVE ids.
+
+    **This element is not optional, and the table's own header says it is.**
+    "IMPORTANT 4: You do not need to worry about setting
+    ExtendAbilityIdFlagBits... The loader will fill these according to ids."
+    That is true only once the property exists. Every `AbilityIdN` setter in
+    the loader's `JobCommand` model does:
+
+        ExtendAbilityIdFlagBits = SetFlagU16(ExtendAbilityIdFlagBits!.Value, ...)
+
+    and `!.Value` on a null `Nullable<T>` throws. So an entry carrying ability
+    ids but no flag element makes the loader refuse the whole FILE:
+
+        YAXPropertyCannotBeAssignedTo: Could not assign to the property
+        'ReactionSupportMovementId6'
+
+    Reported from a real mod that would not load. Mod Studio wrote exactly
+    that shape for any row it created itself - a mod OPENED with the elements
+    kept them, through `preserved`, which is why this only bit new edits.
+
+    Computed from the effective row - the baseline id unless this export
+    changes it - rather than written as a bare `0`. Writing `0` would clear
+    the bits of slots this mod does not touch, and a skillset slot holding
+    an ability above 255 would come back 256 lower: a different ability,
+    silently, in a file that loads without complaint.
+    """
+    set_slots = set()
+    for index, field_name in enumerate(slot_names, start=1):
+        raw = edits.get(field_name)
+        if raw is None:
+            raw = (baseline_ids[index - 1]
+                   if index - 1 < len(baseline_ids) else 0)
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            continue
+        if value >= _EXTENDED_ID_FLOOR:
+            set_slots.add(index)
+    return _flag_text(bits, set_slots, flag_name)
+
 _JOB_COMMAND_HEADER_COMMENT = """This table file is used to overwrite the game's hardcoded job command table.
 
 Refer to: https://ffhacktics.com/wiki/Skillsets
@@ -494,6 +654,67 @@ def parse_job_command_diff_xml(
     return result, version, preserved
 
 
+_MONSTER_HEADER_COMMENT = """This table file is used to overwrite the game's hardcoded monster job command table.
+
+Refer to: https://ffhacktics.com/wiki/Monster_Skills
+
+Written by The Ivalice Chronicles Mod Studio. Only the entries and slots you
+edited are here - everything else inherits from the original table, or from
+other mods depending on mod order.
+
+IMPORTANT: The Id property must NOT be removed for nodes left here.
+IMPORTANT 2: Id cannot be more than 223 (hardcoded table size is 48, 176 + 48).
+"""
+
+
+def build_monster_job_command_diff_xml_text(
+    version: str,
+    edited_commands: list,
+    preserved: Optional[dict] = None,
+) -> str:
+    """
+    The trimmed `MonsterJobCommandData.xml`, same shape as the job one.
+
+    **No extend-flag elements here, and that is not an oversight.** The
+    loader's `JobCommand` model recomputes `ExtendAbilityIdFlagBits` inside
+    every id setter, which is why that file needs the element present or it
+    throws. `MonsterJobCommand`'s properties are plain auto-properties with
+    no setter body and the model carries no extend property at all - the
+    shipped table has no such element on any of its 48 entries. Writing one
+    would be inventing a field the schema does not have.
+
+    Four slots, because that is the shape of the table.
+    """
+    lines = ['<?xml version="1.0" encoding="utf-8"?>', "", "<!--"]
+    lines.extend(_MONSTER_HEADER_COMMENT.rstrip().splitlines())
+    lines.append("-->")
+    lines.append("")
+    lines.append("<MonsterJobCommandTable>")
+    lines.append(f"  <Version>{version}</Version>")
+    lines.append("  <Entries>")
+    for record, included_fields, name_comment in edited_commands:
+        if not included_fields:
+            continue
+        lines.append("    <MonsterJobCommand>")
+        comment = f"  <!-- {name_comment} -->" if name_comment else ""
+        lines.append(f"      <Id>{record.command_id}</Id>{comment}")
+        original = (preserved or {}).get(record.command_id, {})
+        emitted = set()
+        for tag, original_text in original.items():
+            if tag in _MONSTER_SLOT_NAMES:
+                continue
+            lines.append(f"      <{tag}>{original_text}</{tag}>")
+            emitted.add(tag)
+        for slot in _MONSTER_SLOT_NAMES:
+            if slot in included_fields and slot not in emitted:
+                lines.append(
+                    f"      <{slot}>{included_fields[slot]}</{slot}>")
+        lines.append("    </MonsterJobCommand>")
+    lines.append("  </Entries>")
+    lines.append("</MonsterJobCommandTable>")
+    return "\n".join(lines) + "\n"
+
+
 def build_job_command_diff_xml_text(
     version: str,
     edited_commands: list[tuple[JobCommandRecord, dict[str, str], Optional[str]]],
@@ -521,15 +742,40 @@ def build_job_command_diff_xml_text(
         id_comment = f" <!-- {name_comment} -->" if name_comment else ""
         lines.append("    <JobCommand>")
         lines.append(f"      <Id>{record.command_id}</Id>{id_comment}")
+        # The two extend-flag elements, BEFORE any id that needs them.
+        #
+        # Order matters as much as presence: the loader deserialises in
+        # document order, so a flag element written after the ability ids
+        # is still null when the first `AbilityIdN` setter dereferences it.
+        # See `job_command_extend_flags` for why the table's own header
+        # comment is wrong about this.
+        #
+        # Taken from `preserved` when the opened mod had them, so a mod this
+        # tool did not write keeps its own text; computed otherwise.
+        original = (preserved or {}).get(record.command_id, {})
+        for tag, slot_names, bits, flag_name in (
+                ("ExtendAbilityIdFlagBits", _ABILITY_SLOT_NAMES,
+                 _EXTEND_ABILITY_BITS, "ExtendedAbility"),
+                ("ExtendReactionSupportMovementIdFlagBits", _RSM_SLOT_NAMES,
+                 _EXTEND_RSM_BITS, "ExtendRSMId")):
+            baseline = (record.ability_ids if slot_names is _ABILITY_SLOT_NAMES
+                        else record.rsm_ids)
+            text = original.get(tag)
+            if text is None:
+                text = job_command_extend_flags(
+                    baseline, included_fields, slot_names, bits, flag_name)
+            lines.append(f"      <{tag}>{text}</{tag}>")
         # Original order first, then anything newly included.
         #
         # A modelled field is written only if it's still included - so
         # unticking one really removes it - while an unmodelled element is
         # always written back, because this tool has no basis for deciding
         # it isn't wanted.
-        original = (preserved or {}).get(record.command_id, {})
         emitted = set()
         for tag, original_text in original.items():
+            if tag in ("ExtendAbilityIdFlagBits",
+                       "ExtendReactionSupportMovementIdFlagBits"):
+                continue          # already written, above the ids
             if tag in JOB_COMMAND_FIELD_ORDER:
                 if tag in included_fields:
                     lines.append(f"      <{tag}>{included_fields[tag]}</{tag}>")

@@ -39,6 +39,8 @@ from PySide6.QtWidgets import (
     QToolButton, QVBoxLayout, QWidget,
 )
 
+from .column_form import ColumnFormBody
+
 from .layout_settle import settle_layout
 from .field_widths import (
     is_comment_field,
@@ -1041,6 +1043,149 @@ class NamedNumberRow(QWidget):
                         and not (hide_comments and self.is_comment))
 
 
+class ChoiceFieldRow(QWidget):
+    """
+    `[x] Label  [ Cancel ]` - a NAME, chosen from a fixed list of names.
+
+    The third dropdown, and the distinction between the three is about what
+    reaches the file:
+
+        DropdownFieldRow   writes an id that points at another record
+        NamedNumberRow     writes a NUMBER, shown by a name from a text list
+        ChoiceFieldRow     writes the NAME itself, which is the value
+
+    This one exists because `ItemOptions.OptionType` is declared
+    `ItemOptionsType` - a plain C# enum of five named values - and its value
+    in the XML is literally the word `Cancel`. It had been given a spin box,
+    which read that word as 0, so opening a row and touching anything wrote
+    an integer into a column that holds a name. Reported from real use; the
+    integer showed up in the row's own list label.
+
+    **An unlisted value is shown, never snapped**, exactly as
+    `NamedNumberRow` and `DropdownFieldRow` already do. A mod may hold a
+    value this build's enum does not name, and falling back to index 0 would
+    silently rewrite it to whatever happens to be first - the same quiet
+    data loss as a label reaching the file in place of a value.
+    """
+
+    edited = Signal()
+
+    def __init__(self, field_name: str, label: str, names, note: str = "",
+                 unknown: bool = False, parent=None):
+        super().__init__(parent)
+        self.field_name = field_name
+        self.is_unknown = unknown
+        self.is_comment = is_comment_field(field_name, label)
+        self._loading = False
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 1, 0, 1)
+        row.setSpacing(8)
+
+        self.include = QCheckBox()
+        self.include.setToolTip(
+            "Tick to write this field into your mod. Unticked fields are "
+            "left alone, so other mods can change them.")
+        self.include.toggled.connect(self._on_include_toggled)
+        row.addWidget(self.include)
+
+        self.label = QLabel(label)
+        self.label.setFixedWidth(200)
+        row.addWidget(self.label)
+
+        self.combo = QComboBox()
+        # The same bounded-expanding shape as the other two dropdowns, and
+        # for the same reason: uncapped, a wide monitor drew a 2000px
+        # control for a 20-character name.
+        self.combo.setMinimumWidth(160)
+        self.combo.setMaximumWidth(360)
+        self.combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.combo.currentIndexChanged.connect(self._on_index_changed)
+        row.addWidget(self.combo, 1)
+
+        self._note_text = note
+        self.note = FieldNoteLabel(note)
+        self.note.setProperty("role", "muted")
+        self.note.setWordWrap(False)
+        self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.note.setToolTip(note)
+        row.addWidget(self.note, 1)
+
+        self.setProperty("fieldRow", True)
+        self.setProperty("unknownField", bool(unknown))
+
+        self.set_choices(names)
+
+    # -- choices ------------------------------------------------------------
+
+    def set_choices(self, names) -> None:
+        """
+        `names` is an ordered sequence, and the ORDER is the loader's.
+
+        Not sorted. `None, AllOrNothing, Random, Separate, Cancel` is how
+        the enum declares them, and that order carries meaning a sort would
+        throw away - the values are bit positions, and `None` first is the
+        default rather than the alphabetical accident of `AllOrNothing`.
+        """
+        current = self.get_value_str()
+        self._loading = True
+        try:
+            self.combo.clear()
+            for name in names:
+                self.combo.addItem(str(name), str(name))
+            if current:
+                self._select(current)
+        finally:
+            self._loading = False
+
+    def _select(self, value: str) -> None:
+        index = self.combo.findData(value)
+        if index < 0:
+            self.combo.addItem(f"{value} (not a known value)", value)
+            index = self.combo.count() - 1
+        self.combo.setCurrentIndex(index)
+
+    # -- state --------------------------------------------------------------
+
+    @property
+    def included(self) -> bool:
+        return self.include.isChecked()
+
+    def get_value_str(self) -> str:
+        data = self.combo.currentData()
+        return "" if data is None else str(data)
+
+    def load(self, raw_value, included: bool) -> None:
+        self._loading = True
+        try:
+            self._select(str(raw_value or "").strip())
+            self.include.setChecked(bool(included))
+        finally:
+            self._loading = False
+
+    # -- interaction --------------------------------------------------------
+
+    def _on_index_changed(self, _index) -> None:
+        if self._loading:
+            return
+        if not self.include.isChecked():
+            self.include.setChecked(True)
+            return
+        self.edited.emit()
+
+    def _on_include_toggled(self, _on) -> None:
+        if self._loading:
+            return
+        self.edited.emit()
+
+    def apply_display(self, hide_notes: bool, hide_unknown: bool,
+                      hide_comments: bool) -> None:
+        self.note.setText("" if hide_notes else self._note_text)
+        self.note.setToolTip("" if hide_notes else self._note_text)
+        self.setVisible(not (hide_unknown and self.is_unknown)
+                        and not (hide_comments and self.is_comment))
+
+
 class AnnotatedNumberRow(NumericFieldRow):
     """
     A spin box with the current id's name shown beside it, live.
@@ -1105,8 +1250,22 @@ class CollapsibleSection(QWidget):
         column.addWidget(self.header)
 
         self.body = body
-        self.body.setVisible(expanded)
+        # Added to the layout BEFORE `setVisible`, and the order is the
+        # whole point.
+        #
+        # `setVisible(True)` on a widget with no parent does not "show a
+        # widget" - it shows a WINDOW. The body is parentless until
+        # `addWidget` adopts it, so setting it visible first made Qt create
+        # a real top-level window, map it on screen, and then tear it down
+        # again a line later when the reparent happened. Fourteen of those
+        # in a row is the flicker of windows people saw before the main
+        # window arrived at startup.
+        #
+        # Nothing was broken and nothing looked wrong once the app was up,
+        # which is why it survived: the evidence is only visible in the
+        # first two seconds of a cold start.
         column.addWidget(self.body)
+        self.body.setVisible(expanded)
 
     def _on_toggled(self, on: bool) -> None:
         self.header.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
@@ -1125,6 +1284,16 @@ class CollapsibleSection(QWidget):
 
     def set_expanded(self, on: bool) -> None:
         self.header.setChecked(on)
+
+
+#: The narrowest a flag group box may be before the panel drops a column.
+#:
+#: Sized against the longest label a group holds - status names like
+#: "Reraise" and "Immobilize" after `split_words` has spaced them - plus the
+#: check box and the group frame. Measured rather than guessed, because a
+#: guessed width is a clipped label waiting to happen, which this file has
+#: already been bitten by three times.
+FLAG_GROUP_MIN_WIDTH = 190
 
 
 class FlagFieldPanel(QWidget):
@@ -1147,6 +1316,8 @@ class FlagFieldPanel(QWidget):
 
     def __init__(self, field_name: str, label: str, groups: dict,
                  columns: int = 4, parent=None):
+        # `columns` is retained for callers and no longer fixes the layout -
+        # see the reflow note below.
         super().__init__(parent)
         self.field_name = field_name
         self.is_unknown = False
@@ -1187,8 +1358,24 @@ class FlagFieldPanel(QWidget):
         header.addStretch(1)
         column.addLayout(header)
 
-        grid = QGridLayout()
-        grid.setSpacing(6)
+        # The groups REFLOW with the window instead of sitting in a grid
+        # that was fixed when the panel was built.
+        #
+        # `columns` used to be a constructor argument, so 40 status effects
+        # in five groups drew the same 3-wide block at 1100 and at 2560 -
+        # two rows of boxes with most of a 2560 screen empty beside them.
+        # Reported from real use as "they should sit side by side if there
+        # is space".
+        #
+        # `ColumnFormBody` is the same machinery the forms and the treasure
+        # tiles use, so this is one answer to "how many columns fit" rather
+        # than a second one written here. `row_major` because the groups are
+        # peers in a numbered sequence - Set 1 to Set 5 - and must read
+        # across before they read down. `columns` is kept as the MINIMUM
+        # width hint so callers that tuned it still say something useful.
+        body = ColumnFormBody(min_column_width=FLAG_GROUP_MIN_WIDTH,
+                              spacing=6, hug_contents=True, row_major=True,
+                              margins=(0, 0, 0, 0))
         for i, (group_name, flags) in enumerate(groups.items()):
             # "&" in a Qt label is a keyboard mnemonic, so "Shields &
             # Headgear" renders as "Shields _Headgear" with the H
@@ -1212,8 +1399,8 @@ class FlagFieldPanel(QWidget):
                 check.toggled.connect(self._on_flag_toggled)
                 self.boxes[flag] = check
                 inner.addWidget(check)
-            grid.addWidget(box, i // columns, i % columns, Qt.AlignTop)
-        column.addLayout(grid)
+            body.add_row(box)
+        column.addWidget(body)
 
     # -- state --------------------------------------------------------------
 
@@ -1348,11 +1535,20 @@ class DropdownFieldRow(QWidget):
     jump_requested = Signal(int)
 
     def __init__(self, field_name: str, label: str, parent=None,
-                 jump_label: str | None = None, jump_tooltip: str = ""):
+                 jump_label: str | None = None, jump_tooltip: str = "",
+                 zero_is_none: bool = True):
         super().__init__(parent)
         self.field_name = field_name
         self.is_unknown = False
         self._loading = False
+        # Whether id 0 means "nothing chosen" or is an ordinary choice.
+        #
+        # True for an ability or skillset slot, where 0 is an absence and
+        # "000 - (None / Unset)" would be a worse way to say it. False for a
+        # list where 0 is a real value: formula 0 and formula 1 carry the
+        # SAME name in the published list, so dropping the id from one of
+        # them leaves two rows a person cannot tell apart.
+        self.zero_is_none = zero_is_none
         self._id_to_index: dict[int, int] = {}
 
         row = QHBoxLayout(self)
@@ -1442,7 +1638,12 @@ class DropdownFieldRow(QWidget):
             self.combo.clear()
             self._id_to_index = {}
             for index, (value_id, name) in enumerate(sorted(id_to_name.items())):
-                display = name if value_id == 0 else f"{value_id:03d} - {name}"
+                # A NEGATIVE id is a sentinel, not a row, so it is shown by
+                # name alone. `-01 - Inherit` reads as row minus one.
+                display = (name
+                           if value_id < 0 or (value_id == 0
+                                               and self.zero_is_none)
+                           else f"{value_id:03d} - {name}")
                 self.combo.addItem(display, value_id)
                 self._id_to_index[value_id] = index
             if current in self._id_to_index:

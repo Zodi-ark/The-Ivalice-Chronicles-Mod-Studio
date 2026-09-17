@@ -24,6 +24,7 @@ from .. import constants as c
 from .. import item_xml_io, paths, xml_io
 from ..state import WizardState
 from .pages.data_browser import DataBrowserPage
+from .pages.unit_names import UnitNamesPage
 from .pages.compare import ComparePage
 from .pages.find_text import FindTextPage
 from .pages.job_commands import JobCommandsPage
@@ -63,6 +64,27 @@ def load_reference_tables(state: WizardState) -> list:
     except Exception as exc:                                  # noqa: BLE001
         problems.append(f"Job Commands: {exc}")
 
+    # Monster skillsets, into the SAME list.
+    #
+    # Chocobo through Tiamat are skillsets like any other and belong beside
+    # the rest; the loader keeps them in a separate file because the game's
+    # table for them is a separate hardcoded block with a different shape.
+    # The ids do not overlap - jobs run 0-175 and 224-226, monsters 176-223,
+    # and the monster file's own header says "the id continues on top of
+    # JobData" - so one sorted list interleaves them correctly.
+    #
+    # Reported as missing from a real editing session: there was no way to
+    # change what a monster can do.
+    try:
+        monsters, state.monster_job_command_version = (
+            xml_io.load_monster_job_command_table(
+                data_dir / "MonsterJobCommandData.xml"))
+        state.job_command_records = sorted(
+            list(state.job_command_records) + monsters,
+            key=lambda r: r.command_id)
+    except Exception as exc:                                  # noqa: BLE001
+        problems.append(f"Monster Job Commands: {exc}")
+
     # Ability names AND types, from the same file, and neither was being
     # loaded here at all - the Tkinter interface has read both since the
     # beginning (gui/step_setup.py).
@@ -93,9 +115,11 @@ TABLE_TABS = [
      "fields you tick are written into your mod."),
     ("Equip Bonus", "item_equip_bonus", "ItemEquipBonusData.xml",
      "The stat bonuses and statuses a piece of equipment grants while worn."),
+    ("Inflict Status", "item_options", "ItemOptionsData.xml",
+     "What an item or ability does to a target's status. Beware abilities "
+     "also use these statuses though they are not listed in \"Used by.\""),
     ("Treasure Hunter", "map_trap", "MapTrapFormationData.xml",
-     "Traps and buried treasure on each map, and what Treasure Hunter turns "
-     "them into."),
+     "Traps and buried treasure on each map."),
 ]
 
 
@@ -208,6 +232,47 @@ def ability_choices(state=None, language: str = "en") -> dict:
         return {0: "(None / Unset)"}
 
 
+def innate_ability_choices(state=None, language: str = "en") -> dict:
+    """
+    Ability id -> name for the Jobs page's four innate slots.
+
+    The SAME list the R/S/M slots on Job Commands get, and for the same
+    reason: an innate ability is a Reaction, Support or Movement ability, so
+    the two fields accept the same things and any difference between them is
+    a bug in one of them. Reported from real use - the innate list offered
+    46 abilities where R/S/M offers 89, missing 422-429, 431-441 and more.
+
+    That was an ID RANGE, `range(454, 486)`, taken from FFTPatcher's note
+    that decimal 454-485 are the support abilities. `job_commands` had
+    already rejected exactly that approach in writing - the split comes from
+    AbilityData.xml's own AbilityType field, "not from an id range, because
+    the boundaries are not clean". The boundaries were not clean.
+
+    Values the job table already uses are kept on top of the filter, so a
+    monster job whose innate slot holds something outside the R/S/M types
+    still displays rather than being silently blanked.
+    """
+    every = ability_choices(state, language)
+    types = getattr(state, "ability_types", None) or {}
+    if types:
+        allowed = {i for i, _n in every.items()
+                   if i == 0 or types.get(i) in c.RSM_ABILITY_TYPES}
+    else:
+        # No types read yet. The full list beats a wrong subset - the same
+        # fallback `set_ability_choices` makes one page over.
+        allowed = set(every)
+    for record in (getattr(state, "job_records", None) or []):
+        for slot in range(1, 5):
+            try:
+                value = int(record.values.get(f"InnateAbilityId{slot}"))
+            except (TypeError, ValueError):
+                continue
+            if value:
+                allowed.add(value)
+    return {ability_id: name for ability_id, name in every.items()
+            if ability_id in allowed}
+
+
 def command_choices(state) -> dict:
     """
     Job command id -> name, for the Jobs page's skillset dropdown.
@@ -269,6 +334,8 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     commands.set_ability_choices(ability_choices(state),
                                  getattr(state, "ability_types", None))
     jobs.set_command_choices(command_choices(state))
+    # Jobs has ability dropdowns too now - its four innate slots.
+    jobs.set_ability_choices(innate_ability_choices(state))
 
     pages = {"Jobs": jobs, "Job Commands": commands}
     # Textures is ALWAYS built, even with no game files yet.
@@ -282,6 +349,7 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     # not ready" look identical from inside the page.
     pages["Textures"] = TexturesPage(state)
     pages["Sounds"] = SoundsPage(state)
+    pages["Unit Names"] = UnitNamesPage(state)
     pages["All Game Data"] = DataBrowserPage(state)
     # Built unconditionally like the rest, for the reason recorded above:
     # a page created only once its data exists is a page that is never
@@ -356,6 +424,7 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         jobs_page = pages.get("Jobs")
         if jobs_page is not None:
             jobs_page.set_command_choices(command_choices(state))
+            jobs_page.set_ability_choices(innate_ability_choices(state))
         commands_page = pages.get("Job Commands")
         if commands_page is not None:
             commands_page.set_ability_choices(
@@ -458,6 +527,27 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
             browser_page.show_table_row(table, key)
         find_page.locate_requested.connect(_locate)
 
+    # ...and its Panzer text hits on the Text page.
+    #
+    # Same shape as the jump above and for the same reason: the tab is
+    # opened FIRST and unconditionally, so a hit whose file cannot be
+    # selected still leaves the person looking at the right page rather
+    # than at the search results wondering whether the button worked.
+    # ...and its subtitle hits on Sounds, at the recording they belong to.
+    #
+    # A subtitle is not free-floating text: 14,208 lines carry 14,208
+    # distinct voice paths, one per recording. So the useful place to land
+    # is the archive, where the words and the audio are the same row.
+    sounds_page = pages.get("Sounds")
+    if find_page is not None and sounds_page is not None:
+        def _locate_text(stem, language, line_id):
+            window.open_tab("Sounds")
+            voice = sounds_page.subtitle_for_line(
+                find_page.text_path_for(stem, language), line_id)
+            if voice:
+                sounds_page.select_subtitle(voice, language)
+        find_page.locate_text_requested.connect(_locate_text)
+
     # Items' two jumps go through the same shell call. They are separate
     # signals rather than one `navigate_requested` because their payloads
     # differ - an equip bonus is a row id, a texture is a path - and a
@@ -468,9 +558,15 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     # its "Used by:" line go stale the moment an item is edited - showing a
     # row as worn by an item that no longer wears it, which is worse than
     # showing no count at all.
-    equip_bonus_page = pages.get("Equip Bonus")
-    if equip_bonus_page is not None and pages.get("Items") is not None:
-        pages["Items"].edits_changed.connect(equip_bonus_page.refresh_usage)
+    # DERIVED from which pages actually show usage, not named one at a time.
+    # Inflict Status grew a "Used by" list and this connection was made for
+    # Equip Bonus alone, so the second page would have shown a count that
+    # went stale the moment an item was repointed - the exact fault the
+    # comment above describes, one page later.
+    if pages.get("Items") is not None:
+        for _page in pages.values():
+            if getattr(_page, "shows_usage", False):
+                pages["Items"].edits_changed.connect(_page.refresh_usage)
 
     # Renaming an ability has to reach the 22 dropdowns on Job Commands.
     #
@@ -487,12 +583,23 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
             commands_page.set_ability_choices(
                 ability_choices(state, language),
                 getattr(state, "ability_types", None))
+            # Jobs' four innate slots read the same names. Without this a
+            # rename showed on Job Commands and not on Jobs - the same
+            # half-refresh, one page over.
+            jobs_innate = pages.get("Jobs")
+            if jobs_innate is not None:
+                jobs_innate.set_ability_choices(
+                    innate_ability_choices(state, language))
         abilities_page.edits_changed.connect(_refresh_ability_names)
 
     items_page = pages.get("Items")
     if items_page is not None:
         items_page.jump_to_equip_bonus.connect(
             lambda row_id: window.open_tab("Equip Bonus", int(row_id)))
+        items_page.jump_to_inflict_status.connect(
+            lambda row_id: window.open_tab("Inflict Status", int(row_id)))
+        items_page.jump_to_ability.connect(
+            lambda row_id: window.open_tab("Abilities", int(row_id)))
         items_page.jump_to_texture.connect(
             lambda path: window.open_tab("Textures", str(path)))
 

@@ -54,7 +54,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-    QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
+    QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from ... import constants as c
@@ -64,9 +64,10 @@ from ..widgets.actions import (
     page_intro,
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, ViewToggles, apply_view_toggles,
     copy_edits_to_languages, ensure_language_loaded, mark_edited,
-    language_order, set_empty_state)
+    language_order, set_empty_state, edit_counter_text)
 from ..widgets.field_rows import CollapsibleSection, NumericFieldRow
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.visible_refresh import RefreshesWhenVisible
 from .poaching import BoolFieldRow, TextFieldRow
 
 # Read from Nenkai's layout, not restated. This one was already correct -
@@ -123,7 +124,7 @@ def inherit_note(field_name: str) -> str:
     return f"Inherit = {value}. {explanation}"
 
 
-class EncountersPage(QWidget):
+class EncountersPage(RefreshesWhenVisible, QWidget):
     edits_changed = Signal()
 
     def __init__(self, state, parent=None):
@@ -138,9 +139,8 @@ class EncountersPage(QWidget):
         outer.setSpacing(10)
 
         outer.addLayout(page_intro(
-            "Who turns up in each battle, as what job, with what equipment. "
-            "Fields say how well understood they are - only the ones you tick "
-            "are written into your mod."))
+            "Who turns up in each battle or event, as what job, with what "
+            "equipment and so on."))
 
         # Every tab with field rows gets these, not just Jobs.
         self.view_toggles = ViewToggles()
@@ -150,28 +150,19 @@ class EncountersPage(QWidget):
         # receives the preference and still answers `state()`.
         self.view_toggles.follow_only()
 
-        # Two tables, two lists, two sub-tabs.
-        #
-        # `OverrideEntryData` and `CharaName-xx` are both "encounters" to a
-        # mod author but they are not two views of one record: one is keyed
-        # by a `(Key, Key2)` pair and shared across languages, the other by
-        # a plain key and stored once per language. They need separate
-        # master-detail panes, which is why this is a tab strip rather than
-        # the `CollapsibleSection` the rest of the interface uses for
-        # grouping fields within a single record.
-        #
-        # The Tkinter tab has always been shaped this way. The Qt page only
-        # ever built the first half - `chara_name_records` was in
-        # `_LANGUAGE_TABLES` and read by nothing, so unit names could be
-        # exported and migrated but never edited.
-        self.tabs = QTabWidget()
-        outer.addWidget(self.tabs, 1)
-
-        entries_tab = QWidget()
-        entries_column = QVBoxLayout(entries_tab)
-        entries_column.setContentsMargins(0, 8, 0, 0)
+        # No tab strip. `CharaName-xx` used to be a second tab in here and
+        # is now its own sidebar page - see `unit_names.py` for why. What is
+        # left is one table, one list, one counter, which is the shape every
+        # other editing page has.
+        entries_column = QVBoxLayout()
+        # No top margin. The 8px was inset for the tab strip that used to
+        # sit above this column; with the strip gone it was just a gap, and
+        # it pushed the green counter to y=58 where every other tab has it
+        # at y=50 - the "extra line between the description and the green
+        # text" reported from real use.
+        entries_column.setContentsMargins(0, 0, 0, 0)
         entries_column.setSpacing(10)
-        self.tabs.addTab(entries_tab, "Encounters")
+        outer.addLayout(entries_column, 1)
 
         self.counter = QLabel("")
         self.counter.setProperty("role", "ok")
@@ -249,20 +240,27 @@ class EncountersPage(QWidget):
         self.move_key2.setRange(0, 65535)
         move_row.addWidget(self.move_key2)
 
+        # The buttons sit BESIDE the boxes, not on a line of their own.
+        #
+        # They were on a second row underneath, which read as two separate
+        # controls - a pair of numbers, and then some buttons that might act
+        # on anything. Together they are one sentence: move this row to
+        # here, do it. Reported from real use.
+        #
+        # The stretch goes AFTER the buttons rather than between the boxes
+        # and them, so the whole sentence stays together at the left instead
+        # of the verb drifting to the far side of a wide window.
         self.move_button = QPushButton("Move")
         self.move_button.clicked.connect(self.move_current_row)
-        move_row.addStretch(1)
-        move_column.addLayout(move_row)
-
-        move_buttons = QHBoxLayout()
-        move_buttons.addWidget(self.move_button)
+        move_row.addSpacing(8)
+        move_row.addWidget(self.move_button)
 
         self.undo_move_button = QPushButton("Undo move")
         self.undo_move_button.setEnabled(False)
         self.undo_move_button.clicked.connect(self.undo_move)
-        move_buttons.addWidget(self.undo_move_button)
-        move_buttons.addStretch(1)
-        move_column.addLayout(move_buttons)
+        move_row.addWidget(self.undo_move_button)
+        move_row.addStretch(1)
+        move_column.addLayout(move_row)
 
         # No trailing stretch. With one, the layout gave the leftover width
         # to the spacer and then squeezed "Undo move" to 91px against the
@@ -324,293 +322,10 @@ class EncountersPage(QWidget):
         split.addLayout(right, 1)
         entries_column.addLayout(split, 1)
 
-        self._build_names_tab()
-
         self._apply_view(*self.view_toggles.state())
         self.refresh_records()
 
     # -- Unit Names (CharaName-xx) ----------------------------------------
-
-    def _build_names_tab(self) -> None:
-        """
-        The per-language unit name table, which the Qt page never read.
-
-        `CharaName-xx` is what puts a name on a unit an encounter row
-        summons, and `Unknown4` on the encounter row points into it - which
-        is why `is_unknown_field` judges the label rather than the column
-        name: that column holds a confirmed unit name.
-
-        Loaded lazily through `ensure_language_loaded`, one language at a
-        time, exactly as the other three per-language tables now do. Reading
-        English only is the bug this project already fixed once, when every
-        non-English language came up blank on pages that had the data
-        available and never asked for it.
-        """
-        names_tab = QWidget()
-        column = QVBoxLayout(names_tab)
-        column.setContentsMargins(0, 8, 0, 0)
-        column.setSpacing(10)
-        self.tabs.addTab(names_tab, "Unit Names")
-
-        self.chara_rows: dict[str, QWidget] = {}
-        self.current_chara_key = None
-
-        top = QHBoxLayout()
-        self.chara_counter = QLabel("")
-        self.chara_counter.setProperty("role", "ok")
-        self.chara_counter.setWordWrap(True)
-        top.addWidget(self.chara_counter, 1)
-        top.addWidget(QLabel("Language:"))
-        self.language_box = QComboBox()
-        self.language_box.addItems(language_order())
-        self.language_box.currentTextChanged.connect(self._on_language)
-        top.addWidget(self.language_box)
-        self.copy_button = QPushButton(COPY_LANGUAGES_LABEL)
-        self.copy_button.setToolTip(COPY_LANGUAGES_NOTE)
-        self.copy_button.clicked.connect(self.copy_current_to_languages)
-        top.addWidget(self.copy_button)
-        self.language_controls = QWidget()
-        self.language_controls.setLayout(top)
-        column.addWidget(self.language_controls)
-
-        self.action_note = QLabel("")
-        self.action_note.setProperty("role", "muted")
-        self.action_note.setWordWrap(True)
-        column.addWidget(self.action_note)
-
-        split = QHBoxLayout()
-        split.setSpacing(14)
-
-        left = QVBoxLayout()
-        self.chara_search = QLineEdit()
-        self.chara_search.setPlaceholderText("Search by name or ID")
-        self.chara_search.setClearButtonEnabled(True)
-        self.chara_search.textChanged.connect(self._filter_chara_list)
-        left.addWidget(self.chara_search)
-        self.chara_list = QListWidget()
-        self.chara_list.setFixedWidth(300)
-        self.chara_list.currentItemChanged.connect(self._on_chara_selection)
-        left.addWidget(self.chara_list, 1)
-        split.addLayout(left)
-
-        right = QVBoxLayout()
-        self.chara_editing_label = QLabel("Select a unit name")
-        self.chara_editing_label.setStyleSheet(
-            "font-weight: 600; font-size: 12pt;")
-        right.addWidget(self.chara_editing_label)
-
-        self.chara_empty_note = QLabel(
-            "No game data yet.\n\nGo to General Setup and unpack your game, "
-            "or point at a folder you've already unpacked.")
-        self.chara_empty_note.setProperty("role", "muted")
-        self.chara_empty_note.setWordWrap(True)
-        self.chara_empty_note.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        right.addWidget(self.chara_empty_note)
-
-        scroll = FormScrollArea()
-        holder = QWidget()
-        form = QVBoxLayout(holder)
-        form.setContentsMargins(4, 4, 4, 4)
-        form.setSpacing(2)
-
-        body = QWidget()
-        body_column = QVBoxLayout(body)
-        body_column.setContentsMargins(0, 0, 0, 0)
-        body_column.setSpacing(2)
-
-        # Field order follows the Tkinter tab: the name first, because it is
-        # the reason anybody opened this, then the two numeric/flag fields,
-        # then the Comment - which is FF16Tools' own note about the row and
-        # not game data, so it is labelled as such rather than presented as
-        # something the game reads.
-        self.chara_rows["Name"] = TextFieldRow("Name", "Name")
-        body_column.addWidget(self.chara_rows["Name"])
-
-        low, high, label, note = c.CHARANAME_NUMERIC_FIELDS["DLCFlags"]
-        self.chara_rows["DLCFlags"] = NumericFieldRow(
-            "DLCFlags", label, low, high, note)
-        body_column.addWidget(self.chara_rows["DLCFlags"])
-
-        bool_label, bool_note = c.CHARANAME_BOOL_FIELDS["IsGeneric"]
-        self.chara_rows["IsGeneric"] = BoolFieldRow(
-            "IsGeneric", bool_label, bool_note)
-        body_column.addWidget(self.chara_rows["IsGeneric"])
-
-        # Just "Comment", with the caveat in a tooltip. The full sentence
-        # does not fit the 200px label column every field row uses, and a
-        # label clipped mid-word ("Comment (FF16Tools' own note, not") reads
-        # as a rendering fault rather than as a truncated explanation. The
-        # Items tab clips the same string; it is shortened there too.
-        self.chara_rows["Comment"] = TextFieldRow("Comment", "Comment")
-        self.chara_rows["Comment"].label.setToolTip(COMMENT_TOOLTIP)
-        body_column.addWidget(self.chara_rows["Comment"])
-
-        for row in self.chara_rows.values():
-            row.edited.connect(self._on_chara_field_edited)
-
-        self.chara_sections = [
-            CollapsibleSection("Unit name", body, expanded=True)]
-        form.addWidget(self.chara_sections[0])
-        form.addStretch(1)
-        scroll.setWidget(holder)
-        self.chara_scroll = scroll
-        right.addWidget(scroll, 1)
-        split.addLayout(right, 1)
-        column.addLayout(split, 1)
-
-    @property
-    def language(self) -> str:
-        return self.language_box.currentText() or "en"
-
-    def _on_language(self, _text: str) -> None:
-        """
-        Switches language without disturbing the selection.
-
-        `refresh_records()` is NOT used here, and that is the point: it
-        clears the list and selects row 0, so changing language threw the
-        author off whatever record they were editing and back to the first
-        one. Items fixed this some sessions ago; the Unit Names panel kept the old
-        shape.
-
-        Relabelling the rows in place and reloading the current record does
-        the whole job, because only the TEXT differs between languages -
-        everything else on the record is shared.
-
-        Switching language must never tick a field either. Loading a record
-        never sets an include box, and neither does this: per-field opt-in
-        is what stops two mods claiming a value neither meant to.
-        """
-        ensure_language_loaded(self.state, "chara_name_records", self.language)
-        # A full rebuild only when the row SET could differ - the list being
-        # empty, or a different length. Relabelling assumes the two language
-        # tables hold the same keys, which they do in every real conversion;
-        # this is the check that stops that assumption silently showing an
-        # empty tab if it ever fails.
-        if self.chara_list.count() != len(self.chara_records()):
-            self.refresh_chara_records()
-            return
-        by_key = {r.key: r for r in self.chara_records()}
-        for i in range(self.chara_list.count()):
-            item = self.chara_list.item(i)
-            key = item.data(Qt.UserRole)
-            record = by_key.get(key)
-            name = (record.values.get("Name") if record else "") or "(unnamed)"
-            item.setText(f"{key:03d} - {name}")
-        self._mark_chara_edited()
-        self._update_chara_counter()
-        if self.current_chara_key is not None:
-            self.load_chara_record(self.current_chara_key)
-
-    def chara_records(self) -> list:
-        return (self.state.chara_name_records or {}).get(self.language, [])
-
-    def refresh_chara_records(self) -> None:
-        ensure_language_loaded(self.state, "chara_name_records", self.language)
-        self.chara_list.clear()
-        records = self.chara_records()
-        for record in records:
-            name = record.values.get("Name") or "(unnamed)"
-            item = QListWidgetItem(f"{record.key:03d} - {name}")
-            item.setData(Qt.UserRole, record.key)
-            self.chara_list.addItem(item)
-        has_data = bool(records)
-        set_empty_state(
-            self.chara_empty_note, has_data,
-            self.chara_scroll, self.chara_search, self.chara_list,
-            self.chara_editing_label, self.language_controls)
-        self._mark_chara_edited()
-        self._update_chara_counter()
-        if self.chara_list.count():
-            self.chara_list.setCurrentRow(0)
-
-    def _filter_chara_list(self, text: str) -> None:
-        needle = text.strip().lower()
-        for i in range(self.chara_list.count()):
-            item = self.chara_list.item(i)
-            item.setHidden(bool(needle) and needle not in item.text().lower())
-
-    def _on_chara_selection(self, current, _previous) -> None:
-        if current is not None:
-            self.load_chara_record(current.data(Qt.UserRole))
-
-    def load_chara_record(self, key: int) -> None:
-        by_key = {r.key: r for r in self.chara_records()}
-        record = by_key.get(key)
-        if record is None:
-            return
-        self.current_chara_key = key
-        name = record.values.get("Name") or "(unnamed)"
-        self.chara_editing_label.setText(f"Editing: {key:03d} - {name}")
-
-        already = (self.state.chara_name_edits.get(self.language, {})
-                   .get(key, {}))
-        for field_name, row in self.chara_rows.items():
-            if field_name in already:
-                row.load(already[field_name], True)
-            else:
-                row.load(record.values.get(field_name, ""), False)
-
-    def _on_chara_field_edited(self) -> None:
-        if self.current_chara_key is None:
-            return
-        language = self.state.chara_name_edits.setdefault(self.language, {})
-        edits = language.setdefault(self.current_chara_key, {})
-        for field_name, row in self.chara_rows.items():
-            if row.included:
-                edits[field_name] = row.get_value_str()
-            elif field_name in edits:
-                del edits[field_name]
-        if not edits:
-            language.pop(self.current_chara_key, None)
-
-        self._mark_chara_edited()
-        self._update_chara_counter()
-        self.edits_changed.emit()
-
-    def copy_current_to_languages(self) -> None:
-        """
-        This row's non-text fields into the other six languages.
-
-        `CHARA_TEXT_FIELDS` is `Name` and `Comment`, and neither travels - a
-        unit's name is exactly the thing that needs translating, and copying
-        it would produce a mod shipping English text in the Japanese table
-        that nothing downstream could distinguish from a real translation.
-        """
-        if self.current_chara_key is None:
-            self.action_note.setText("Pick a unit name first.")
-            return
-        changed = copy_edits_to_languages(
-            self.state.chara_name_edits, self.language,
-            self.current_chara_key, c.NXD_LANGUAGES,
-            skip_fields=CHARA_TEXT_FIELDS)
-        if changed:
-            labels = ", ".join(c.NXD_LANGUAGE_LABELS[lang]
-                               for lang in changed)
-            self.action_note.setText(f"Copied to {labels}.")
-            self.edits_changed.emit()
-        else:
-            # Distinguishes "nothing ticked" from "only text was ticked",
-            # because the second looks like the button failing.
-            self.action_note.setText(
-                "Nothing to copy - tick a field that isn't Name or Comment "
-                "first.")
-        self._update_chara_counter()
-
-    def _mark_chara_edited(self) -> None:
-        edits = self.state.chara_name_edits.get(self.language, {})
-        for i in range(self.chara_list.count()):
-            item = self.chara_list.item(i)
-            mark_edited(item, bool(edits.get(item.data(Qt.UserRole))))
-
-    def _update_chara_counter(self) -> None:
-        total = self.chara_list.count()
-        if not total:
-            self.chara_counter.setText("")
-            return
-        edited = self.state.edited_chara_name_count(self.language)
-        label = c.NXD_LANGUAGE_LABELS[self.language]
-        self.chara_counter.setText(
-            f"{edited} of {total} unit names edited in {label}")
 
     def _build_row(self, field_name: str):
         label = field_label(field_name)
@@ -625,7 +340,24 @@ class EncountersPage(QWidget):
             return BoolFieldRow(field_name, label, note)
         if c.ENTRY_COLUMN_TYPES.get(field_name) == "string":
             return TextFieldRow(field_name, label)
-        row = NumericFieldRow(field_name, label, 0, 65535, note, unknown=unknown)
+        # The floor is the field's OWN inherit value when that is negative.
+        #
+        # Sixteen of these fields use -1 to mean "leave the unit's own value
+        # alone" - Reaction, Support, Movement, every equipment slot - and
+        # the box could not hold it, so a row the nxd says is -1 read as 0.
+        # 0 is a real and very different answer: for Head or Body it is an
+        # actual item id, so the page was showing an equipped item where the
+        # file says "unchanged".
+        #
+        # Taken from `ENTRY_INHERIT_VALUES`, which is where that fact already
+        # lives and which the note under the field is already built from -
+        # so the control and its own caption cannot disagree.
+        floor = 0
+        inherit = c.ENTRY_INHERIT_VALUES.get(field_name)
+        if inherit and isinstance(inherit[0], int) and inherit[0] < 0:
+            floor = inherit[0]
+        row = NumericFieldRow(field_name, label, floor, 65535, note,
+                              unknown=unknown)
         return row
 
     # -- records -----------------------------------------------------------------
@@ -663,9 +395,6 @@ class EncountersPage(QWidget):
         self._update_counter()
         if self.list.count():
             self.list.setCurrentRow(0)
-        # Both halves of this tab refresh together. Unit names arrive from
-        # the same conversion the encounter rows do.
-        self.refresh_chara_records()
 
     def _name_for(self, record) -> str:
         """
@@ -776,6 +505,21 @@ class EncountersPage(QWidget):
 
     # -- editing ------------------------------------------------------------------
 
+    def refresh_from_store(self) -> None:
+        """
+        Re-read the selected encounter row when this page comes back.
+
+        One half now. It used to refresh two, because Unit Names sat behind
+        a tab strip on this page where a stale half is invisible; that half
+        is its own page and refreshes itself. See
+        `widgets/visible_refresh.py`.
+        """
+        if self.current_address is None:
+            return
+        self.load_record(self.current_address)
+        self._mark_edited()
+        self._update_counter()
+
     def _on_field_edited(self) -> None:
         if self.current_address is None:
             return
@@ -805,23 +549,19 @@ class EncountersPage(QWidget):
             self.counter.setText("")
             return
         edited = sum(1 for fields in self.state.entry_edits.values() if fields)
-        self.counter.setText(f"{edited} of {total} encounter rows edited")
+        self.counter.setText(edit_counter_text(edited, total, "encounters"))
 
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool,
                     hide_comments: bool) -> None:
         """
-        BOTH row containers.
+        One row container, now.
 
-        This walked `self.rows` only, so the unit rows in `self.chara_rows`
-        kept their notes with notes turned off - "Generic Unit" was the one
-        that showed. The identical fault to the one Jobs was fixed for, in
-        the container next door, and invisible unless somebody counted:
-        37 of 38 notes hid, which looks exactly like it working.
-
-        Found by `dev/audit_view_toggles.py`, which was written for a
-        different page and turned this up on its first run.
+        This used to walk two and was once fixed for walking only one - the
+        unit rows in `chara_rows` kept their notes with notes turned off,
+        37 of 38 hiding, which looks exactly like it working. Those rows now
+        live on `UnitNamesPage`, which walks its own. `audit_view_toggles`
+        checks both pages.
         """
-        apply_view_toggles(
-            list(self.rows.values()) + list(self.chara_rows.values()),
-            hide_notes, hide_unknown, hide_comments)
+        apply_view_toggles(list(self.rows.values()),
+                           hide_notes, hide_unknown, hide_comments)

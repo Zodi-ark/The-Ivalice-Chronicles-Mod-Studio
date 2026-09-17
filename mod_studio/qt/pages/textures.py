@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSortFilterProxyModel, Qt, Signal
+from PySide6.QtCore import QSortFilterProxyModel, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
@@ -120,6 +120,41 @@ class PreviewView(QLabel):
         self.setPixmap(pixmap)
 
 
+def fit_for_preview(image, limit: int = PREVIEW_MAX):
+    """
+    Shrinks a decoded texture to the largest size a panel can ever show it.
+
+    **This is a memory fix, not a cosmetic one.** A `.tex` is where the
+    game keeps its big textures, and one 4096x4096 decodes to 64MB of RGBA
+    - which is then copied several times over on its way to the screen:
+    `convert("RGBA")` copies, `tobytes()` copies, and `QPixmap.fromImage`
+    copies again. Measured, one such preview takes peak RSS from 130MB to
+    370MB. Scroll quickly and several are alive at once, because the panel
+    still holds the previous pixmap while the next decode lands.
+
+    When that allocation fails, Qt does not raise - the process goes away
+    with no traceback and no dialog. Reported exactly that way: silent, and
+    only on `.tex`. A `.tga` in this game is a small UI image, so the same
+    code path never gets near the limit.
+
+    `PreviewView` never magnifies - it draws at native size or smaller - so
+    anything above `PREVIEW_MAX` was decoded, copied and carried around only
+    to be thrown away at draw time. A 4096 texture shrinks by about 53x
+    here, and what reaches the screen is identical.
+
+    The image's TRUE size is read before this is called, so the panel still
+    reports the real dimensions rather than the shrunken ones.
+    """
+    width, height = image.size
+    if width <= limit and height <= limit:
+        return image
+    from PIL import Image as _Image
+
+    shrunk = image.copy()
+    shrunk.thumbnail((limit, limit), _Image.LANCZOS)
+    return shrunk
+
+
 class PreviewWorker(Worker):
     """
     Loads the current texture and its pending replacement, for display.
@@ -155,8 +190,10 @@ class PreviewWorker(Worker):
             try:
                 image = td.load_game_texture_preview(
                     Path(self.source_path), self.cli_path, self.cache_dir)
-                result["current"] = image
+                # The true size first, then the shrink. The panel reports
+                # what the texture IS, not what was carried to the screen.
                 result["size"] = image.size
+                result["current"] = fit_for_preview(image)
             except Exception as exc:                          # noqa: BLE001
                 result["current_error"] = str(exc)
         if self.replacement_path is not None:
@@ -189,10 +226,31 @@ class PreviewWorker(Worker):
                 # does this; this page did not.
                 if td.is_face_texture(str(self.token)):
                     image, _ = td.apply_seam_fix(image)
-                result["replacement"] = image
+                # After the seam fix, which works on edge pixels and has to
+                # see the image at full size to be the fix it claims to be.
+                result["replacement"] = fit_for_preview(image)
             except Exception as exc:                          # noqa: BLE001
                 result["replacement_error"] = str(exc)
         return result
+
+
+#: How long the page waits for the selection to stop moving before it
+#: decodes a preview.
+#:
+#: Sized against the thing that causes the crash rather than picked. A held
+#: key repeats at a rate the person sets: on Windows the range is roughly
+#: 2.5 to 31 repeats a second, an interval of 400ms down to 32ms. The
+#: dangerous end is the fast one - at 31/sec, two seconds on the Down arrow
+#: is 62 selection changes, and before this each was a thread and possibly
+#: an FF16Tools subprocess.
+#:
+#: 150ms coalesces everything from 31/sec down to about 6.7/sec, which is
+#: the whole range that can outrun a decode. Below that a person is
+#: generating fewer than seven previews a second by hand and each has room
+#: to finish. It is also short enough that a single deliberate click still
+#: feels immediate - the placeholders go up with no delay at all, so what
+#: waits is the picture, not the page.
+PREVIEW_DEBOUNCE_MS = 150
 
 
 class TexturesPage(QWidget):
@@ -203,6 +261,32 @@ class TexturesPage(QWidget):
         self.state = state
         self.current_node = None
 
+        # Holding Down on a long list used to kill the application.
+        #
+        # Every selection change started a new `PreviewWorker` on a new
+        # `QThread`, each of which may shell out to FF16Tools to decode a
+        # `.tex`. A held key fires selection changes at the keyboard repeat
+        # rate, so that spawns threads and subprocesses without bound.
+        #
+        # The stale-result guard `_preview_token` did not help: it drops the
+        # RESULT after the work is done, so it neither cancels the work nor
+        # stops it starting.
+        #
+        # So the decode waits for the selection to stop moving, and refuses
+        # to start at all for a token that has already been superseded. The
+        # placeholders still go up immediately, so the page does not look
+        # frozen while you scroll.
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._start_pending_preview)
+        self._pending_preview = None
+        #: True while a decode is on a thread. One at a time, always.
+        self._preview_busy = False
+        #: How many decodes have actually been STARTED. Counted because
+        #: "it did not crash this time" is not a measurement - see
+        #: `test_qt_textures`.
+        self.previews_started = 0
+
         self.model = TextureTreeModel(edits=self.state.texture_edits)
         self.proxy = TexturePathFilter()
         self.proxy.setSourceModel(self.model)
@@ -212,9 +296,9 @@ class TexturesPage(QWidget):
         outer.setSpacing(10)
 
         outer.addLayout(actions.page_intro(
-            "Every texture in the game. Pick one, then choose an image to "
-            "replace it with. Only textures you replace are written into your "
-            "mod - the rest are left alone."))
+            "Beware .tga textures can only be replaced with .tga files, "
+            "while .tex textures accept .dds, .png, .jpg, .gif, .bmp, .tga "
+            "or .webp."))
 
         self.counter = QLabel("")
         self.counter.setProperty("role", "ok")
@@ -271,6 +355,9 @@ class TexturesPage(QWidget):
         self.selected_label.setWordWrap(True)
         right.addWidget(self.selected_label)
 
+        #: Set when a replacement is refused for being the wrong kind, so a
+        #: check can see WHY rather than only that nothing happened.
+        self.refusal = ""
         self.detail = QLabel("")
         self.detail.setProperty("role", "muted")
         self.detail.setWordWrap(True)
@@ -537,7 +624,30 @@ class TexturesPage(QWidget):
         # is passed explicitly - 4 bytes per pixel.
         rgba = image.convert("RGBA")
         width, height = rgba.size
-        qimage = QImage(rgba.tobytes("raw", "RGBA"), width, height,
+        # The buffer is NAMED, and the QImage is copied before it goes.
+        #
+        # `QImage(bytes, ...)` does not copy - it borrows. Passing
+        # `rgba.tobytes(...)` straight into the call makes the only
+        # reference to that buffer a temporary with no name, and the whole
+        # arrangement then rests on shiboken choosing to keep it alive.
+        # Probing says PySide6 6.11 does, so this is not a live bug today;
+        # it is undocumented behaviour holding up a 1MB borrow, and the
+        # failure if it ever stops is not an exception. A 512x512 RGBA
+        # buffer is over glibc's mmap threshold, so freeing it UNMAPS the
+        # page and reading it afterwards is SIGBUS - a hard crash with no
+        # Python traceback, intermittent, and dependent on allocator timing.
+        #
+        # Naming the buffer and copying the image costs one memcpy per
+        # preview, on a path that has just decoded an image from disk.
+        buffer = rgba.tobytes("raw", "RGBA")
+        expected = width * height * 4
+        if len(buffer) < expected:
+            # Cannot happen for "raw"/"RGBA", and is checked anyway because
+            # the consequence is not a wrong picture. QImage would read
+            # `expected` bytes from a shorter buffer and run off the end.
+            view.clear_native("This texture could not be decoded.")
+            return
+        qimage = QImage(buffer, width, height,
                         width * 4, QImage.Format_RGBA8888)
         # Scaled DOWN only, never up.
         #
@@ -548,11 +658,7 @@ class TexturesPage(QWidget):
         # Handed over at native size. `PreviewView` decides how much of the
         # panel to use and re-decides whenever the window is resized, so the
         # scaling is not baked in here.
-        #
-        # `QImage` does not copy the buffer it is given, so the pixmap has
-        # to be made before `rgba` goes out of scope - which it does, since
-        # `fromImage` is what copies.
-        view.set_native(QPixmap.fromImage(qimage))
+        view.set_native(QPixmap.fromImage(qimage.copy()))
 
     def _load_previews(self, node, replacement) -> None:
         root = getattr(self.state, "nxd_unpack_dir", None)
@@ -587,19 +693,115 @@ class TexturesPage(QWidget):
             self._set_preview("replacement", None,
                               "Nothing staged for this texture.")
             self.export_button.setEnabled(False)
+            # Nothing queued either, or a decode armed by the PREVIOUS
+            # selection would fire against this one's token and be thrown
+            # away a moment later - work done for a texture nobody is
+            # looking at.
+            self._pending_preview = None
+            self._preview_timer.stop()
             return
 
-        worker = PreviewWorker(
+        self._pending_preview = (
             node.relative_path,
             source if readable else None,
             staged_source,
+        )
+        self._preview_timer.start(PREVIEW_DEBOUNCE_MS)
+
+    def flush_pending_preview(self) -> None:
+        """
+        Starts a debounced decode now instead of waiting out the interval.
+
+        For tests, which cannot hold a key down and should not sleep. It
+        fast-forwards the wait rather than switching the debounce off, so a
+        check that uses it is still running the shipped code path.
+        """
+        if self._preview_timer.isActive():
+            self._preview_timer.stop()
+            self._start_pending_preview()
+
+    def _start_pending_preview(self) -> None:
+        pending = self._pending_preview
+        if pending is None:
+            return
+        # ONE decode at a time. This is the half that actually stops the
+        # crash.
+        #
+        # The debounce delays when a decode STARTS; it does nothing about
+        # how many run at once. Pressing Down in bursts - fast, but with
+        # gaps longer than the debounce - starts a fresh decode each time,
+        # and a `.tex` decode holds a full-size image plus an FF16Tools
+        # subprocess. Enough of those in flight together and the process
+        # dies. Reported precisely that way: it is the images loading at the
+        # same time, not the key repeating.
+        #
+        # The pending job is left in place rather than dropped, so the
+        # texture you land on is still decoded once the current one is
+        # done - see `_preview_finished`.
+        if self._preview_busy:
+            return
+        self._pending_preview = None
+        token, source, staged_source = pending
+        # The second half of the fix, and the one the debounce cannot do on
+        # its own: a decode whose selection has already moved on is not
+        # started. The old guard threw the RESULT away, which is the
+        # expensive half done for nothing.
+        if token != getattr(self, "_preview_token", None):
+            return
+        self.previews_started += 1
+        self._preview_busy = True
+
+        worker = PreviewWorker(
+            token,
+            source,
+            staged_source,
             getattr(self.state, "ff16tools_cli_path", None),
             paths.local_data_dir() / "texture_preview_cache")
-        self._thread = run_in_thread(
+        # Not `self._thread = ...`. `_RunningThreads` holds every started
+        # thread until it has genuinely stopped, and its own docstring names
+        # the one-attribute-per-page assignment as the bug it exists to
+        # replace: the second job overwrites the first thread's only
+        # reference while that thread is still running.
+        run_in_thread(
             worker, on_finished=self._previews_ready,
             on_failed=self._previews_failed)
 
+    def _preview_finished(self) -> None:
+        """
+        Frees the single decode slot and queues whatever is waiting.
+
+        Both completion paths come through here, success and failure alike.
+        A failure that did not clear the flag would wedge the page: no
+        further preview would ever start, and nothing on screen would say
+        why.
+
+        **The next decode is QUEUED, not started here.** This runs inside
+        the emission of the finishing worker's `finished` signal, so the
+        thread that just did the work has not gone away yet - its `quit()`
+        and the registry's `release()` hang off the same signal. Starting a
+        new thread from inside that emission makes Qt do thread bookkeeping
+        re-entrantly, which is the hazard `_RunningThreads` names in its own
+        docstring: "a handler that starts more work".
+
+        Reported from real use as a silent crash while clicking through
+        many `.tex` textures without waiting. `.tex` is the only kind that
+        has to shell out to FF16Tools, so it is the only kind slow enough
+        for a queue to build up behind it - which is what makes this chain
+        run over and over. Measured, same seeds, 150 clicks a run:
+
+            synchronous start   2 crashes in 10 runs
+            queued start        0 crashes in 10 runs
+
+        A zero-delay timer is enough. It does not slow anything down - the
+        decode still begins on the next turn of the event loop - it only
+        stops it beginning half-way through the previous one's teardown.
+        """
+        self._preview_busy = False
+        if self._pending_preview is not None:
+            QTimer.singleShot(0, self._start_pending_preview)
+
     def _previews_ready(self, result: dict) -> None:
+        self._preview_finished()
         if result.get("token") != getattr(self, "_preview_token", None):
             return
         self._set_preview(
@@ -615,6 +817,7 @@ class TexturesPage(QWidget):
                 self.detail.text() + f"\n{width} x {height} px")
 
     def _previews_failed(self, message: str) -> None:
+        self._preview_finished()
         # No token here - `failed` carries only the message. A stale failure
         # can only overwrite an error message with another error message,
         # which is not worth threading a token through for.
@@ -629,12 +832,26 @@ class TexturesPage(QWidget):
         """
         if self.current_node is None:
             return
+        allowed = td.allowed_replacements(self.current_node.relative_path)
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Choose a replacement image", "",
-                actions.image_open_filter(td.REPLACEMENT_IMAGE_EXTENSIONS))
+                actions.image_open_filter(allowed))
         if not path:
             return
+        # Checked as well as filtered. The dialog's filter is a convenience
+        # and can be stepped around by typing a name, and a replacement of
+        # the wrong kind is not refused anywhere further down - it produces
+        # a mod that builds and a texture that does not appear.
+        if Path(path).suffix.lower() not in allowed:
+            self.refusal = (
+                f"{Path(self.current_node.relative_path).suffix.lower()} "
+                f"textures can only be replaced with "
+                f"{' or '.join(allowed)} files. "
+                f"{Path(path).name} was not used.")
+            self.detail.setText(self.refusal)
+            return
+        self.refusal = ""
         self.set_replacement(self.current_node.relative_path, Path(path))
 
     def set_replacement(self, relative_path: str, source: Path) -> None:
@@ -674,9 +891,23 @@ class TexturesPage(QWidget):
         """
         Writes the selected texture out as a PNG, for editing elsewhere.
 
-        The game's own `.tex` files need FF16Tools to become an image, so
-        this reports plainly when that is unavailable rather than writing a
-        broken file. `.tga` needs nothing and works anywhere.
+        Goes through `load_game_texture_preview`, not `load_any_image`.
+        That is the whole of the bug this fixes: the source here is always
+        an EXISTING game file, and `load_any_image`'s own docstring says it
+        is "for a REPLACEMENT image the user provides, not for existing game
+        .tex files - those need load_game_texture_preview". Pillow cannot
+        read a `.tex` at all, so exporting one failed with
+
+            Couldn't export: cannot identify image file '...c01_uitx.tex'
+
+        The Items page never had the fault because `texture_slot.export_png`
+        exports the already-decoded preview rather than re-reading the file.
+
+        `.tga` still needs nothing - `load_game_texture_preview` forwards it
+        straight to `load_any_image` - and `.tex` needs FF16Tools, which is
+        why the CLI path and the preview cache are passed in. That is the
+        behaviour the docstring above already CLAIMED and the code did not
+        implement; the claim is now true.
         """
         if self.current_node is None:
             return
@@ -693,7 +924,10 @@ class TexturesPage(QWidget):
         if not path:
             return
         try:
-            image = td.load_any_image(source)
+            image = td.load_game_texture_preview(
+                Path(source),
+                getattr(self.state, "ff16tools_cli_path", None),
+                paths.local_data_dir() / "texture_preview_cache")
             td.save_image_as_png(image, Path(path))
         except Exception as exc:                              # noqa: BLE001
             self.detail.setText(
@@ -723,4 +957,5 @@ class TexturesPage(QWidget):
             self.counter.setText("")
             return
         replaced = len(self.state.texture_edits)
-        self.counter.setText(f"{replaced} of {total:,} textures replaced")
+        self.counter.setText(
+            actions.edit_counter_text(replaced, total, "textures", "replaced"))
