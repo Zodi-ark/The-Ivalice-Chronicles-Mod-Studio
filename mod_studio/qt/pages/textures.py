@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSortFilterProxyModel, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QSortFilterProxyModel, Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
@@ -36,6 +36,39 @@ from ..models.texture_tree import TextureTreeModel
 from ..widgets import actions
 from ..widgets.marked_tree import MarkedTreeView
 from ..workers import Worker, run_in_thread
+
+#: The file tree's width on first show; the editor gets the rest. Measured
+#: against the real game listing with the tree's own font: 99% of texture
+#: rows need 370px or less (the widest, deep in ui/, 471).
+TEXTURE_TREE_WIDTH = 420
+
+
+class TreePaneSizer(QObject):
+    """
+    Gives a splitter's first pane - the file tree - a set width the first
+    time the splitter has a real width, and everything else to the editor.
+
+    Both file pages gave the tree 60% (`setSizes([3000, 2000])`): at 1080p,
+    over 950px for names that need 340 (Sounds) or 370 (textures), while
+    the editor beside it went without. Reported with screenshots.
+    `setSizes` is proportional until the splitter is laid out, which is why
+    this waits for a real width. After that the divider is the reader's:
+    this never moves it again.
+    """
+
+    def __init__(self, splitter, width: int):
+        super().__init__(splitter)
+        self._width = width
+        self._done = False
+        splitter.installEventFilter(self)
+
+    def eventFilter(self, watched, event):                       # noqa: N802
+        if (not self._done and event.type() == QEvent.Resize
+                and watched.width() > self._width * 2):
+            self._done = True
+            watched.setSizes([self._width,
+                              watched.width() - self._width - watched.handleWidth()])
+        return False
 
 
 class TexturePathFilter(QSortFilterProxyModel):
@@ -325,7 +358,7 @@ class TexturesPage(QWidget):
         self.tree.setModel(self.proxy)
         self.tree.setUniformRowHeights(True)      # skip measuring 10,011 rows
         self.tree.setAlternatingRowColors(True)
-        self.tree.setMinimumWidth(420)
+        self.tree.setMinimumWidth(280)
         self.tree.setColumnWidth(0, 300)
         self.tree.selectionModel().currentChanged.connect(self._on_selection)
         # Right-click does what the three buttons do.
@@ -450,9 +483,11 @@ class TexturesPage(QWidget):
         split.addWidget(left_holder)
         split.addWidget(right_holder)
         split.setChildrenCollapsible(False)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        split.setSizes([3000, 2000])
+        # The tree gets what its names need, the previews everything else,
+        # and window resizes go to the previews.
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        self._tree_sizer = TreePaneSizer(split, TEXTURE_TREE_WIDTH)
 
         outer.addWidget(split, 1)
         self.refresh_tree()

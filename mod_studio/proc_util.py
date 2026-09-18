@@ -83,13 +83,23 @@ def run_streaming_with_artifact(
 
     Returns (artifact_found, returncode_or_None) - returncode is None if
     the process hadn't exited yet by the time this returned (either
-    because the artifact appeared first, or the timeout was hit). The
-    process is left running in the background in that case - not killed,
-    since it may just be sitting at a harmless prompt, and killing a
-    Windows GUI/console process by pid isn't always clean cross-platform.
+    because the artifact appeared first, or the timeout was hit).
+
+    **stdin is closed.** AudioMog ends every run that hits an error with
+    "Press any key to exit..." and a `Console.ReadKey()`, which with an
+    inherited console waits forever - that was the real cause of the
+    "finishes but never exits" reports, and why this function exists. With
+    stdin redirected, .NET's `ReadKey` throws instead of waiting, so the
+    process always ends. Nothing any of these tools does reads stdin.
+
+    **A process still running at the timeout is stopped.** It used to be
+    left alone in case it was "sitting at a harmless prompt", which with
+    stdin closed it cannot be - it is stuck, and every export that timed
+    out left one more AudioMog running in the background.
     """
     process = subprocess.Popen(
         command,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -135,6 +145,12 @@ def run_streaming_with_artifact(
 
         if time.monotonic() - start > timeout:
             drain_lines()
-            return artifact_check(), None
+            found = artifact_check()
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return found, None
 
         time.sleep(poll_interval)

@@ -19,6 +19,14 @@ Two edit stores, kept separate because the engine keeps them separate:
     sound_edits              {archive: {track index: edit}}  tracks
     sound_file_replacements  {archive: source path}          whole files
 
+They LAYER. Whole archives come from opened mods - this page replaces
+tracks, and has no whole-archive button: "the overwhelming majority of
+people who want to edit Sounds want to change tracks, not the whole
+archive", so a button for it only confused them (it was added, then removed
+at Zodi's request). A track replaced in an archive a mod already replaces
+goes into that file, not the game's, or everything else the mod did to it
+would be lost - so the tracks listed are the ones in the file that ships.
+
 **AudioMog is a Windows binary.** Browsing, searching and classifying the
 tree all work anywhere. Opening an archive to see its tracks does not, and
 the page says so instead of showing an empty track list that looks like an
@@ -26,9 +34,11 @@ archive with nothing in it.
 """
 from __future__ import annotations
 
+import hashlib
+
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QPlainTextEdit, QSpinBox,
@@ -45,7 +55,28 @@ from ..widgets.actions import (
 from ..widgets.field_rows import CollapsibleSection
 from ..widgets.marked_tree import MarkedTreeView
 from ..workers import Worker, run_in_thread
-from ..pages.textures import TexturePathFilter
+from ..pages.textures import TexturePathFilter, TreePaneSizer
+from ..audio_output import LoopPlayer
+from ..widgets.waveform import WaveformView
+
+#: Where unpacked archives are cached for browsing. A new name, so the old
+#: cache is never read: builds before this one wrote a replacement's audio
+#: INTO the cached copy of the game's track, and Undo never put it back, so
+#: an old cache can hold somebody's replacement where the game's track
+#: should be - and Play, Export and Reset to vanilla would go on using it.
+SAB_CACHE = "sab_cache_2"
+
+#: The file tree's width on first show; the editor gets the rest. Measured
+#: against the real game listing with the tree's own font: the widest row
+#: under sound/ needs about 340px.
+SOUND_TREE_WIDTH = 360
+
+
+def clock_text(frames: int, rate: int) -> str:
+    """m:ss.mmm - how audio editors show a position."""
+    seconds = frames / rate if rate else 0.0
+    minutes, seconds = divmod(seconds, 60)
+    return f"{int(minutes)}:{seconds:06.3f}"
 
 
 class UnpackArchiveWorker(Worker):
@@ -62,18 +93,19 @@ class UnpackArchiveWorker(Worker):
     """
 
     def __init__(self, exe_path: Path, sab_path: Path, relative_path: str,
-                 cache_root: Path):
+                 cache_root: Path, as_name: str | None = None):
         super().__init__()
         self.exe_path = exe_path
         self.sab_path = sab_path
         self.relative_path = relative_path
         self.cache_root = cache_root
+        self.as_name = as_name
 
     def run(self):
         self.log.emit(f"Opening {self.relative_path}...")
         project = sd.unpack_sab_cached(
             self.exe_path, self.sab_path, self.relative_path,
-            self.cache_root, line_cb=self.log.emit)
+            self.cache_root, line_cb=self.log.emit, as_name=self.as_name)
         tracks = sd.list_tracks(project)
         if not tracks:
             raise RuntimeError(
@@ -133,7 +165,6 @@ class SoundsPage(QWidget):
         self.current_node = None
         self.tracks = []
         self.current_track = None
-        self._player = None
         self._thread = None
 
         # The model is shared with Textures because the node types match.
@@ -171,7 +202,7 @@ class SoundsPage(QWidget):
         self.tree.setModel(self.proxy)
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
-        self.tree.setMinimumWidth(420)
+        self.tree.setMinimumWidth(280)
         self.tree.setColumnWidth(0, 300)
         self.tree.selectionModel().currentChanged.connect(self._on_selection)
         left.addWidget(self.tree, 1)
@@ -199,6 +230,7 @@ class SoundsPage(QWidget):
         self.detail.setWordWrap(True)
         right.addWidget(self.detail)
 
+
         self.tracks_note = QLabel("")
         self.tracks_note.setProperty("role", "attention")
         self.tracks_note.setWordWrap(True)
@@ -224,42 +256,98 @@ class SoundsPage(QWidget):
         # box, all sitting under "Select a sound archive", is a page that
         # looks broken before it has been used - reported from real use,
         # with a screenshot.
+        #
+        # Laid out the way audio editors lay out a track (Audacity, Adobe
+        # Audition, Logic): what you can do to the track, then its waveform
+        # across the whole width, then the transport under it - every row
+        # only as wide as its buttons. They were five buttons stacked at
+        # full width, and giving this side more room made them five 1100px
+        # bars; reported with a screenshot.
         self.actions_box = QWidget()
         actions = QVBoxLayout(self.actions_box)
         actions.setContentsMargins(0, 0, 0, 0)
-        self.play_button = QPushButton("Play")
-        self.play_button.setMinimumWidth(self.play_button.sizeHint().width() + 8)
-        self.play_button.setEnabled(False)
-        self.play_button.clicked.connect(self.play_track)
-        actions.addWidget(self.play_button)
+        actions.setSpacing(8)
 
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setMinimumWidth(self.stop_button.sizeHint().width() + 8)
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self.stop_track)
-        actions.addWidget(self.stop_button)
+        # Playback - see `play_track`. The playhead is read from the sound
+        # device by this timer, never worked out from a clock.
+        self._pcm = None
+        self._pcm_cache = {}
+        self._playing = False
+        self._playhead = 0
+        self.audio = LoopPlayer(self)
+        self.audio.finished.connect(self._on_play_finished)
+        self._tick_timer = QTimer(self)
+        self._tick_timer.setInterval(33)
+        self._tick_timer.timeout.connect(self._tick)
 
-        self.export_button = QPushButton("Export this track as WAV...")
-        self.export_button.setMinimumWidth(
-            self.export_button.sizeHint().width() + 8)
-        self.export_button.setEnabled(False)
-        self.export_button.clicked.connect(self.export_track)
-        actions.addWidget(self.export_button)
-
+        track_row = QHBoxLayout()
         self.replace_button = QPushButton("Replace this track...")
-        self.replace_button.setMinimumWidth(
-            self.replace_button.sizeHint().width() + 8)
         self.replace_button.setEnabled(False)
         self.replace_button.clicked.connect(self.replace_track)
-        actions.addWidget(self.replace_button)
-
+        track_row.addWidget(self.replace_button)
         self.clear_track_button = QPushButton("Undo this track's replacement")
-        self.clear_track_button.setMinimumWidth(
-            self.clear_track_button.sizeHint().width() + 8)
         self.clear_track_button.setEnabled(False)
         self.clear_track_button.clicked.connect(self.clear_track_replacement)
-        actions.addWidget(self.clear_track_button)
-        actions.addStretch(1)
+        track_row.addWidget(self.clear_track_button)
+        self.export_button = QPushButton("Export this track as WAV...")
+        self.export_button.setEnabled(False)
+        self.export_button.clicked.connect(self.export_track)
+        track_row.addWidget(self.export_button)
+        track_row.addStretch(1)
+        actions.addLayout(track_row)
+
+        self.waveform = WaveformView()
+        self.waveform.min_loop = sd.MIN_MEANINGFUL_LOOP_SAMPLES
+        self.waveform.seekRequested.connect(self._seek)
+        self.waveform.loopDragged.connect(self._on_waveform_loop)
+        self.waveform.loopEdited.connect(self._on_waveform_loop_edited)
+        self.waveform.playToggleRequested.connect(self.play_track)
+        actions.addWidget(self.waveform)
+
+        transport = QHBoxLayout()
+        self.play_button = QPushButton("Play")
+        self.play_button.setEnabled(False)
+        self.play_button.clicked.connect(self.play_track)
+        transport.addWidget(self.play_button)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_track)
+        transport.addWidget(self.stop_button)
+        # Says its state: the theme draws a checked button like any other.
+        self.loop_button = QPushButton("Loop: on")
+        self.loop_button.setCheckable(True)
+        self.loop_button.setChecked(True)
+        self.loop_button.setEnabled(False)
+        self.loop_button.setToolTip(
+            "On: playing jumps back to the loop's Start every time it "
+            "reaches the End, the way the game plays it.")
+        self.loop_button.toggled.connect(self._on_loop_toggled)
+        transport.addWidget(self.loop_button)
+        transport.addSpacing(16)
+        self.set_start_button = QPushButton("Set loop start here")
+        self.set_start_button.setEnabled(False)
+        self.set_start_button.setToolTip(
+            "Moves the loop's Start to the playhead - the line on the "
+            "waveform. Play, pause where the loop should begin, click this.")
+        self.set_start_button.clicked.connect(self.set_loop_start_here)
+        transport.addWidget(self.set_start_button)
+        self.set_end_button = QPushButton("Set loop end here")
+        self.set_end_button.setEnabled(False)
+        self.set_end_button.setToolTip(
+            "Moves the loop's End to the playhead. Play, pause where the "
+            "loop should jump back, click this.")
+        self.set_end_button.clicked.connect(self.set_loop_end_here)
+        transport.addWidget(self.set_end_button)
+        transport.addSpacing(16)
+        self.position_label = QLabel("")
+        self.position_label.setProperty("role", "muted")
+        transport.addWidget(self.position_label)
+        transport.addStretch(1)
+        actions.addLayout(transport)
+        self.loop_note = QLabel("")
+        self.loop_note.setProperty("role", "attention")
+        self.loop_note.setWordWrap(True)
+        actions.addWidget(self.loop_note)
         right.addWidget(self.actions_box)
 
         # -- the subtitle for this recording ---------------------------------
@@ -334,7 +422,7 @@ class SoundsPage(QWidget):
         # reason they are interesting: a replacement track almost never
         # wants the original's loop, and music whose loop is wrong either
         # stops or repeats a fragment.
-        loop_box = QGroupBox("Loop points (samples)")
+        loop_box = QGroupBox("Exact loop points (samples)")
         loop_row = QHBoxLayout(loop_box)
         loop_row.addWidget(QLabel("Start:"))
         self.loop_start = QSpinBox()
@@ -361,9 +449,15 @@ class SoundsPage(QWidget):
             QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.reset_loop_button.clicked.connect(self.reset_loop_points)
         loop_row.addWidget(self.reset_loop_button)
+        loop_row.addSpacing(12)
+        # The same points as times, which is what the waveform shows.
+        self.loop_times = QLabel("")
+        self.loop_times.setProperty("role", "muted")
+        loop_row.addWidget(self.loop_times)
         loop_row.addStretch(1)
         self.loop_box = loop_box
-        right.addWidget(loop_box)
+        # Under the waveform it belongs to, not below the subtitle.
+        right.insertWidget(right.indexOf(self.actions_box) + 1, loop_box)
         right.addStretch(1)
         # A draggable divider, like Textures. Which side wants the width
         # depends on whether you are hunting for an archive or working on
@@ -372,9 +466,11 @@ class SoundsPage(QWidget):
         right_holder.setLayout(right)
         split.addWidget(right_holder)
         split.setChildrenCollapsible(False)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 2)
-        split.setSizes([3000, 2000])
+        # The tree gets what its names need, the editor everything else, and
+        # window resizes go to the editor - the waveform is what wants width.
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        self._tree_sizer = TreePaneSizer(split, SOUND_TREE_WIDTH)
 
         outer.addWidget(split, 1)
         self.refresh_tree()
@@ -442,6 +538,7 @@ class SoundsPage(QWidget):
         self.tracks = []
         self.current_track = None
         self.track_list.clear()
+        self._load_waveform()
         self.tracks_note.setText("Opening the archive...")
         self.open_archive()
 
@@ -792,7 +889,7 @@ class SoundsPage(QWidget):
             self.subtitle_box.setVisible(False)
             return
         self.actions_box.setVisible(True)
-        self.loop_box.setVisible(True)
+        self.loop_box.setVisible(self._track_loops())
 
         self.selected_label.setText(node.name)
         lines = [node.relative_path]
@@ -808,7 +905,14 @@ class SoundsPage(QWidget):
 
         tracks = self.state.sound_edits.get(node.relative_path) or {}
         if tracks:
-            lines.append(f"{len(tracks)} track(s) replaced.")
+            loops_only = sum(1 for edit in tracks.values()
+                             if isinstance(edit, dict) and not edit.get("source_path"))
+            parts = []
+            if len(tracks) - loops_only:
+                parts.append(f"{len(tracks) - loops_only} track(s) replaced")
+            if loops_only:
+                parts.append(f"{loops_only} loop(s) changed")
+            lines.append(", ".join(parts) + ".")
         whole = self.state.sound_file_replacements.get(node.relative_path)
         if whole:
             lines.append(f"Whole archive replaced with: {whole}")
@@ -823,10 +927,36 @@ class SoundsPage(QWidget):
     # -- opening an archive -------------------------------------------------
 
     def _source_path(self):
+        """
+        The archive whose tracks the page shows: the whole-archive
+        replacement when there is one, the game's own file otherwise - the
+        tracks listed are the ones that will ship, and a track replaced now
+        goes into that same file at export.
+        """
+        if self.current_node is None:
+            return None
+        whole = self.state.sound_file_replacements.get(
+            self.current_node.relative_path)
+        if whole:
+            return Path(whole)
         root = getattr(self.state, "nxd_unpack_dir", None)
-        if root is None or self.current_node is None:
+        if root is None:
             return None
         return Path(root) / self.current_node.relative_path
+
+    def _cache_root_for(self, source: Path) -> Path:
+        """
+        The game's archives are cached by path; a replacement by its
+        CONTENT, so a file changed and chosen again is unpacked again rather
+        than showing what it used to hold.
+        """
+        cache = paths.local_data_dir() / SAB_CACHE
+        whole = (self.state.sound_file_replacements.get(
+            self.current_node.relative_path) if self.current_node else None)
+        if whole and Path(whole) == Path(source):
+            digest = hashlib.sha256(Path(source).read_bytes()).hexdigest()[:16]
+            return cache / "replacements" / digest
+        return cache
 
     def open_archive(self) -> None:
         source = self._source_path()
@@ -843,7 +973,7 @@ class SoundsPage(QWidget):
         self.tracks_note.setText("Opening the archive...")
         worker = UnpackArchiveWorker(
             Path(exe), source, self.current_node.relative_path,
-            paths.local_data_dir() / "sab_cache")
+            self._cache_root_for(source), as_name=self.current_node.name)
         self._thread = run_in_thread(
             worker, on_finished=self._archive_opened,
             on_failed=self._archive_failed)
@@ -855,11 +985,17 @@ class SoundsPage(QWidget):
         replaced = (self.state.sound_edits.get(
             self.current_node.relative_path) or {}) if self.current_node else {}
         for track in self.tracks:
-            marker = "  (replaced)" if track.index in replaced else ""
-            item = QListWidgetItem(f"{track.index:03d} - {track.stem}{marker}")
+            item = QListWidgetItem(self._track_label(track))
             item.setData(Qt.UserRole, track.index)
             self.track_list.addItem(item)
         self.track_list.setVisible(bool(self.tracks))
+        # As tall as its rows, up to six. Most archives hold one track, and
+        # a 160px box for one line was height the waveform needed.
+        if self.tracks:
+            rows = min(len(self.tracks), 6)
+            self.track_list.setFixedHeight(
+                self.track_list.sizeHintForRow(0) * rows
+                + 2 * self.track_list.frameWidth() + 2)
         self.tracks_note.setText("")
         if self.tracks:
             self.track_list.setCurrentRow(0)
@@ -884,7 +1020,9 @@ class SoundsPage(QWidget):
             (t for t in self.tracks if t.index == index), None)
         self._refresh_track_detail()
 
-    def _refresh_track_detail(self) -> None:
+    def _refresh_track_detail(self, reload_audio: bool = True) -> None:
+        if reload_audio:
+            self._load_waveform()
         track = self.current_track
         if track is None:
             self.track_detail.setText("")
@@ -910,6 +1048,25 @@ class SoundsPage(QWidget):
             # is the only thing that tells you which of 300 files named
             # music_000NN is the one you are looking for.
             lines.append(f"In-game use: {describe_track_users(track.users)}")
+        edit = self._replacements().get(track.index)
+        if isinstance(edit, dict) and not edit.get("source_path"):
+            lines.append("Loop points changed - the game's own audio, with your loop.")
+        elif isinstance(edit, dict):
+            lines.append(f"Replaced with {Path(edit['source_path']).name}.")
+            try:
+                mine = sd.read_wav_info(Path(edit["source_path"]))
+            except Exception:                                 # noqa: BLE001
+                mine = None
+            # Said, not fixed: AudioMog writes the file's own rate and
+            # channels into the archive, and whether the game resamples has
+            # not been tested - so this is a hint, not a refusal.
+            if mine is not None and ((mine.sample_rate, mine.channels)
+                                     != (info.sample_rate, info.channels)):
+                lines.append(
+                    f"Your file is {mine.sample_rate:,} Hz with "
+                    f"{mine.channels} channel(s); the game's is "
+                    f"{info.sample_rate:,} Hz with {info.channels}. If it "
+                    f"plays wrongly in game convert it to match.")
         self.track_detail.setText("\n".join(lines))
         self._refresh_track_buttons()
         self._sync_loop_fields()
@@ -920,9 +1077,18 @@ class SoundsPage(QWidget):
         self.stop_button.setEnabled(has_track)
         self.export_button.setEnabled(has_track)
         self.replace_button.setEnabled(has_track)
-        replaced = self._replacements()
-        self.clear_track_button.setEnabled(
-            has_track and self.current_track.index in replaced)
+        # Loop controls only for a track that loops in the game, replaced or
+        # not. On one that doesn't they only confused - reported.
+        loops = self._track_loops()
+        for button in (self.loop_button, self.set_start_button, self.set_end_button):
+            button.setVisible(loops)
+            button.setEnabled(loops)
+        edit = self._replacements().get(self.current_track.index) if has_track else None
+        self.clear_track_button.setEnabled(edit is not None)
+        self.clear_track_button.setText(
+            "Undo this track's loop change"
+            if isinstance(edit, dict) and not edit.get("source_path")
+            else "Undo this track's replacement")
 
     # -- loop points ------------------------------------------------------------
 
@@ -932,7 +1098,8 @@ class SoundsPage(QWidget):
 
         The edit's values when there is one, the vanilla track's otherwise -
         so the box always reflects what would be exported now, not what the
-        file started as.
+        file started as. Editable on every track that loops, the game's own
+        included; hidden on one that doesn't.
         """
         edit = self._replacements().get(
             self.current_track.index) if self.current_track else None
@@ -943,40 +1110,40 @@ class SoundsPage(QWidget):
             start, end = info.loop_start, info.loop_end
         else:
             start, end = 0, 0
-
         self._loading_loop = True
         try:
             self.loop_start.setValue(int(start or 0))
             self.loop_end.setValue(int(end or 0))
         finally:
             self._loading_loop = False
-
-        # Only a replaced track's loop can be changed: editing the vanilla
-        # file's loop without replacing its audio would mean writing the
-        # game's own track back with a different loop, which is a different
-        # feature and not one anybody asked for.
-        editable = isinstance(edit, dict)
-        for widget in (self.loop_start, self.loop_end, self.reset_loop_button):
-            widget.setEnabled(editable)
-        self.loop_box.setEnabled(self.current_track is not None)
+        loops = self._track_loops()
+        for widget in (self.loop_start, self.loop_end):
+            widget.setEnabled(loops)
+        self.reset_loop_button.setEnabled(isinstance(edit, dict))
+        self.loop_box.setVisible(loops)
+        self._show_loop()
 
     def _on_loop_changed(self, _value) -> None:
-        if getattr(self, "_loading_loop", False) or self.current_track is None:
+        if getattr(self, "_loading_loop", False) or not self._track_loops():
             return
-        edit = self._replacements().get(self.current_track.index)
-        if not isinstance(edit, dict):
-            return
-        edit["loop_start"] = self.loop_start.value()
-        edit["loop_end"] = self.loop_end.value()
+        self._set_loop(self.loop_start.value(), self.loop_end.value())
 
-    def reset_loop_points(self) -> None:
-        """Puts the vanilla track's loop back, clamped to the replacement."""
+    def reset_loop_points(self, _checked=False) -> None:
+        """
+        Puts the game's loop back. A loop change on the game's own track is
+        simply undone; a replacement gets the game's loop, clamped to its
+        own length.
+        """
         if self.current_track is None:
             return
         edit = self._replacements().get(self.current_track.index)
         if not isinstance(edit, dict):
             return
         info = self.current_track.info
+        if not edit.get("source_path"):
+            if info.has_loop:
+                self._set_loop(info.loop_start, info.loop_end)
+            return
         replacement = None
         try:
             replacement = sd.read_wav_info(Path(edit["source_path"]))
@@ -989,6 +1156,7 @@ class SoundsPage(QWidget):
             start, end = None, None
         edit["loop_start"], edit["loop_end"] = start, end
         self._sync_loop_fields()
+        self._update_playing_loop()
 
     def _replacements(self) -> dict:
         if self.current_node is None:
@@ -997,31 +1165,286 @@ class SoundsPage(QWidget):
 
     # -- playing, exporting, replacing ------------------------------------------
 
-    def play_track(self) -> None:
+    # -- playback and the loop editor ---------------------------------------------
+    #
+    # The audio streams to the sound device (`audio_output.LoopPlayer`), and
+    # the playhead IS the device's position: it cannot run ahead of what is
+    # heard, and playback ends when the device has played the last sample.
+    # It used to follow a clock started when `winsound` returned - before the
+    # sound began - so it ran ahead, and stopping at its end cut the sound's
+    # end off (reported). A loop change while playing reaches the audio still
+    # to be queued - no restart, no gap; only a seek starts over.
+    #
+    # Every track that loops in the game has a loop to edit, the game's own
+    # audio included - asked for. Moving a game track's loop records a
+    # loop-only edit (`source_path` None); export re-encodes the game's own
+    # track, freshly unpacked, with the new loop. Moved back onto the game's
+    # loop, that edit changes nothing, so it goes.
+
+    def _track_loops(self) -> bool:
+        """Whether the selected track loops in the game - what loop controls are for."""
+        return self.current_track is not None and self.current_track.info.has_loop
+
+    def _audio_source(self):
+        """(file, loop start, loop end, editable) for the selected track - what will ship."""
+        track = self.current_track
+        if track is None:
+            return None, None, None, False
+        edit = self._replacements().get(track.index)
+        if isinstance(edit, dict):
+            source = Path(edit["source_path"]) if edit.get("source_path") else track.wav_path
+            start, end = edit.get("loop_start"), edit.get("loop_end")
+            return source, start, end, self._track_loops() and start is not None
+        if track.info.has_loop:
+            return track.wav_path, track.info.loop_start, track.info.loop_end, True
+        return track.wav_path, None, None, False
+
+    def _pcm_for(self, path: Path):
+        stat = Path(path).stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if key not in self._pcm_cache:
+            if len(self._pcm_cache) >= 2:
+                self._pcm_cache.clear()
+            self._pcm_cache[key] = sd.read_pcm16(Path(path))
+        return self._pcm_cache[key]
+
+    def _load_waveform(self) -> None:
+        """Shows the selected track's audio: the replacement, once there is one."""
+        self._stop_playback()
+        self._playhead = 0
+        self._pcm = None
+        self.loop_note.setText("")
+        path = self._audio_source()[0]
+        if path is not None:
+            try:
+                self._pcm = self._pcm_for(path)
+            except Exception as exc:                          # noqa: BLE001
+                self.loop_note.setText(f"Couldn't read the audio: {exc}")
+        self.waveform.set_audio(self._pcm)
+        self._show_loop()
+        self._update_position()
+
+    def _show_loop(self) -> None:
+        """The loop, as the waveform draws it and as times beside the numbers."""
+        _path, start, end, editable = self._audio_source()
+        self.waveform.set_loop(start, end, editable)
+        rate = self._pcm.sample_rate if self._pcm is not None else 0
+        if rate and start is not None and end is not None and end > start:
+            self.loop_times.setText(
+                f"{clock_text(start, rate)} to {clock_text(end, rate)}")
+        else:
+            self.loop_times.setText("")
+
+    def _update_position(self) -> None:
+        if self._pcm is None:
+            self.position_label.setText("")
+            return
+        rate = self._pcm.sample_rate
+        self.position_label.setText(
+            f"{clock_text(self._playhead, rate)} / {clock_text(self._pcm.frames, rate)}")
+
+    def play_track(self, _checked=False) -> None:
         """
-        Plays the track with its loop points applied, so what you hear is
-        what the game would do rather than the raw file.
+        Plays from the playhead - or pauses, if playing. What plays is what
+        will ship: the replacement once there is one, with the loop it will
+        be written with.
         """
+        if self._playing:
+            self._pause()
+            return
+        if self.current_track is None or self._pcm is None:
+            return
+        self._start_playback(self._playhead)
+
+    def _looping(self) -> bool:
+        return self.loop_button.isChecked() and self._track_loops()
+
+    def _start_playback(self, frame: int) -> None:
+        _path, start, end, _editable = self._audio_source()
+        try:
+            self.audio.play(self._pcm, frame, start, end, self._looping())
+        except Exception as exc:                              # noqa: BLE001
+            self._set_playing(False)
+            self.loop_note.setText(f"Couldn't play that: {exc}")
+            return
+        self._playhead = int(frame)
+        self._set_playing(True)
+
+    def _set_playing(self, playing: bool) -> None:
+        self._playing = playing
+        self.play_button.setText("Pause" if playing else "Play")
+        if playing:
+            self._tick_timer.start()
+        else:
+            self._tick_timer.stop()
+
+    def _current_frame(self) -> int:
+        if self._playing:
+            frame = self.audio.current_frame()
+            if frame is not None:
+                return frame
+        return self._playhead
+
+    def _tick(self) -> None:
+        if not self._playing:
+            return
+        self._playhead = self._current_frame()
+        self.waveform.set_playhead(self._playhead)
+        self._update_position()
+
+    def _on_play_finished(self) -> None:
+        """The device has played the last sample: back to the start, as Stop does."""
+        self._set_playing(False)
+        self._playhead = 0
+        self.waveform.set_playhead(0)
+        self._update_position()
+
+    def _pause(self) -> None:
+        frame = self._current_frame()
+        self.audio.stop()
+        self._set_playing(False)
+        self._playhead = frame
+        self.waveform.set_playhead(frame)
+        self._update_position()
+
+    def stop_track(self, _checked=False) -> None:
+        """Stops, and goes back to the beginning - a transport's Stop."""
+        self._stop_playback()
+        self._playhead = 0
+        self.waveform.set_playhead(0)
+        self._update_position()
+
+    def _stop_playback(self) -> None:
+        self.audio.stop()
+        self._set_playing(False)
+
+    def hideEvent(self, event):                                  # noqa: N802
+        # Leaving the page stops the music, rather than leaving it playing
+        # behind another page with nothing on screen to stop it.
+        self._stop_playback()
+        super().hideEvent(event)
+
+    def _seek(self, frame: int) -> None:
+        self._playhead = frame
+        self.waveform.set_playhead(frame)
+        self._update_position()
+        if self._playing:
+            self._start_playback(frame)
+
+    def _update_playing_loop(self) -> None:
+        """A loop change reaches the audio still to be queued: no restart, no gap."""
+        if self._playing:
+            _path, start, end, _editable = self._audio_source()
+            self.audio.update_loop(start, end, self._looping())
+
+    def _on_loop_toggled(self, checked) -> None:
+        self.loop_button.setText("Loop: on" if checked else "Loop: off")
+        self._update_playing_loop()
+
+    def _loop_edit(self, create: bool = False):
+        """The edit holding this track's loop - made on first use for a game track that loops."""
+        track = self.current_track
+        if track is None or self.current_node is None:
+            return None
+        edit = self._replacements().get(track.index)
+        if isinstance(edit, dict):
+            return edit
+        if not (create and track.info.has_loop):
+            return None
+        edit = {"source_path": None, "loop_start": track.info.loop_start,
+                "loop_end": track.info.loop_end}
+        self.state.sound_edits.setdefault(
+            self.current_node.relative_path, {})[track.index] = edit
+        return edit
+
+    def _drop_edit(self) -> None:
+        archive = self.state.sound_edits.get(self.current_node.relative_path)
+        if archive is not None:
+            archive.pop(self.current_track.index, None)
+            if not archive:
+                self.state.sound_edits.pop(self.current_node.relative_path, None)
+
+    def _set_loop(self, start: int, end: int) -> None:
         if self.current_track is None:
             return
+        had_edit = isinstance(self._replacements().get(self.current_track.index), dict)
+        edit = self._loop_edit(create=True)
+        if edit is None:
+            return
+        edit["loop_start"], edit["loop_end"] = int(start), int(end)
+        info = self.current_track.info
+        dropped = (not edit.get("source_path")
+                   and (edit["loop_start"], edit["loop_end"])
+                   == (info.loop_start, info.loop_end))
+        if dropped:
+            self._drop_edit()
+        self._loading_loop = True
         try:
-            info = self.current_track.info
-            preview = sd.build_preview_wav(
-                self.current_track.wav_path,
-                paths.local_data_dir() / "sab_cache" / "preview.wav",
-                info.loop_start, info.loop_end)
-            self._player = sd.SoundPlayer()
-            self._player.play(preview)
-        except Exception as exc:                              # noqa: BLE001
-            self.track_detail.setText(
-                self.track_detail.text() + f"\n\nCouldn't play that: {exc}")
+            self.loop_start.setValue(int(start))
+            self.loop_end.setValue(int(end))
+        finally:
+            self._loading_loop = False
+        self.loop_note.setText("")
+        self._show_loop()
+        if dropped or not had_edit:
+            self._mark_track()
+        self._update_playing_loop()
 
-    def stop_track(self) -> None:
-        if self._player is not None:
-            try:
-                self._player.stop()
-            except Exception:                                 # noqa: BLE001
-                pass
+    def _mark_track(self) -> None:
+        """The list, tree, counter and buttons after an edit appears or goes - the audio stays."""
+        item = self.track_list.currentItem()
+        if item is not None and self.current_track is not None:
+            item.setText(self._track_label(self.current_track))
+        self.model.set_edits(self._replaced_map(), self.current_node.relative_path
+                             if self.current_node else None)
+        self._update_counter()
+        self._refresh_detail()
+        self._refresh_track_detail(reload_audio=False)
+        self.edits_changed.emit()
+
+    def _track_label(self, track) -> str:
+        edit = self._replacements().get(track.index)
+        if isinstance(edit, dict) and not edit.get("source_path"):
+            marker = "  (loop changed)"
+        elif track.index in self._replacements():
+            marker = "  (replaced)"
+        else:
+            marker = ""
+        return f"{track.index:03d} - {track.stem}{marker}"
+
+    def _on_waveform_loop(self, start, end) -> None:
+        self._set_loop(start, end)
+
+    def _on_waveform_loop_edited(self, start, end) -> None:
+        self._set_loop(start, end)
+
+    def set_loop_start_here(self, _checked=False) -> None:
+        """Moves the loop's start to the playhead."""
+        self._set_loop_edge("start")
+
+    def set_loop_end_here(self, _checked=False) -> None:
+        """Moves the loop's end to the playhead."""
+        self._set_loop_edge("end")
+
+    def _set_loop_edge(self, which: str) -> None:
+        if not self._track_loops() or self._pcm is None:
+            return
+        here = self._current_frame()
+        _path, start, end, _editable = self._audio_source()
+        start = 0 if start is None else start
+        end = self._pcm.frames if end is None else end
+        if which == "start":
+            start = here
+        else:
+            end = here
+        if end - start < sd.MIN_MEANINGFUL_LOOP_SAMPLES:
+            self.loop_note.setText(
+                "The loop's start has to come before its end - move the "
+                "playhead left of the End flag first." if which == "start" else
+                "The loop's end has to come after its start - move the "
+                "playhead right of the Start flag first.")
+            return
+        self._set_loop(start, end)
 
     def export_track(self, _checked=False, path: str | None = None) -> None:
         if self.current_track is None:
@@ -1044,10 +1467,14 @@ class SoundsPage(QWidget):
     def replace_track(self, _checked=False, path: str | None = None) -> None:
         """
         Swaps a track for your own WAV, keeping the original's loop points.
-
         Keeping them is the default because a replacement of the same length
         almost always wants the same loop, and losing them turns looping
         music into music that stops.
+
+        RECORDED, not copied. The file is checked now - a WAV the game can't
+        take is refused while you are looking at it, not at export as an
+        AudioMog stack trace - and it is not written anywhere: it used to go
+        over the cached copy of the game's track, which Undo never restored.
         """
         if self.current_track is None or self.current_node is None:
             return
@@ -1064,30 +1491,29 @@ class SoundsPage(QWidget):
             return
         info = self.current_track.info
         try:
-            sd.stage_replacement_track(
-                Path(path), self.current_track.wav_path,
-                info.loop_start, info.loop_end)
+            replacement_info = sd.check_replacement_wav(Path(path))
         except Exception as exc:                              # noqa: BLE001
             self.track_detail.setText(
                 self.track_detail.text() + f"\n\nCouldn't replace: {exc}")
             return
-        # The dict shape `stage_sound_export` documents and the Tkinter page
-        # writes, not a bare path.
-        #
-        # This stored `str(path)`, which the exporter cannot read at all -
-        # it takes `{track_index: {"source_path", "loop_start",
-        # "loop_end"}}`. Same mistake as the Textures tab's bare string, and
-        # invisible for the same reason: nothing exported sounds until this
-        # session, so a shape nothing consumed could not be wrong yet.
+        # The dict shape `stage_sound_export` reads - `{track_index:
+        # {"source_path", "loop_start", "loop_end"}}` - not a bare path, which
+        # the exporter could not read at all.
         #
         # The loop points are clamped to the replacement's own length. A
         # shorter replacement with the original's loop end would loop past
         # its own end, which AudioMog writes happily and the game plays as
         # silence.
-        replacement_info = sd.read_wav_info(Path(path))
-        if info.has_loop and replacement_info is not None:
+        current = self._replacements().get(self.current_track.index)
+        if info.has_loop:
+            # A loop already moved on the game's track carries over: it is
+            # the loop the person chose, not the game's.
+            base = (info.loop_start, info.loop_end)
+            if (isinstance(current, dict) and not current.get("source_path")
+                    and current.get("loop_start") is not None):
+                base = (current["loop_start"], current["loop_end"])
             start, end = sd.clamp_loop_points(
-                info.loop_start, info.loop_end, replacement_info.num_samples)
+                base[0], base[1], replacement_info.num_samples)
         else:
             start, end = None, None
         archive = self.state.sound_edits.setdefault(
@@ -1131,7 +1557,14 @@ class SoundsPage(QWidget):
         # unreplaced colour and its folders their old counts until the tab
         # was rebuilt. The two pages share this model; only one of them was
         # keeping it current.
-        self.model.set_edits(self._replaced_map(), self._changed_path)
+        # With the archive's path, so the model repaints that row and its
+        # folders. Without one it RESETS, and a reset collapses every folder
+        # in the tree - which replacing or undoing a track did, reported
+        # from real use, because nothing ever set `_changed_path`.
+        self.model.set_edits(
+            self._replaced_map(),
+            self._changed_path or (self.current_node.relative_path
+                                   if self.current_node else None))
         self._changed_path = None
         self._update_counter()
         self._refresh_detail()

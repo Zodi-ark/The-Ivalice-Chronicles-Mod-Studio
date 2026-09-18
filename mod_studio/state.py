@@ -595,8 +595,15 @@ class WizardState:
         invisible there - the only mention was a log line *after* the export
         had already run - which meant a mod whose only content was carried
         through files read as "nothing has been edited yet".
+
+        Whole sound archives are not counted here any more. They were while
+        the Sounds page had no way to replace one, so a recovered `.sab` had
+        nowhere else to be counted; now that page replaces whole archives,
+        they are its edits, and the Export summary counts them under Sounds
+        beside replaced tracks. Counting them here as well would report one
+        file twice.
         """
-        return len(self.other_file_replacements) + len(self.sound_file_replacements)
+        return len(self.other_file_replacements)
 
     def edited_texture_count(self) -> int:
         return len(self.texture_edits)

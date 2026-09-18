@@ -50,6 +50,24 @@ CATEGORY_SUGGESTIONS = ["gameplay", "graphics", "audio", "characters",
                         "balance", "other"]
 
 
+def copy_into(source, destination) -> None:
+    """
+    Copies a finished file into the mod - unless it already IS that file.
+
+    Exporting over the folder a mod was opened from makes a file recovered
+    from it and its destination the same file, and `shutil.copy` refuses to
+    copy a file onto itself. Recovered textures went through a bare copy, so
+    re-exporting a texture pack in place reported every one of them failed.
+    """
+    import shutil
+
+    source, destination = Path(source), Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and destination.resolve() == source.resolve():
+        return
+    shutil.copy(source, destination)
+
+
 class AssetExportWorker(Worker):
     """
     Converts replaced textures and repacks edited sound archives into a
@@ -72,14 +90,27 @@ class AssetExportWorker(Worker):
     landed. Reporting "exported 39 of 40" plus the reason is honest;
     stopping at the first error and leaving a half-written mod is not.
 
-    **Not verified.** FF16Tools and AudioMog are Windows binaries. The
-    staging calls, the destination paths and the error handling are
-    exercised here against `.tga` (which is pure Pillow and needs neither
-    tool); `.tex` and `.sab` have never run.
+    **Sound archives come from two stores.** A track replaced inside an
+    archive (`sound_edits`) is repacked with AudioMog; an archive replaced
+    whole (`sound_file_replacements`) goes in as it is. An archive in both -
+    a mod's own archive with a track replaced on top - is repacked from the
+    MOD'S copy, so everything else the mod did to it survives.
+
+    **Carried-through files are written too.** Whole sound archives and
+    `other_file_replacements` were copied into the new mod by the Tkinter
+    export's `_copy_through_replacements`, which the Qt port never carried
+    over. Exporting an opened mod anywhere but its own folder left its
+    sounds and every file without a page behind, while the summary still
+    listed them - measured, not inferred.
+
+    **Verified so far:** `.tga` everywhere, and `.sab` repacks with the real
+    bundled AudioMog under mono (`dev/test_sound_repack.py`). `.tex` still
+    needs FF16Tools, a Windows binary, and has not run here.
     """
 
     def __init__(self, mod_root, mode, texture_edits, sound_edits,
-                 cli_path, audiomog_path, game_dir, pzd_edits=None):
+                 cli_path, audiomog_path, game_dir, pzd_edits=None,
+                 sound_file_replacements=None, other_file_replacements=None):
         super().__init__()
         self.mod_root = Path(mod_root)
         self.mode = mode
@@ -93,6 +124,12 @@ class AssetExportWorker(Worker):
         self.sound_edits = {rel: dict(tracks)
                             for rel, tracks in (sound_edits or {}).items()
                             if tracks}
+        self.sound_file_replacements = {
+            rel: Path(source)
+            for rel, source in (sound_file_replacements or {}).items()}
+        self.other_file_replacements = {
+            rel: Path(source)
+            for rel, source in (other_file_replacements or {}).items()}
         self.cli_path = Path(cli_path) if cli_path else None
         self.audiomog_path = Path(audiomog_path) if audiomog_path else None
         self.game_dir = Path(game_dir) if game_dir else None
@@ -101,9 +138,13 @@ class AssetExportWorker(Worker):
         import shutil
 
         dest_root = modconfig.data_output_dir(self.mod_root, self.mode)
+        archives = sorted(set(self.sound_edits)
+                          | set(self.sound_file_replacements))
         result = {"textures": 0, "texture_total": len(self.texture_edits),
-                  "sounds": 0, "sound_total": len(self.sound_edits),
+                  "sounds": 0, "sound_total": len(archives),
                   "texts": 0, "text_total": len(self.pzd_edits),
+                  "carried": 0,
+                  "carried_total": len(self.other_file_replacements),
                   "skipped": [], "errors": []}
 
         # Text files first: they are the cheapest and the most likely to
@@ -137,9 +178,7 @@ class AssetExportWorker(Worker):
                             pzd_data.read_pzd(original), edits)
                         staged = pzd_data.stage_pzd_export(
                             relative_path, lines, staging, self.cli_path)
-                        destination = dest_root / relative_path
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy(staged, destination)
+                        copy_into(staged, dest_root / relative_path)
                         result["texts"] += 1
                     except Exception as exc:                  # noqa: BLE001
                         result["errors"].append(f"{relative_path}: {exc}")
@@ -163,42 +202,81 @@ class AssetExportWorker(Worker):
                         staged = td.stage_texture_replacement(
                             relative_path, info["source_path"], staging,
                             self.cli_path)
-                    destination = dest_root / relative_path
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy(staged, destination)
+                    copy_into(staged, dest_root / relative_path)
                     result["textures"] += 1
                 except Exception as exc:                      # noqa: BLE001
                     result["errors"].append(f"{relative_path}: {exc}")
 
-        if self.sound_edits:
-            if self.audiomog_path is None:
-                result["errors"].append(
-                    "AudioMog isn't set up, so no sound archive could be "
-                    "repacked. Set it under General Setup, Advanced options.")
-            elif self.game_dir is None:
-                result["errors"].append(
-                    "The unpacked game folder isn't set, and repacking a "
-                    "sound archive needs the vanilla file to start from.")
-            else:
-                staging = paths.local_data_dir() / "sound_export_staging"
-                for relative_path, tracks in sorted(self.sound_edits.items()):
-                    vanilla = self.game_dir / relative_path
-                    if not vanilla.exists():
-                        result["errors"].append(
-                            f"{relative_path}: the vanilla file isn't at "
-                            f"{vanilla}")
+        # Every archive this mod ships, whichever way it was replaced - once
+        # each, because an archive can be both: a mod's own archive with a
+        # track replaced on top is built once, from the mod's copy.
+        said = set()
+        staging = paths.local_data_dir() / "sound_export_staging"
+        for relative_path in archives:
+            tracks = self.sound_edits.get(relative_path)
+            whole = self.sound_file_replacements.get(relative_path)
+            try:
+                if tracks:
+                    if self.audiomog_path is None:
+                        if "audiomog" not in said:
+                            said.add("audiomog")
+                            result["errors"].append(
+                                "AudioMog isn't set up, so no sound archive could "
+                                "be repacked. Set it under General Setup, Advanced "
+                                "options.")
                         continue
+                    if whole is not None:
+                        base = whole
+                        if not base.is_file():
+                            result["errors"].append(
+                                f"{relative_path}: the archive to build on isn't "
+                                f"at {base}")
+                            continue
+                    elif self.game_dir is None:
+                        if "game" not in said:
+                            said.add("game")
+                            result["errors"].append(
+                                "The unpacked game folder isn't set, and repacking "
+                                "a sound archive needs the vanilla file to start "
+                                "from.")
+                        continue
+                    else:
+                        base = self.game_dir / relative_path
+                        if not base.exists():
+                            result["errors"].append(
+                                f"{relative_path}: the vanilla file isn't at "
+                                f"{base}")
+                            continue
                     self.log.emit(f"Repacking {relative_path}...")
-                    try:
-                        repacked = sd.stage_sound_export(
-                            self.audiomog_path, vanilla, relative_path,
-                            tracks, staging, line_cb=self.log.emit)
-                        destination = dest_root / relative_path
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy(repacked, destination)
-                        result["sounds"] += 1
-                    except Exception as exc:                  # noqa: BLE001
-                        result["errors"].append(f"{relative_path}: {exc}")
+                    staged = sd.stage_sound_export(
+                        self.audiomog_path, base, relative_path, tracks,
+                        staging, line_cb=self.log.emit)
+                else:
+                    staged = whole
+                    if not staged.is_file():
+                        result["errors"].append(
+                            f"{relative_path}: the replacement archive isn't at "
+                            f"{staged}")
+                        continue
+                    self.log.emit(f"Copying {relative_path}...")
+                copy_into(staged, dest_root / relative_path)
+                result["sounds"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"{relative_path}: {exc}")
+
+        # Files with no page of their own, carried through as they are.
+        for relative_path, source in sorted(
+                self.other_file_replacements.items()):
+            try:
+                if not source.is_file():
+                    result["errors"].append(
+                        f"{relative_path}: the file to carry through isn't at "
+                        f"{source}")
+                    continue
+                copy_into(source, dest_root / relative_path)
+                result["carried"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"{relative_path}: {exc}")
 
         return result
 
@@ -951,7 +1029,11 @@ class ExportPage(QWidget):
             ("Encounters", state.changed_entry_row_count()
              + state.edited_chara_name_total_count(), "edit"),
             ("Textures", state.edited_texture_count(), "replacement"),
-            ("Sounds", state.edited_sound_track_count(), "replacement"),
+            # A replaced track and a replaced whole archive are each one
+            # replacement, as on the Sounds page's own counter.
+            ("Sounds", state.edited_sound_track_count()
+             + state.replaced_sound_file_count(), "replacement"),
+            ("Subtitles", state.edited_pzd_line_count(), "line"),
             ("Game data (no tab)", state.rebased_table_count(), "merged table"),
             ("Carried through", state.carried_through_file_count(), "file"),
         ]
@@ -990,6 +1072,7 @@ class ExportPage(QWidget):
                              or self.state.pzd_edits
                              or self.state.texture_edits
                              or self.state.sound_edits
+                             or self.state.sound_file_replacements
                              or self.state.other_file_replacements))
         if not touched:
             lines.append("Nothing has been edited yet, so this mod would "
@@ -1037,11 +1120,81 @@ class ExportPage(QWidget):
         names.extend(sorted(self._extra_table_files()))
         if self.state.texture_edits:
             names.append("Replaced textures")
-        if self.state.sound_edits:
+        if self.state.edited_sound_track_count():
             names.append("Repacked sound archives")
+        if self.state.sound_file_replacements:
+            names.append("Replaced sound archives")
+        if self.state.has_any_pzd_edits():
+            names.append("Edited text files (.pzd)")
         if self.state.other_file_replacements:
             names.append("Carried-through files")
         return names
+
+    def _managed_table_filenames(self) -> set:
+        """Every table file this export can write - the only ones it may remove."""
+        names = {"JobData.xml", "JobCommandData.xml", "MonsterJobCommandData.xml"}
+        names.update(c.TABLE_FILENAMES[key] for key in ix.ALL_SPECS
+                     if key in c.TABLE_FILENAMES)
+        names.update(ix.discover_specs(paths.bundled_data_dir()))
+        return names
+
+    def _remove_unedited_tables(self, destination: Path, meta, written: set) -> list:
+        """
+        Removes the table files this export no longer writes - only when
+        exporting over the folder the mod was opened from, only in the mode
+        its tables were read from, and only files this export can write.
+
+        Reported: undo every edit in a table, export over the same mod, and
+        the old file stayed behind, still holding the edits. Removed rather
+        than rewritten empty, because a table file that changes nothing is
+        what a mod shouldn't carry (the JobData.xml report). The limits are
+        what make removing safe: every one of those files was read into this
+        session when the mod was opened, so nothing goes that Mod Studio
+        didn't load. Exported anywhere else, or in another mode, every file
+        already there is left alone.
+        """
+        state = self.state
+        loaded_root = getattr(state, "loaded_mod_root", None)
+        if (loaded_root is None
+                or getattr(state, "loaded_game_mode", None) != meta.game_mode):
+            return []
+        mod_root = destination / meta.mod_id
+        try:
+            if Path(loaded_root).resolve() != mod_root.resolve():
+                return []
+        except OSError:
+            return []
+        tables_dir = mod_root / "FFTIVC" / "tables" / meta.game_mode
+        removed = []
+        for name in sorted(self._managed_table_filenames() - set(written)):
+            path = tables_dir / name
+            if path.is_file():
+                path.unlink()
+                removed.append(name)
+        # A folder this emptied goes too - the export wouldn't have made it.
+        for folder in (tables_dir, tables_dir.parent):
+            try:
+                if removed and folder.is_dir() and not any(folder.iterdir()):
+                    folder.rmdir()
+            except OSError:
+                pass
+        return removed
+
+    def _has_asset_work(self) -> bool:
+        """
+        Whether the export has any file to write besides the tables.
+
+        Every store the asset stage writes. This was "textures or sound
+        tracks", so a mod made only of subtitle edits, only of whole sound
+        archives, or only of carried-through files was refused with "nothing
+        to export yet" - and when something else WAS edited, those were left
+        out of the mod without a word. Measured on the page itself.
+        """
+        state = self.state
+        return bool(state.texture_edits or state.sound_file_replacements
+                    or state.other_file_replacements
+                    or state.edited_sound_track_count()
+                    or state.has_any_pzd_edits())
 
     def _nxd_backed_edit_count(self) -> int:
         """
@@ -1419,7 +1572,7 @@ class ExportPage(QWidget):
         jobs = self._edited_jobs()
         commands = self._edited_commands()
         extras = self._extra_table_files()
-        assets = bool(self.state.texture_edits or self.state.sound_edits)
+        assets = self._has_asset_work()
         # A texture pack has no table edits at all, and this used to refuse
         # to export one - "there's nothing to export yet" for a mod whose
         # entire content is textures.
@@ -1453,18 +1606,13 @@ class ExportPage(QWidget):
         meta = self._metadata_from_fields(destination, mod_id)
 
         try:
-            # Built even when there are no job edits, which is what the
-            # Tkinter export does.
-            #
-            # Passing "" wrote a **zero-byte JobData.xml**, and
-            # `scaffold_mod_folder` writes that file unconditionally - so
-            # every mod with no job edits shipped an unparseable XML file.
-            # Nobody had hit it because the Qt page refused to export a mod
-            # with no table edits at all; enabling texture-only exports made
-            # it reachable. An empty `<JobTable>` with no entries is a valid
-            # document that says "this mod changes no jobs", which is true.
-            job_xml = xml_io.build_diff_xml_text(
-                self.state.table_version or "1", jobs)
+            # Written only when there are job edits. It was written every
+            # time - as an empty `<JobTable>`, earlier still as a zero-byte
+            # file nothing could parse - so a mod that replaced one sound
+            # track shipped a JobData.xml changing nothing (reported). One
+            # left behind by an earlier export is removed below.
+            job_xml = (xml_io.build_diff_xml_text(
+                self.state.table_version or "1", jobs) if jobs else None)
             command_xml = (xml_io.build_job_command_diff_xml_text(
                 self.state.job_command_version or "1", commands)
                 if commands else None)
@@ -1486,10 +1634,14 @@ class ExportPage(QWidget):
             self._log(repr(exc))
             return
 
-        written = [name for name in ("JobData.xml",) if jobs]
+        written = ["JobData.xml"] if job_xml is not None else []
         if command_xml:
             written.append("JobCommandData.xml")
         written.extend(sorted(extras))
+        removed = self._remove_unedited_tables(Path(destination), meta, set(written))
+        self._removed_tables = removed
+        for name in removed:
+            self._log(f"Removed {name}: none of its edits are left.")
         self._log(f"Wrote {root}")
         for name in written:
             self._log(f"   {name}")
@@ -1505,7 +1657,7 @@ class ExportPage(QWidget):
         self.open_folder_button.setEnabled(True)
         self.zip_button.setEnabled(True)
 
-        if self.state.texture_edits or self.state.sound_edits:
+        if self._has_asset_work():
             self._say(
                 "Tables written. Writing text files, converting textures "
                 "and repacking sound archives...", "muted")
@@ -1516,7 +1668,9 @@ class ExportPage(QWidget):
                 getattr(self.state, "ff16tools_cli_path", None),
                 getattr(self.state, "audiomog_exe_path", None),
                 getattr(self.state, "nxd_unpack_dir", None),
-                pzd_edits=self.state.pzd_edits)
+                pzd_edits=self.state.pzd_edits,
+                sound_file_replacements=self.state.sound_file_replacements,
+                other_file_replacements=self.state.other_file_replacements)
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -1600,6 +1754,9 @@ class ExportPage(QWidget):
         if result.get("text_total"):
             parts.append(f"{result.get('texts', 0)} of "
                          f"{result['text_total']} text file(s)")
+        if result.get("carried_total"):
+            parts.append(f"{result.get('carried', 0)} of "
+                         f"{result['carried_total']} carried-through file(s)")
         detail = " and ".join(parts)
 
         for line in result["errors"]:
@@ -1610,10 +1767,12 @@ class ExportPage(QWidget):
         self._said_trouble = not (
             not result["errors"] and not result["skipped"]
             and result["textures"] == result["texture_total"]
-            and result["sounds"] == result["sound_total"])
+            and result["sounds"] == result["sound_total"]
+            and result.get("carried", 0) == result.get("carried_total", 0))
         clean = (not result["errors"] and not result["skipped"]
                  and result["textures"] == result["texture_total"]
-                 and result["sounds"] == result["sound_total"])
+                 and result["sounds"] == result["sound_total"]
+                 and result.get("carried", 0) == result.get("carried_total", 0))
         if clean:
             self._say(f"Built your mod at {self.last_built} - {detail}.", "ok")
         else:

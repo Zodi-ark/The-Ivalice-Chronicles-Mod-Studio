@@ -447,7 +447,7 @@ def open_existing_mod(mod_root: Path) -> ExistingMod:
 def scaffold_mod_folder(
     output_root: Path,
     meta: ModMetadata,
-    job_data_xml_text: str,
+    job_data_xml_text: Optional[str],
     config: Optional[dict] = None,
     job_command_xml_text: Optional[str] = None,
     extra_table_files: Optional[dict] = None,
@@ -462,6 +462,12 @@ def scaffold_mod_folder(
 
     Pass `config` (e.g. from merge_mod_config) to write a specific config
     dict instead of building a fresh one from `meta`.
+
+    JobData.xml is written only when `job_data_xml_text` is given. It used to
+    be written every time - this tool began as a job editor - so a mod that
+    replaced one sound track shipped a JobData.xml changing nothing, which
+    is one more file for another mod to conflict with. Reported with the
+    file attached.
 
     Returns the mod's root folder path.
     """
@@ -493,8 +499,10 @@ def scaffold_mod_folder(
     )
 
     tables_dir = mod_root / "FFTIVC" / "tables" / meta.game_mode
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    (tables_dir / "JobData.xml").write_text(job_data_xml_text, encoding="utf-8")
+    if job_data_xml_text is not None or job_command_xml_text is not None or extra_table_files:
+        tables_dir.mkdir(parents=True, exist_ok=True)
+    if job_data_xml_text is not None:
+        (tables_dir / "JobData.xml").write_text(job_data_xml_text, encoding="utf-8")
 
     if job_command_xml_text is not None:
         (tables_dir / "JobCommandData.xml").write_text(job_command_xml_text, encoding="utf-8")

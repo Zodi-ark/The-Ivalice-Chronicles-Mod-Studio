@@ -296,9 +296,10 @@ class ModContentsPane(QWidget):
                  self._text_summary,
                  lambda: state.edited_pzd_file_count() > 0),
                 ("Replaced sounds",
-                 "Each edited .sab is unpacked and repacked with AudioMog.",
+                 "A replaced track is repacked into its archive with "
+                 "AudioMog; a replaced whole archive goes in as it is.",
                  True, self._sound_summary,
-                 lambda: bool(state.sound_edits)),
+                 lambda: state.has_any_sound_edits()),
             ]),
         ])
 
@@ -669,17 +670,35 @@ class ModContentsPane(QWidget):
         return "\n".join(lines)
 
     def _sound_summary(self) -> str:
-        edits = self.state.sound_edits or {}
-        if not edits:
+        """
+        Every archive the mod ships, and where each came from.
+
+        Whole archives were missing: this read only the per-track store, so an
+        opened mod's own .sab files showed as "No sounds replaced." while the
+        section itself was hidden - the pane said less than the mod held.
+        """
+        edits = {archive: tracks for archive, tracks
+                 in (self.state.sound_edits or {}).items() if tracks}
+        whole = self.state.sound_file_replacements or {}
+        if not edits and not whole:
             return "No sounds replaced."
-        total = sum(len(tracks) for tracks in edits.values())
-        lines = [f"{total} track(s) replaced across "
-                 f"{len(edits)} archive(s).", ""]
-        for archive, tracks in sorted(edits.items()):
+        lines = []
+        if edits:
+            total = sum(len(tracks) for tracks in edits.values())
+            lines.append(f"{total} track(s) replaced across "
+                         f"{len(edits)} archive(s).")
+        if whole:
+            lines.append(f"{len(whole)} whole archive(s) replaced.")
+        lines.append("")
+        for archive in sorted(set(edits) | set(whole)):
             lines.append(archive)
-            for name, info in sorted(tracks.items()):
+            if archive in whole:
+                lines.append(f"    whole archive  <-  {whole[archive]}")
+            for name, info in sorted(edits.get(archive, {}).items()):
                 source = (info.get("source_path")
                           if isinstance(info, dict) else info)
+                if source is None:
+                    source = "loop points changed (the game's own audio)"
                 lines.append(f"    {name}  <-  {source}")
         return "\n".join(lines)
 

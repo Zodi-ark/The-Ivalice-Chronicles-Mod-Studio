@@ -290,3 +290,66 @@ def run_repack_and_wait(
         command, artifact_check, cwd=rebuild_settings_path.parent, line_cb=line_cb, timeout=timeout
     )
     return found
+
+
+# =============================================================================
+# Running AudioMog to completion, and reading what it said
+# =============================================================================
+
+#: Words AudioMog's own error reports contain. It prints failures to its
+#: console and still exits with code 0 - measured with the bundled build: a
+#: repack that throws `ArgumentOutOfRangeException` and writes nothing ends
+#: with exit code 0 - so the exit code alone says nothing about success.
+ERROR_MARKERS = ("Exception", "Error", "Failed", "failed", "no handler")
+
+
+@dataclass
+class RunResult:
+    """What one AudioMog run did, as far as its process and output show."""
+    exit_code: Optional[int]     # None: still running at the timeout, and stopped
+    lines: list
+
+    @property
+    def finished(self) -> bool:
+        return self.exit_code is not None
+
+    def problems(self) -> list:
+        """AudioMog's own error lines, in the order it printed them."""
+        return [line.strip() for line in self.lines
+                if any(marker in line for marker in ERROR_MARKERS)]
+
+
+def run_to_completion(
+    exe_path: Path,
+    target: Path,
+    line_cb: Optional[Callable[[str], None]] = None,
+    timeout: float = 300.0,
+) -> RunResult:
+    """
+    Runs AudioMog on one file - an archive to unpack, or a project's
+    RebuildSettings.json to repack - and waits for the process to END.
+
+    `run_unpack_and_wait` and `run_repack_and_wait` return the moment an
+    expected file appears, which was a workaround for AudioMog never
+    exiting. That was AudioMog waiting at "Press any key" on a console
+    nobody could see; `proc_util` now closes its stdin, so it always exits,
+    and waiting for the exit is what makes the output safe to read. The
+    early return could hand back a .wav AudioMog was still writing, or an
+    unpack folder left over from an earlier run - which is how an export
+    came to ship the unmodified archive.
+
+    Nothing about success is decided here. Callers check that the file they
+    need exists; `problems()` says why it doesn't.
+    """
+    lines: list = []
+
+    def collect(line: str) -> None:
+        lines.append(line)
+        if line_cb:
+            line_cb(line)
+
+    command = proc_util.for_platform(exe_path, [str(exe_path), str(target)])
+    _found, code = proc_util.run_streaming_with_artifact(
+        command, lambda: False, cwd=Path(target).parent, line_cb=collect,
+        timeout=timeout)
+    return RunResult(exit_code=code, lines=lines)

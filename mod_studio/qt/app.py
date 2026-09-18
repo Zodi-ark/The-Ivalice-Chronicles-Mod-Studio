@@ -38,6 +38,7 @@ from .pages.poaching import PoachingPage
 from .pages.review import ReviewPage
 from .pages.setup import SetupPage
 from .pages.sounds import SoundsPage
+from . import wheel_guard
 from .pages.textures import TexturesPage
 from .shell import MainWindow, application_icon
 
@@ -641,6 +642,8 @@ def _claim_taskbar_identity() -> None:
 
 def main() -> int:
     app = QApplication(sys.argv)
+    # Before any window exists, so nothing is ever built unguarded.
+    wheel_guard.install(app)
     app.setApplicationName("The Ivalice Chronicles Mod Studio")
 
     # The taskbar button, which is a separate problem from the window icon.
