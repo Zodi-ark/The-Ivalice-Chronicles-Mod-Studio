@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
 )
 
+from ... import ability_defaults
 from ... import constants as c
 from ... import nxd_data
 from ... import reference_names
@@ -125,38 +126,87 @@ class OverrideScalarRow(NumericFieldRow):
     """
     An override scalar, where **-1 means "inherit vanilla"**.
 
-    The number shown is the number in the file. `-1` is displayed as `-1`,
-    because that is what `overrideabilityactiondata.nxd` holds and what
-    every other tool working on the same data shows.
+    **The box holds the EFFECTIVE value**: this ability's own override if it
+    has one, otherwise the value it inherits. So Meteor's Charge Time reads
+    10 (what this game set) and its MP Cost reads 70 (what it leaves alone),
+    and ticking either one up starts from the number in front of you.
 
-    There used to be an "Inherit / Set to" dropdown in front of the value,
-    with the value greyed out until you chose "Set to". It was well meant -
-    writing 0 here does not leave the ability alone, it sets the value to
-    zero, which for Range or MP Cost is a real and very different ability -
-    but it made the page disagree with the file it edits. Ability 13 Wall
-    has `-1` in Range; this showed "Inherit" and a greyed 0, so checking the
-    tool against the data meant translating between them, and the one field
-    where the translation broke down (`Formula`) read `001` for a row that
-    actually said `-1`.
+    What says which of those two a row is showing is the **include box**,
+    not the value - the same bargain the Element panel and the four Flagset
+    panels have always had, and the reason `_on_override_edited` reads a row
+    only when it is included.
 
-    So the sentinel is shown, not hidden, and the note below the field
-    carries the warning the dropdown used to make structural.
+    This has been three arrangements, and the history matters because two of
+    them were wrong in opposite directions:
+
+    * An "Inherit / Set to" dropdown in front of the value, with the number
+      greyed until you picked "Set to". It made the page disagree with the
+      file: ability 13 Wall has `-1` in Range, this showed "Inherit" and a
+      greyed 0, and the one field where the translation broke down
+      (`Formula`) read `001` for a row that actually said `-1`.
+    * Then the raw sentinel, `-1`, with the real value written beside it in
+      words - honest about the file and useless for working: "the counter
+      would simply be set to 5. Ticking it up by one would tick it up to 6."
+    * Now the effective value, which is what a modder is actually editing,
+      with the include box carrying the distinction the display used to.
+
+    `-1` is still reachable - it is the box's minimum - because writing it
+    is how a mod says "stop overriding this", and 32 fields in this game's
+    own table override something. Typing the inherited number instead is a
+    different edit: it pins the value where -1 follows whatever else is in
+    play.
+
+    **No note under it.** "can we remove the field notes for Range, Effect
+    Area, Vertical Tolerance, X, Y, CT (Charge Time), and MP Cost" - which
+    is every field this class builds.
+
+    Each of the seven used to carry the same three-line sentence about what
+    -1 meant, seven times down one column. It was written for the second
+    arrangement above, where -1 was the number on screen and the note was
+    the only thing saying what it stood for. In the third there is no -1 to
+    explain: the box holds the effective value and the include box says
+    whether it is being written. The sentence outlived the display it was
+    describing.
     """
 
-    #: Said once, under any override field that has the sentinel.
-    INHERIT_NOTE = ("-1 leaves the ability's own value alone. Any other "
-                    "number replaces it - including 0, which is a real "
-                    "value and not the same as leaving it alone.")
-
     def __init__(self, field_name: str, label: str, low: int, high: int,
-                 note: str = "", parent=None):
+                 parent=None):
         # The floor is the sentinel, not the field's own minimum - without
         # that the box cannot hold what the file holds.
-        super().__init__(field_name, label, c.OVERRIDE_NOT_SET, high,
-                         note or self.INHERIT_NOTE, parent=parent)
+        super().__init__(field_name, label, c.OVERRIDE_NOT_SET, high, "",
+                         parent=parent)
+        self.inherited_value = None
 
     def get_value_str(self) -> str:
         return str(self.value.value())
+
+    def set_inherited(self, value) -> None:
+        """
+        What the box reads if it is ever left sitting ON the sentinel.
+
+        `_load_override` puts the effective value in the box, so the usual
+        row never shows -1 at all. This is for the two cases that still can:
+        a mod author who deliberately types -1 to stop overriding a field,
+        and any row at all when `data/AbilityActionDefaults.txt` is missing.
+
+        `setSpecialValueText` is what Qt draws in place of the number when a
+        spin box sits at its minimum, and the minimum here IS the sentinel -
+        so it applies exactly then and never otherwise. `value()` is
+        untouched, so `get_value_str()` still returns "-1" and the mod still
+        writes -1.
+
+        It says "Inherits 6" rather than "6" for the reason the whole field
+        was once built around: -1 and 6 are different edits, and two rows in
+        different states must not draw identically. That distinction now
+        lives in the include box for the common case; here, where the value
+        really is the sentinel, the words carry it.
+
+        None clears it, and the box shows `-1` - which is what the file says
+        and what every other tool on this data shows.
+        """
+        self.inherited_value = None if value is None else int(value)
+        self.value.setSpecialValueText(
+            "" if value is None else f"Inherits {int(value)}")
 
     def load(self, raw_value, included: bool) -> None:
         self._loading = True
@@ -194,12 +244,19 @@ class OverrideChoiceRow(DropdownFieldRow):
     are the same furniture in the same places.
     """
 
-    #: What the sentinel is called in the list.
+    #: What the sentinel is called in the list when nothing is known about
+    #: what it inherits - no defaults file, or an id the file has no row for.
     INHERIT_LABEL = "Inherit (leave the ability's own value)"
 
     def __init__(self, field_name: str, label: str, choices: dict,
                  jump_label: str | None = None, jump_tooltip: str = "",
                  parent=None):
+        #: The value this ability inherits for this field, and what it is
+        #: called. Set per RECORD, not per list - every other entry in the
+        #: dropdown is the same whichever ability is selected and this one
+        #: is not, because each ability inherits its own value.
+        self.inherited_value = None
+        self._inherited_label = ""
         super().__init__(field_name, label, parent=parent,
                          jump_label=jump_label, jump_tooltip=jump_tooltip,
                          zero_is_none=False)
@@ -213,7 +270,55 @@ class OverrideChoiceRow(DropdownFieldRow):
         formula 0 is a real routine and status row 0 is a real row - and the
         thing that means "nothing" is -1, which has its own entry.
         """
-        self.set_choices({c.OVERRIDE_NOT_SET: self.INHERIT_LABEL, **choices})
+        self.set_choices({c.OVERRIDE_NOT_SET: self._inherit_text(), **choices})
+
+    def _inherit_text(self) -> str:
+        return self._inherited_label or self.INHERIT_LABEL
+
+    def set_inherited(self, value, label: str) -> None:
+        """
+        Names what this ability's -1 actually means, for this record.
+
+        Retitles the one entry rather than rebuilding the list, so the
+        selection survives and nothing registers as an edit.
+        """
+        self.inherited_value = value
+        self._inherited_label = label
+        self.set_choice_label(c.OVERRIDE_NOT_SET, self._inherit_text())
+        # The jump target depends on what is inherited, so changing that
+        # changes whether there is anywhere to jump to. `set_choice_label`
+        # only retitles; without this the button kept whatever enabled
+        # state the previous ability left it in.
+        self._sync_jump()
+
+    def jump_target(self):
+        """
+        Where the `Edit ->` button should go.
+
+        **The whole point of overriding this.** Every vanilla ability holds
+        -1 in `InflictStatus`, so the button was always sitting on the
+        sentinel - and it asked the shell to open row **-1**, which is not a
+        row. Reported as "make sure the Edit jump button works for these".
+
+        On -1 it now goes to the value being INHERITED, which is the row
+        the field is actually pointing at. With nothing known to inherit
+        there is still nothing to open, and the button is disabled rather
+        than sending the shell somewhere that does not exist.
+        """
+        value = self.current_id()
+        if value == c.OVERRIDE_NOT_SET:
+            return self.inherited_value
+        return value
+
+    def _sync_jump(self) -> None:
+        if self.jump_button is not None:
+            target = self.jump_target()
+            self.jump_button.setEnabled(target is not None and target >= 0)
+
+    def _emit_jump(self) -> None:
+        target = self.jump_target()
+        if target is not None and target >= 0:
+            self.jump_requested.emit(int(target))
 
 
 class AbilitiesPage(RefreshesWhenVisible, QWidget):
@@ -230,6 +335,14 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         self.current_key = None
         self.text_rows: dict[str, QWidget] = {}
         self.override_rows: dict[str, OverrideScalarRow] = {}
+        #: The game's own ability table, read on first use. None means
+        #: "not read yet"; {} means "read and unusable", which is a
+        #: different thing and is why this is not just {}.
+        self._ability_defaults = None
+        #: `{field name: its caption as built}`, before any inherited value
+        #: is written in front of it. `set_note` replaces the whole string,
+        #: so rebuilding it per record needs the original.
+        self._override_notes: dict = {}
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 20)
@@ -361,9 +474,9 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                 # discovered by an author who changed one ability and found
                 # six others had changed with it.
                 shared = QLabel(
-                    "This icon is shared across the game's icon sheet - "
-                    "replacing it affects everything else pointing at the "
-                    "same Icon ID, not just this ability.")
+                    "This icon is shared across the abilities. Replacing it "
+                    "affects everything else pointing at the same Icon ID, "
+                    "not just this ability.")
                 shared.setProperty("role", "muted")
                 shared.setWordWrap(True)
                 text_column.addWidget(shared)
@@ -391,17 +504,62 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         self.override_state.setWordWrap(True)
         override_column.addWidget(self.override_state)
 
-        dagger = QLabel(
-            "Flags marked \u2020 are stored as the opposite bit - ticking the "
-            "box clears the underlying flag, the same as FFTPatcher. Each "
-            "group has its own tick box; leave it unticked to inherit this "
-            "ability's normal behaviour.")
-        dagger.setProperty("role", "muted")
-        dagger.setWordWrap(True)
-        override_column.addWidget(dagger)
+        # The sentence explaining the dagger is gone, at Zodi's request. The
+        # daggers stay, and so does the explanation - on each marked flag's
+        # own tooltip ("Stored as the opposite bit..."), set in
+        # `AbilityFlagGroupPanel`, and the Override box's tooltip says what
+        # leaving it unticked does. `test_qt_abilities` checks both survive,
+        # so the page never has a mark nothing on it explains.
 
+        for field_name in c.OVERRIDE_SCALAR_FIELD_ORDER:
+            spec = c.OVERRIDE_SCALAR_FIELDS[field_name]
+            low, high, label = spec[0], spec[1], spec[2]
+            if field_name == "InflictStatus":
+                row = self._make_inflict_row()
+            elif field_name == "Formula":
+                # The same dropdown the Items page gives the same field,
+                # from the same list - two pages naming one concept
+                # differently is two things to learn.
+                row = OverrideChoiceRow(field_name, label,
+                                        reference_names.formula_names())
+            else:
+                # `spec[3]` - the layout's own help text - is deliberately
+                # not passed. Effect Area's "AoE radius override." is a
+                # field note on Effect Area, and Effect Area is one of the
+                # seven that were asked to lose theirs. The text stays in
+                # `constants.py` for anything else that wants it.
+                row = OverrideScalarRow(field_name, label, low, high)
+            row.edited.connect(self._on_override_edited)
+            if field_name == "Formula":
+                # Formula decides what Inflict Status MEANS, so changing it
+                # has to change that row without reloading the ability.
+                row.edited.connect(self._sync_inflict_kind)
+            self.override_rows[field_name] = row
+            self._override_notes[field_name] = getattr(
+                row, "_note_text", "") or ""
+            override_column.addWidget(row)
+
+        # The five packed-byte panels go BELOW the numbers, not above them.
+        #
+        # "can we change the order of the fields so that it is Range, Effect
+        # Area, Vertical Tolerance, Formula, Inflict Status, X, Y, CT
+        # (Charge Time), MP Cost, Element, then the Flagsets."
+        #
+        # `OVERRIDE_SCALAR_FIELD_ORDER` already gave the nine numbers that
+        # order; what put the section in the wrong one was these four tall
+        # grids and the element row sitting in front of them, so the first
+        # thing on screen was thirty tick boxes and the numbers were below
+        # the fold. The numbers are what most edits touch.
         # The four flag bytes, two to a row - the Tkinter layout, which fits
         # four tall groups in half the height of a single column.
+        # Element first, then the four Flagsets - "...MP Cost, Element, then
+        # the Flagsets". Element is one row of eight tick boxes; the
+        # Flagsets are four tall grids of eight, and putting the short one
+        # first keeps the section readable from the top down.
+        self.element_panel = ElementFlagPanel()
+        self.element_panel.edited.connect(self._on_override_edited)
+        override_column.addWidget(self.element_panel)
+
         flags_grid = QGridLayout()
         flags_grid.setSpacing(6)
         self.flag_groups = []
@@ -412,31 +570,6 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
             flags_grid.addWidget(panel, index // 2, index % 2)
         override_column.addLayout(flags_grid)
 
-        self.element_panel = ElementFlagPanel()
-        self.element_panel.edited.connect(self._on_override_edited)
-        override_column.addWidget(self.element_panel)
-
-        for field_name in c.OVERRIDE_SCALAR_FIELD_ORDER:
-            spec = c.OVERRIDE_SCALAR_FIELDS[field_name]
-            low, high, label = spec[0], spec[1], spec[2]
-            note = spec[3] if len(spec) > 3 else ""
-            if field_name == "InflictStatus":
-                row = self._make_inflict_row()
-            elif field_name == "Formula":
-                # The same dropdown the Items page gives the same field,
-                # from the same list - two pages naming one concept
-                # differently is two things to learn.
-                row = OverrideChoiceRow(field_name, label,
-                                        reference_names.formula_names())
-            else:
-                row = OverrideScalarRow(field_name, label, low, high, note)
-            row.edited.connect(self._on_override_edited)
-            if field_name == "Formula":
-                # Formula decides what Inflict Status MEANS, so changing it
-                # has to change that row without reloading the ability.
-                row.edited.connect(self._sync_inflict_kind)
-            self.override_rows[field_name] = row
-            override_column.addWidget(row)
         self.override_column = override_column
 
         # -- the three ordinary XML tables --------------------------------
@@ -558,8 +691,12 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         self.sections = [
             CollapsibleSection("Name, description and icon", text_body,
                                expanded=True),
+            # Open by default, like the Encounters page's four. It is the
+            # section this tab exists for - what an ability DOES - and it
+            # is where every one of the last two rounds' changes landed,
+            # so opening on a closed one hid all of them.
             CollapsibleSection("What it does (override layer)", override_body,
-                               expanded=False),
+                               expanded=True),
             CollapsibleSection("Effect", effect_body, expanded=False),
             CollapsibleSection("Unit animations", animation_body,
                                expanded=False),
@@ -763,18 +900,189 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                     edits.get(field_name, baseline.get(field_name, default)),
                     field_name in edits)
 
+    def ability_defaults(self) -> dict:
+        """
+        The game's own ability table, read once and kept.
+
+        `data/AbilityActionDefaults.txt`, which ships populated. Read once
+        because it is 368 rows of a file on disk that does not change while
+        the tool runs, and `{}` when it cannot be read at all - the page
+        then shows -1 for an inherited field, exactly as it did before this
+        file existed.
+        """
+        if self._ability_defaults is None:
+            self._ability_defaults = ability_defaults.load()
+        return self._ability_defaults
+
+    def inherited_override(self, key, field_name):
+        """What this ability's `field_name` holds when the override is -1."""
+        return ability_defaults.inherited(self.ability_defaults(), key,
+                                          field_name)
+
+    def _refresh_inherited(self, key) -> None:
+        """
+        Puts the vanilla value behind each -1 in front of the person.
+
+        Reported from real use: "on the Abilities page under What it does
+        (override layer) if the field has an Inherit value can we display
+        the value that is being inherited instead?"
+
+        It is worth more than it sounds. In the vanilla game **eight of the
+        ten override fields are -1 on all 368 rows** - Range, Effect Area,
+        Vertical, Element, Formula, X, Y and Inflict Status - so those eight
+        said nothing whatsoever until this existed.
+
+        **Three shapes, and none of them is a note any more.** Asked for
+        afterwards: "can you input the inherited values into the fields
+        (including the Element field and the four Flagsets) instead putting
+        the value in the field note."
+
+        * A dropdown gets it as the text of its Inherit ENTRY, the way the
+          Encounters dropdowns do - so the id appears twice in one list,
+          once as `012 - Heal_F(MA*Y) NS NE` and once bare, which are
+          different answers: picking the numbered one writes 12 and pins it,
+          leaving the bare one writes -1 and follows the game.
+        * A plain number gets it as the text the spin box draws at its
+          minimum, which is the sentinel - "Inherits 6" rather than "-1".
+          See `OverrideScalarRow.set_inherited` for why it keeps the word.
+        * The Element panel and the four Flagset panels tick the boxes the
+          vanilla byte sets. Nothing is written: an unincluded panel is
+          skipped by `_on_override_edited` whatever it is drawing.
+
+        The note keeps the sentence explaining what -1 means, which is a
+        different sentence and still worth one line.
+        """
+        for field_name, row in self.override_rows.items():
+            value = self.inherited_override(key, field_name)
+            if isinstance(row, OverrideChoiceRow):
+                row.set_inherited(value, self._describe_inherited(field_name,
+                                                                  value))
+            else:
+                row.set_inherited(value)
+            # Whatever shape the field is, it says this ONCE. The note used
+            # to carry "Inherits 6." in front of it and now carries only
+            # what it always did - two places saying one thing is two
+            # places free to disagree, which is the fault the Encounters
+            # captions were trimmed for in the same round.
+            row.set_note(self._override_notes.get(field_name, ""))
+
+        # The Element byte and the four flag bytes. `FLAG_COLUMN_FOR_GROUP`
+        # maps a panel's group index onto its column in the shipped table,
+        # from the same place the file's column order comes from.
+        self.element_panel.set_inherited(
+            self.inherited_override(key, "Element"))
+        for panel in self.flag_groups:
+            column = ability_defaults.FLAG_COLUMN_FOR_GROUP.get(
+                panel.group_index)
+            panel.set_inherited(self.inherited_override(key, column)
+                                if column else None)
+
+    def _effective_override(self, key: int, field_name: str, stored):
+        """
+        What the control should show: the override if there is one, else the
+        value it inherits, else the sentinel.
+
+        The third case is not a fallback nobody hits - delete
+        `data/AbilityActionDefaults.txt` and it is every field on every
+        ability. The page has to stay usable then, showing -1 exactly as it
+        did before that file existed.
+        """
+        try:
+            if int(stored) != c.OVERRIDE_NOT_SET:
+                return stored
+        except (TypeError, ValueError):
+            return stored
+        inherited = self.inherited_override(key, field_name)
+        return c.OVERRIDE_NOT_SET if inherited is None else inherited
+
+    def _describe_inherited(self, field_name: str, value) -> str:
+        """
+        The inherited value of a dropdown field, in that dropdown's words.
+
+        Named through the same list the entry for that id uses, so the two
+        cannot disagree - and left as a bare number when the list has no
+        name for it, rather than as an empty parenthesis.
+        """
+        if value is None:
+            return ""
+        row = self.override_rows.get(field_name)
+        if field_name == "Formula":
+            named = reference_names.formula_names().get(value)
+        elif getattr(row, "lists_abilities", False):
+            # Formula 2 makes this byte an ability to cast, not a status row.
+            from ..app import ability_choices
+            named = ability_choices(self.state).get(value)
+        else:
+            named = self._inflict_choices().get(value)
+        return named or str(value)
+
     def _load_override(self, key: int) -> None:
         actions = {a.key: a for a in (self.state.override_action_records or [])}
         action = actions.get(key)
         edits = self.state.override_action_edits.get(key, {})
 
+        # Before the rows are filled. Each row's Inherit entry names what
+        # THIS ability inherits, so it has to be right by the time `load`
+        # selects it - otherwise a row sitting on -1 shows the previously
+        # selected ability's value for as long as it is on screen.
+        self._refresh_inherited(key)
+
         for field_name, row in self.override_rows.items():
             if field_name in edits:
                 row.load(edits[field_name], True)
-            elif action is not None:
-                row.load(action.scalars.get(field_name, c.OVERRIDE_NOT_SET), False)
+                continue
+            stored = (action.scalars.get(field_name, c.OVERRIDE_NOT_SET)
+                      if action is not None else c.OVERRIDE_NOT_SET)
+            # **The control holds the EFFECTIVE value, not the sentinel.**
+            #
+            # "for values that set to -1 and display what their inherited
+            # value is I want them set to that displayed value. So for
+            # Range, Effect Area, ... if for example if it inherits 5 then
+            # the counter would simply be set to 5. Ticking it up by one
+            # would tick it up to 6."
+            #
+            # Right, and it makes the whole layer consistent: the Element
+            # panel and the four Flagsets already worked this way, showing
+            # the byte they inherit with their own tick box unticked. These
+            # ten were the odd ones out, sitting on -1 with the real value
+            # written beside them in words.
+            #
+            # **Nothing is written by it.** `_on_override_edited` reads a
+            # row only when it is INCLUDED, and loading never includes -
+            # which is the same bargain the panels have always had, and the
+            # reason the include box rather than the value is what says
+            # "this is mine".
+            row.load(self._effective_override(key, field_name, stored),
+                     False)
+
+        # -- and the five packed-byte panels ------------------------------
+        #
+        # **These were not loaded at all.** Measured: ability 234 sets
+        # Flags3 to 18 in the real table, and its Flagset III panel drew
+        # empty, unticked, with a blank note - and stayed exactly that way
+        # when another ability was selected, because nothing ever told it
+        # otherwise. Two consequences, both real: a mod that sets a flag
+        # byte was invisible here, and whatever a user ticked on one
+        # ability was still ticked on the next, where
+        # `_on_override_edited` would have written it.
+        #
+        # Found while adding the inherited values to them, which is the
+        # usual way: the panels had to start showing the right ability
+        # before "the right ability's vanilla byte" meant anything.
+        for panel in [self.element_panel] + self.flag_groups:
+            name = panel.field_name
+            if name in edits:
+                panel.load(edits[name], True)
+            elif action is None:
+                panel.load(c.OVERRIDE_NOT_SET, False)
+            elif panel is self.element_panel:
+                panel.load(action.scalars.get("Element", c.OVERRIDE_NOT_SET),
+                           False)
             else:
-                row.load(c.OVERRIDE_NOT_SET, False)
+                # Two groups share one physical column, so the record's own
+                # accessor does the unpacking rather than this page
+                # indexing into `flags12`/`flags34` itself.
+                panel.load(action.flag_group_value(panel.group_index), False)
 
         if action is None:
             self.override_state.setText(
@@ -1067,7 +1375,14 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool,
                     hide_comments: bool) -> None:
+        # JP Cost is named on its own because it is not in `text_rows`: it
+        # stands for two columns, so it has an attribute of its own - and a
+        # list built from the dicts left it out. That is the whole of "Hide
+        # field notes misses JP Cost". `audit_view_toggles` now walks the
+        # page's widgets rather than its dicts, so a row left off this list
+        # is reported instead of found by somebody reading its note.
         rows = (list(self.text_rows.values())
+                + [self.jp_cost_row]
                 + list(self.override_rows.values())
                 + list(self.animation_rows.values())
                 + list(self.base_stat_rows.values())

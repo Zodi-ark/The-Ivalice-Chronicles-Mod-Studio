@@ -37,6 +37,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+# For the four files the Encounters tab needs out of `fftpack`. Imported
+# rather than restated so the filter below and the reader that opens the
+# files cannot end up naming them differently. `entd` imports nothing from
+# this package, so the dependency only runs one way.
+from .entd import ENTD_FILENAME_PREFIX, ENTD_FOLDER
+
 # Steam's own app id / install folder name for the game.
 STEAM_APP_ID = "1004640"
 GAME_FOLDER_NAME = "FINAL FANTASY TACTICS - The Ivalice Chronicles"
@@ -355,6 +361,12 @@ CONTENT_GROUPS: tuple[ContentGroup, ...] = (
     ContentGroup(
         key="game_data",
         label="Game data",
+        # The four battle tables are unpacked by this group too, and the
+        # sentence saying so came off. It described a mechanism rather than
+        # a choice: the tick box is "do I want the editable database", and
+        # nothing about the answer changes because four more files come
+        # with it. `COMPANION_FILTERS` is where that fact lives for anyone
+        # who needs it.
         detail=(
             "Jobs, Job Commands, Abilities, Items, Encounters, Poaching, Treasure Hunter, "
             "everything that becomes the editable database."
@@ -435,6 +447,37 @@ def folders_for_groups(group_keys: Iterable[str]) -> list[str]:
     return [folder.name for folder in GAME_FOLDERS if folder.name in wanted]
 
 
+# =============================================================================
+# Files a folder's tabs need from OUTSIDE that folder
+# =============================================================================
+# Reported from real use: "selecting only Game Data and clicking Unpack and
+# prepare game files does not currently unpack the fftpack folder we need."
+#
+# It does not, and that was right until now: `fftpack` is 5,848 files of
+# Classic-mode assets and belongs to Textures. But the Encounters tab needs
+# exactly FOUR of them - `battle_entd1..4_ent.bin`, the game's own unit
+# tables - to say what an Inherit field is inheriting, and unpacking 5,848
+# files to get four would be a poor trade. So would telling somebody to tick
+# Textures to make Encounters work.
+#
+# No new mechanism was needed. `--filter` is a plain substring test (see
+# `GameFolder.filter_text`, which relies on the same property from the other
+# direction), so naming a prefix inside a folder already works. Measured
+# against the real unpacked-game listing: `fftpack/battle_entd` matches
+# exactly 4 files out of the whole game - the four wanted, and nothing else.
+# `_ent.bin` was rejected as the prefix because it also matches
+# `event_btlevt_bin_entrydata_add_ent.bin`.
+#
+# The cost is one extra FF16Tools pass, which is the same cost any second
+# folder has.
+# =============================================================================
+
+#: folder name -> filters for files outside it that its own tabs need.
+COMPANION_FILTERS: dict[str, tuple[str, ...]] = {
+    "nxd": (f"{ENTD_FOLDER}/{ENTD_FILENAME_PREFIX}",),
+}
+
+
 def filters_for_folders(folder_names: Iterable[str]) -> Optional[list[str]]:
     """
     The --filter strings needed to unpack exactly `folder_names`, or None
@@ -454,7 +497,18 @@ def filters_for_folders(folder_names: Iterable[str]) -> Optional[list[str]]:
         return []
     if len(names) == len(GAME_FOLDERS):
         return None
-    return [GAME_FOLDERS_BY_NAME[name].filter_text for name in names]
+    filters = [GAME_FOLDERS_BY_NAME[name].filter_text for name in names]
+    for name in names:
+        for companion in COMPANION_FILTERS.get(name, ()):
+            # Skipped when the folder it lives in is being unpacked whole
+            # anyway - `fftpack/` already covers `fftpack/battle_entd`, and
+            # a second pass over the same pack for the same four files is
+            # minutes of work for nothing.
+            if companion.split("/", 1)[0] in names:
+                continue
+            if companion not in filters:
+                filters.append(companion)
+    return filters
 
 
 # =============================================================================

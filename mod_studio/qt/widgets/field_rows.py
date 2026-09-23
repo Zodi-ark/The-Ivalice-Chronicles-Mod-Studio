@@ -341,12 +341,16 @@ class FieldNoteLabel(QLabel):
     def __init__(self, text: str = "", parent=None):
         super().__init__(parent)
         self._full_text = text or ""
+        #: What a caller asked the tooltip to say. Set before anything can
+        #: call `setToolTip`, which `_sync_tooltip` reads.
+        self._wanted_tooltip = ""
         self.setWordWrap(False)
         super().setText(self._full_text)
 
     def setText(self, text: str) -> None:                     # noqa: N802
         self._full_text = text or ""
         self._elide()
+        self._sync_tooltip()
 
     def text(self) -> str:
         """
@@ -398,9 +402,81 @@ class FieldNoteLabel(QLabel):
     def resizeEvent(self, event):                             # noqa: N802
         super().resizeEvent(event)
         self._elide()
+        self._sync_tooltip()
+
+    def _sync_tooltip(self) -> None:
+        """
+        The tooltip carries the note ONLY when the note is cut off.
+
+        Reported: "upon putting your mouse over a field note it brings up
+        that note again by your mouse. This is so unnecessary considering it
+        is already on the screen." Right - a tooltip repeating a sentence
+        the reader is already looking at is noise, and every one of these
+        rows had one.
+
+        It was not decoration, though, which is why this is a condition
+        rather than a deletion: these notes are ELIDED, not wrapped, so at a
+        narrow window "Inherit = 0. 0 = leave the unit's own job alone. N..."
+        is all there is, and the tooltip is the only way to read the rest.
+        `is_elided()` already knows which case a note is in.
+
+        Callers still set the tooltip to the full note - `setToolTip` is
+        where the text arrives from - and this narrows it to when it is
+        needed. `_wanted_tooltip` remembers what they asked for so the
+        answer can change on every resize without the text being lost.
+        """
+        wanted = getattr(self, "_wanted_tooltip", self._full_text)
+        super().setToolTip(wanted if (wanted and self.is_elided()) else "")
+
+    def setToolTip(self, text: str) -> None:                  # noqa: N802
+        """Remembers what was asked for; shows it only when it is needed."""
+        self._wanted_tooltip = text or ""
+        self._sync_tooltip()
 
 
-class NumericFieldRow(QWidget):
+class _NoteDisplay:
+    """
+    The one place a row's note meets the "Hide field notes" toggle.
+
+    Reported: "Hide field notes misses JP Cost". Two faults were behind it,
+    and the second is the one this class exists for:
+
+    1. The JP Cost row was never handed the toggle at all - it lives in its
+       own attribute on the Abilities page, not in the dict `_apply_view`
+       walks.
+    2. Even a row that WAS handed it lost it on the next value change. The
+       toggle emptied the label; `set_note` - which exists precisely for
+       notes that change with the value - wrote the full text straight back,
+       because the toggle's answer was never stored anywhere. So the note
+       vanished on the click and returned on the next keystroke or the next
+       record, which is why it read as "misses" rather than "broken".
+
+    So the row remembers what it was last told, and every write goes
+    through `_show_note`, which asks. `apply_display` records the choice;
+    `set_note` records the text; neither decides on its own what is drawn.
+
+    Shared rather than copied: five row classes and the ability flag panels
+    had the same two lines each, and the rule that has to hold across all of
+    them is exactly the kind a sixth copy forgets.
+    """
+
+    #: What the last `apply_display` said. A class default, so a row that
+    #: has never been handed the toggle shows its note - which is what every
+    #: row did before this existed, and what a row built after the page
+    #: applied the preference must do until it is handed it too.
+    _notes_hidden = False
+
+    def _show_note(self) -> None:
+        shown = "" if self._notes_hidden else self._note_text
+        self.note.setText(shown)
+        self.note.setToolTip(shown)
+
+    def _apply_note_display(self, hide_notes: bool) -> None:
+        self._notes_hidden = bool(hide_notes)
+        self._show_note()
+
+
+class NumericFieldRow(_NoteDisplay, QWidget):
     """
     `[x] Label  [ 12 ]  help text`
 
@@ -495,9 +571,10 @@ class NumericFieldRow(QWidget):
         clipped rather than elided, and the tooltip is where the rest of it
         lives.
         """
-        self._note_text = text
-        self.note.setText(text)
-        self.note.setToolTip(text)
+        self._note_text = text or ""
+        # Through `_show_note`, never straight onto the label - see
+        # `_NoteDisplay` for what writing it directly did.
+        self._show_note()
 
     @property
     def included(self) -> bool:
@@ -554,8 +631,7 @@ class NumericFieldRow(QWidget):
         """
         # Emptied rather than hidden, so every row keeps the same shape
         # whether or not it has a note and whether or not notes are on.
-        self.note.setText("" if hide_notes else self._note_text)
-        self.note.setToolTip("" if hide_notes else self._note_text)
+        self._apply_note_display(hide_notes)
         self.setVisible(not (hide_unknown and self.is_unknown)
                         and not (hide_comments and self.is_comment))
 
@@ -609,7 +685,7 @@ def _align_to_first_line(control, *widgets) -> None:
                                   margins.right(), margins.bottom())
 
 
-class TextFieldRow(QWidget):
+class TextFieldRow(_NoteDisplay, QWidget):
     """
     `[x] Label [ text ]  help text` - the same opt-in rule, for a string.
 
@@ -884,13 +960,12 @@ class TextFieldRow(QWidget):
 
     def apply_display(self, hide_notes: bool, hide_unknown: bool,
                       hide_comments: bool) -> None:
-        self.note.setText("" if hide_notes else self._note_text)
-        self.note.setToolTip("" if hide_notes else self._note_text)
+        self._apply_note_display(hide_notes)
         self.setVisible(not (hide_unknown and self.is_unknown)
                         and not (hide_comments and self.is_comment))
 
 
-class NamedNumberRow(QWidget):
+class NamedNumberRow(_NoteDisplay, QWidget):
     """
     `[x] Label  [ 012 - Curaga ]` - a NUMBER, chosen by name.
 
@@ -1037,13 +1112,12 @@ class NamedNumberRow(QWidget):
 
     def apply_display(self, hide_notes: bool, hide_unknown: bool,
                       hide_comments: bool) -> None:
-        self.note.setText("" if hide_notes else self._note_text)
-        self.note.setToolTip("" if hide_notes else self._note_text)
+        self._apply_note_display(hide_notes)
         self.setVisible(not (hide_unknown and self.is_unknown)
                         and not (hide_comments and self.is_comment))
 
 
-class ChoiceFieldRow(QWidget):
+class ChoiceFieldRow(_NoteDisplay, QWidget):
     """
     `[x] Label  [ Cancel ]` - a NAME, chosen from a fixed list of names.
 
@@ -1180,8 +1254,7 @@ class ChoiceFieldRow(QWidget):
 
     def apply_display(self, hide_notes: bool, hide_unknown: bool,
                       hide_comments: bool) -> None:
-        self.note.setText("" if hide_notes else self._note_text)
-        self.note.setToolTip("" if hide_notes else self._note_text)
+        self._apply_note_display(hide_notes)
         self.setVisible(not (hide_unknown and self.is_unknown)
                         and not (hide_comments and self.is_comment))
 
@@ -1239,7 +1312,21 @@ class CollapsibleSection(QWidget):
         column.setSpacing(2)
 
         self.header = QToolButton()
-        self.header.setText(title)
+        # Doubled, or Qt eats it as a mnemonic.
+        #
+        # A QToolButton treats `&` in its text as "underline the next letter
+        # and make it a keyboard shortcut", so "Stats & Level" drew as
+        # "Stats _Level" and "Unit Markers & Turn Order" as "Unit Markers
+        # _Turn Order" on every section header that has an ampersand -
+        # visible in the Encounters shot for as long as those sections have
+        # existed. The same fix is already in `FlagFieldPanel` and
+        # `ability_flags.py` for QGroupBox titles ("Shields & Headgear"),
+        # which is where this was caught the first time.
+        #
+        # `self.title` keeps the real text, since anything comparing header
+        # text to a section name wants the name, not the escaping.
+        self.title = title
+        self.header.setText(title.replace("&", "&&"))
         self.header.setCheckable(True)
         self.header.setChecked(expanded)
         self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -1490,7 +1577,7 @@ def split_words(name: str) -> str:
     return "".join(out).strip()
 
 
-class DropdownFieldRow(QWidget):
+class DropdownFieldRow(_NoteDisplay, QWidget):
     """
     `[x] Label  [ 003 - Fire ]`
 
@@ -1529,6 +1616,17 @@ class DropdownFieldRow(QWidget):
     nothing to jump to. `_sync_jump` is called from every path that can
     change the value, including `load()`, so browsing to a record with an
     empty slot leaves the button correctly dead.
+
+    **A note beside the dropdown, on the same terms as `NumericFieldRow`.**
+    Optional and empty by default, so nothing that already uses this row
+    changes. It exists because the Encounters page's twelve id fields moved
+    from spin boxes to dropdowns and each of them carries its own "Inherit =
+    -1. -1 = leave this equipment slot alone." caption, built from
+    `ENTRY_INHERIT_VALUES`. Dropping those captions on the way would have
+    taken real information off the page, and `apply_display` being a no-op
+    here would have left "Hide field notes" silently not applying to twelve
+    of its rows - which is the exact shape of the `ViewToggles` fault
+    `audit_view_toggles.py` was written after.
     """
 
     edited = Signal()
@@ -1536,10 +1634,16 @@ class DropdownFieldRow(QWidget):
 
     def __init__(self, field_name: str, label: str, parent=None,
                  jump_label: str | None = None, jump_tooltip: str = "",
-                 zero_is_none: bool = True):
+                 zero_is_none: bool = True, note: str = "",
+                 unknown: bool = False):
         super().__init__(parent)
         self.field_name = field_name
-        self.is_unknown = False
+        self.is_unknown = unknown
+        # Set beside `is_unknown` for the reason `NumericFieldRow` gives:
+        # the two are the same kind of fact about a row, and a row type
+        # that knew one but not the other would silently ignore the toggle
+        # for its own fields.
+        self.is_comment = is_comment_field(field_name, label)
         self._loading = False
         # Whether id 0 means "nothing chosen" or is an ordinary choice.
         #
@@ -1613,13 +1717,49 @@ class DropdownFieldRow(QWidget):
             self.jump_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             self.jump_button.clicked.connect(self._emit_jump)
             row.addWidget(self.jump_button)
+        # The note, on exactly `NumericFieldRow`'s terms: always in the
+        # layout even when empty so every row has the same shape, ignored
+        # horizontally so a long note cannot widen the form, and clipped
+        # with the full text in the tooltip rather than elided, because
+        # these notes carry information somebody needs before choosing.
+        self._note_text = note
+        self.note = FieldNoteLabel(note)
+        self.note.setProperty("role", "muted")
+        self.note.setWordWrap(False)
+        self.note.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.note.setToolTip(note)
+        row.addWidget(self.note, 1)
+
         # Both the combo and this share the leftover space, so the combo
         # grows until it hits its 360 cap and everything past that lands
         # here. A stretch alone would take all of it and leave the combo at
         # its 160 minimum on every screen size.
+        #
+        # Kept even with the note beside it: a row with no note has nothing
+        # to absorb the leftover width, and without the stretch the combo
+        # would grow past its cap on a wide window.
         row.addStretch(1)
 
+        # Read by the two view toggles. Properties rather than a Python
+        # attribute so a stylesheet can reach them too.
+        self.setProperty("fieldRow", True)
+        self.setProperty("unknownField", bool(unknown))
+
         self.set_choices({0: "(None / Unset)"})
+
+    def set_note(self, text: str) -> None:
+        """
+        Replaces the note beside the dropdown, tooltip and all.
+
+        Same reason `NumericFieldRow` has one: for notes that depend on the
+        VALUE rather than on the field, and kept here rather than done by
+        the caller reaching into `self.note` so the tooltip cannot drift
+        away from the visible text.
+        """
+        self._note_text = text or ""
+        # Through `_show_note`, never straight onto the label - see
+        # `_NoteDisplay` for what writing it directly did.
+        self._show_note()
 
     # -- choices ------------------------------------------------------------
 
@@ -1651,6 +1791,33 @@ class DropdownFieldRow(QWidget):
         finally:
             self._loading = False
         self._sync_jump()
+
+    def set_choice_label(self, value_id: int, text: str) -> bool:
+        """
+        Retitles one entry, leaving the rest of the list and the selection
+        alone. Returns whether that id was there to retitle.
+
+        For an entry whose text depends on the RECORD rather than on the
+        table behind the list - the Encounters page's Inherit entry, which
+        names the value that row inherits and so changes as the selection
+        moves. Rebuilding the whole list to change one word would mean
+        refilling a 1,024-entry combo box on every click, and would drop
+        any id `load` had added that the current table has no name for.
+
+        Selection-safe: `setItemText` does not fire `currentIndexChanged`,
+        so this cannot register as the user picking something. The guard is
+        set anyway, because that is a Qt implementation detail and this
+        class has already paid once for assuming one of those.
+        """
+        index = self._id_to_index.get(value_id)
+        if index is None:
+            return False
+        self._loading = True
+        try:
+            self.combo.setItemText(index, text)
+        finally:
+            self._loading = False
+        return True
 
     def current_id(self) -> int:
         data = self.combo.currentData()
@@ -1715,4 +1882,17 @@ class DropdownFieldRow(QWidget):
 
     def apply_display(self, hide_notes: bool, hide_unknown: bool,
                       hide_comments: bool) -> None:
-        return
+        """
+        The view toggles, word for word as `NumericFieldRow` applies them.
+
+        This used to be `return` - correct while no dropdown had a note and
+        none was ever unknown, and wrong the moment Encounters gave twelve
+        of them both. `apply_view_toggles`' docstring names dropdowns as
+        rows that "carry no notes and are never unknown"; that stopped
+        being true, so the behaviour follows rather than the comment.
+        """
+        # Emptied rather than hidden, so every row keeps the same shape
+        # whether or not it has a note and whether or not notes are on.
+        self._apply_note_display(hide_notes)
+        self.setVisible(not (hide_unknown and self.is_unknown)
+                        and not (hide_comments and self.is_comment))

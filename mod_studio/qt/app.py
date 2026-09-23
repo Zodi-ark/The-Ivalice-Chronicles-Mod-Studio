@@ -116,9 +116,15 @@ TABLE_TABS = [
      "fields you tick are written into your mod."),
     ("Equip Bonus", "item_equip_bonus", "ItemEquipBonusData.xml",
      "The stat bonuses and statuses a piece of equipment grants while worn."),
+    # The caveat is gone because it stopped being true. It warned that
+    # abilities using a status row would not appear in "Used by", which was
+    # honest while an ability's base Inflict Status was hardcoded in the
+    # game and unavailable to this tool. `data/AbilityActionDefaults.txt`
+    # ships it now, and 155 of the 368 abilities turn out to point at a row
+    # here, so the list is complete and saying otherwise would be the
+    # warning outliving its reason.
     ("Inflict Status", "item_options", "ItemOptionsData.xml",
-     "What an item or ability does to a target's status. Beware abilities "
-     "also use these statuses though they are not listed in \"Used by.\""),
+     "What an item or ability does to a target's status."),
     ("Treasure Hunter", "map_trap", "MapTrapFormationData.xml",
      "Traps and buried treasure on each map."),
 ]
@@ -473,6 +479,38 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         export.refresh_summary()
     setup.setup_changed.connect(_on_setup_changed)
 
+    def _on_mod_cleared():
+        """
+        "Start a new mod" emptied every edit store.
+
+        The same move `_on_setup_changed` makes and for the same reason -
+        what the pages are drawing came out of stores that no longer hold
+        it - but none of the rest of that function applies: the game, the
+        reference tables and the saved versions all belong to the machine
+        and did not move.
+
+        **Asked of every page rather than named**, which is the rule that
+        function arrived at the hard way after a hand-written list of pages
+        was wrong three times. The one that made this visible was
+        Encounters, whose tree encodes trades and so cannot be corrected by
+        re-reading a single row; there is no reason to believe it is the
+        only one, and this way it does not have to be.
+        """
+        for page in pages.values():
+            refresh = getattr(page, "refresh_records", None)
+            if callable(refresh):
+                refresh()
+        for page in pages.values():
+            refresh_tree = getattr(page, "refresh_tree", None)
+            if callable(refresh_tree):
+                refresh_tree()
+        # General Setup is a STEP page, not one of `pages`, so the loops
+        # above never reach it - and it is the page that says which mod is
+        # open. Reported: open a mod, Start a new mod, go back, and it still
+        # read "Editing: <the old mod>".
+        setup.forget_opened_mod()
+    export.mod_cleared.connect(_on_mod_cleared)
+
     def _on_archive_changed():
         """
         The saved-versions dialog deleted or added a version.
@@ -641,7 +679,11 @@ def _claim_taskbar_identity() -> None:
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
+    # An application that already exists is used rather than a second one
+    # made, which Qt refuses. Nothing in normal use makes one first; the
+    # first-run smoke check (`dev/first_run_smoke.py`) does, so it can look
+    # at the real window this function builds before handing back.
+    app = QApplication.instance() or QApplication(sys.argv)
     # Before any window exists, so nothing is ever built unguarded.
     wheel_guard.install(app)
     app.setApplicationName("The Ivalice Chronicles Mod Studio")

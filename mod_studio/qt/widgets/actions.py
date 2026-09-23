@@ -174,16 +174,23 @@ def mark_edited(item, edited: bool) -> None:
     goes back to whatever the palette says - hard-coding white here would
     show as a white bar in dark mode.
     """
-    font = item.font()
+    # A QTreeWidgetItem's accessors take a COLUMN; a QListWidgetItem's take
+    # nothing. Encounters became a two-level tree, so this helper now sees
+    # both, and the difference is a Qt signature rather than anything about
+    # what a marked row means. Detected by asking the item, not by importing
+    # both classes and comparing types - a third row type would then work
+    # here without this function knowing about it.
+    column = (0,) if hasattr(item, "childCount") else ()
+    font = item.font(*column)
     font.setBold(edited)
-    item.setFont(font)
+    item.setFont(*column, font)
     if edited:
         colours = theme.current()
-        item.setBackground(QBrush(QColor(colours["edited_bg"])))
-        item.setForeground(QBrush(QColor(colours["edited_fg"])))
+        item.setBackground(*column, QBrush(QColor(colours["edited_bg"])))
+        item.setForeground(*column, QBrush(QColor(colours["edited_fg"])))
     else:
-        item.setBackground(QBrush())
-        item.setForeground(QBrush())
+        item.setBackground(*column, QBrush())
+        item.setForeground(*column, QBrush())
 
 
 class ViewToggles(QWidget):
@@ -368,9 +375,17 @@ def apply_view_toggles(rows, hide_notes: bool, hide_unknown: bool,
     """
     Pushes the toggles at every row that understands them.
 
-    Rows that carry no notes and are never unknown - flag panels, dropdowns -
-    implement `apply_display` as a no-op rather than being special-cased
+    A row that carries no note and is never unknown - `FlagFieldPanel` -
+    implements `apply_display` as a no-op rather than being special-cased
     here, so a new row type works without this function knowing about it.
+
+    This sentence used to name dropdowns and the ability flag panels as
+    no-note rows too, and it was wrong about both by the time anyone read
+    it: Encounters gave twelve dropdowns notes, and the Element and Flagset
+    panels write one on every load. A row that has a note answers through
+    `field_rows._NoteDisplay`, which is also what keeps a note written
+    AFTER this runs - by `set_note`, or by a load - hidden while the toggle
+    says so. `dev/audit_view_toggles.py` checks both halves on every page.
     """
     touched = {}
     for row in rows:

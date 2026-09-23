@@ -307,7 +307,7 @@ NXD_ITEM_TABLE = {lang: f"Item-{lang}" for lang in NXD_LANGUAGES}
 ABILITY_TEXT_FIELDS = ["Name", "Description", "Comment"]
 ABILITY_NUMERIC_FIELDS = {
     # name: (min, max, label, help text)
-    "IconId": (0, 65535, "Icon ID", "References the game's icon sheet - live preview below (only ids 0-54 have a real icon on disk)."),
+    "IconId": (0, 65535, "Icon ID", "References the ability's icon texture a live preview is below (only ids 0-54 have textures)."),
     "DLCFlags": (0, 2147483647, "DLC Flags", ""),
     "UiId": (0, 65535, "UI ID", ""),
     "UiId2": (0, 65535, "UI ID 2", ""),
@@ -787,6 +787,262 @@ ENTRY_NO_DOCUMENTED_SENTINEL = [
 # rather than silently offering them.
 ENTRY_BYTE_CAST_FIELDS = ["MainJob", "JobUnlock", "EntryUnknown1D", "Head", "Body", "Accessory", "RightHand", "LeftHand"]
 
+# ---------------------------------------------------------------------------
+# Values that are not ids at all
+#
+# Each of the twelve id fields in ENTRY_FIELD_LABELS has, besides its own
+# inherit value above, a handful of values that mean something rather than
+# pointing at a row. They are here beside the inherit values because they
+# are the same kind of fact about the same columns, and because the
+# Encounters page's dropdowns and its field captions have to agree about
+# them - two lists would drift.
+#
+# Where they come from, and what was checked before building on them:
+#
+# * Zodi's ruling on 255: "255 is random in the PSP version therefore I
+#   will assume that it is also the case for TIC." That was an assumption,
+#   so it was measured against the real tables rather than taken on trust,
+#   and they support it on every sentinel - there is nothing real at any of
+#   these ids to lose:
+#       CharaName-en 253, 254 and 255 have NO name (story names run 1-~250,
+#           Ramza 1, Ovelia 12, Rapha 25, Alma 48; 256+ are the IsGeneric
+#           rows, Arnald, Ivan, Isleton...). 844 of the 1,024 rows are named.
+#       ItemData 254 and 255 are blank rows - no name, no category, price 0.
+#           Real items resume at 256 ("Materia Blade Plus").
+#       ItemData 0 IS a named row, "Nothing Equipped", which is exactly the
+#           "0 is nothing" Zodi's own notes give it. The label below says
+#           the same thing in the words an encounter row needs.
+#
+# * 510 rather than 254 on Reaction/Support/Movement is not an
+#   inconsistency. Those three are 16-BIT fields in ENTD (bytes 12-13,
+#   14-15, 16-17, little-endian), so the 16-bit form of the same 0xFE
+#   sentinel is 0x01FE = 510 where a byte field's is 0xFE = 254. Measured
+#   in the real ENTD data: 510 appears 7,303 / 7,193 / 7,594 times across
+#   the three. It never appears in the vanilla OverrideEntryData table
+#   (Movement tops out at 509), so it is offered on the strength of ENTD's
+#   own usage and the PSP behaviour rather than on a sighting there.
+# ---------------------------------------------------------------------------
+
+#: Every equipment slot says the same three things, so they are written
+#: once. Five near-identical dicts is how the five drift apart.
+_ENTRY_EQUIPMENT_SPECIALS = {
+    0: "Nothing (Monster)",
+    254: "Random",
+    255: "Nothing (Human)",
+}
+_ENTRY_COMMAND_SPECIALS = {
+    0: "Nothing",
+    254: "Random",
+    255: "Job's Command",
+}
+_ENTRY_RSM_SPECIALS = {
+    0: "Nothing",
+    510: "Random",
+}
+
+ENTRY_SPECIAL_VALUES: dict[str, dict[int, str]] = {
+    "Unknown4": {255: "Random"},
+    "EntryUnknown1D": dict(_ENTRY_COMMAND_SPECIALS),
+    "SecondarySkillset": dict(_ENTRY_COMMAND_SPECIALS),
+    "Reaction": dict(_ENTRY_RSM_SPECIALS),
+    "Support": dict(_ENTRY_RSM_SPECIALS),
+    "Movement": dict(_ENTRY_RSM_SPECIALS),
+    "Head": dict(_ENTRY_EQUIPMENT_SPECIALS),
+    "Body": dict(_ENTRY_EQUIPMENT_SPECIALS),
+    "Accessory": dict(_ENTRY_EQUIPMENT_SPECIALS),
+    "RightHand": dict(_ENTRY_EQUIPMENT_SPECIALS),
+    "LeftHand": dict(_ENTRY_EQUIPMENT_SPECIALS),
+    # MainJob has none. Its inherit value is 0, and no other value on it
+    # means anything but "this job id".
+    "MainJob": {},
+}
+
+# No special value may sit on top of its own field's inherit value.
+#
+# This assertion is the one with teeth. The obvious reading of this table -
+# "0 means Inherit, like Unit Name and Main Job" - is wrong on the other ten
+# fields, where inherit is -1 and 0 is a real and different answer
+# ("Nothing"). Merging the two would tell the game "equip nothing" where the
+# mod author meant "leave this alone", on ten fields at once, and nothing on
+# screen would say so. It is the same confusion the NumericFieldRow floor
+# logic in encounters.py was added to prevent.
+#
+# The companion check - that this table covers exactly the twelve id fields -
+# is beside ENTRY_FIELD_LABELS, which is defined further down this file.
+assert not [
+    field for field, specials in ENTRY_SPECIAL_VALUES.items()
+    if ENTRY_INHERIT_VALUES.get(field, (None,))[0] in specials
+], "a special value collides with that field's own inherit value"
+
+# ---------------------------------------------------------------------------
+# The six fields that hold a VALUE with a fixed meaning
+#
+# Different in kind from the twelve above, which point at a row in another
+# table. These six hold a number the game reads directly - a level, a
+# facing, which job has to be unlocked - and every legal value has a
+# meaning, so the whole domain can be offered as a list.
+#
+# "on the Encounters page, for the Job Unlock field can we change it into a
+# drop down so that 0 = Base, 1 = Chemist ... 20 = Inherit", and "can we
+# turn Spriteset (called Unit in FFTPatcher), Level, Bravery, Faith, and
+# Initial Direction into a drop down matching FFTPatcher."
+#
+# Each number below was measured against the real data before being
+# written here - the four ENTD files (7,829 occupied slots) and the 516
+# vanilla OverrideEntryData rows. The measurements are in HANDOFF.md.
+# ---------------------------------------------------------------------------
+
+#: Which six. A tuple and not a name->label dict, deliberately: all six are
+#: already in ENTRY_NUMERIC_FIELDS, which is where their labels live and
+#: where the page reads them from. A second column of "Job Unlock", "Initial
+#: Direction" here would be a second set of words for the same six fields,
+#: and the one that gets edited is never the one being read.
+#:
+#: What this table IS for is the question ENTRY_FIELD_LABELS answers for the
+#: other twelve: is this field a list of rows in another table, or a list of
+#: values? The answer decides where its names come from, and the two sets
+#: must not overlap.
+ENTRY_VALUE_FIELDS = (
+    "JobUnlock", "Spriteset", "Level", "JobLevel", "Bravery", "Faith",
+    "InitialDirection",
+)
+
+#: 254 means "roll it" on the three columns that accept it. Stated here as
+#: well as in `entd.RANDOM_BYTE` because the two modules must not import
+#: each other; `dev/test_qt_encounters.py` checks they agree.
+ENTRY_RANDOM_VALUE = 254
+
+#: Job Unlock id 1 is job 0x4B and they run consecutively to id 19.
+#:
+#: From FFTPatcher's own `GetPreReqJobDataSource`, which builds its list as
+#: `jobs[0x4B..0x5D]` keyed `index - 0x4A`, and confirmed against this
+#: game's job table: 0x4B-0x5D are Chemist, Knight, Archer ... Dancer,
+#: Mime, exactly the nineteen Zodi listed.
+#:
+#: FFTPatcher does NOT stop at 19 - it adds two PSP-only jobs at 20 and 21.
+#: Both of those job rows are UNNAMED in this game, Job Unlock spans
+#: exactly 0-19 across the ENTD files with all twenty present, and the nxd
+#: holds 20 on 503 of its 516 rows. 20 is one past the end and is the
+#: inherit value, which is what ENTRY_INHERIT_VALUES already said.
+ENTRY_JOB_UNLOCK_FIRST_JOB = 0x4B
+ENTRY_JOB_UNLOCK_JOBS = 19
+
+#: Sprite ids 0-130. The game's own `Chara` table is keyed 0-130, 131 rows,
+#: and the Spriteset byte across all four ENTD files spans exactly 0-130.
+#: FFTPatcher's list runs to 168; those are ids this game has no sprite for.
+ENTRY_SPRITESET_COUNT = 131
+
+#: Bravery and Faith are 0-100. FFTPatcher offers exactly that plus Random,
+#: and the real data agrees - Bravery never exceeds 95 and Faith never 100.
+ENTRY_TRAIT_MAX = 100
+
+#: Level 100 is "Party level" and 101-199 are "Party level + 1" to "+99",
+#: which is FFTPatcher's `levelStrings` layout. Real: 473 occupied slots
+#: hold 101-130, so the band is in use and is not a quirk of the old tool.
+#:
+#: 0 is NOT offered. FFTPatcher's ENTD byte reads 0 as "Party level -
+#: Random", but the nxd layout's patch condition for this column is
+#: "greater than zero", so through this table 0 means inherit and cannot
+#: mean anything else. That difference between the two files is why the
+#: list here is built rather than copied.
+ENTRY_LEVEL_PARTY = 100
+ENTRY_LEVEL_MAX = 199
+
+#: Job Level runs 1-8. Asked for as "0 to 8", and 0 is left out for the
+#: same reason it is left out of Level: the layout gives this column the
+#: ditto of Level's condition -
+#:
+#:     add_column|Level|short      // 7C - if greater than zero, ...
+#:     add_column|JobLevel|short   // 7E - ' '
+#:
+#: so through the nxd 0 patches nothing and means inherit, which is what
+#: the Inherit entry at -1 already says. Offering it twice would put an
+#: entry in the list that silently does nothing.
+#:
+#: 8 is the ceiling in the real data too: the ENTD files span 0-8 and the
+#: nxd holds 1, 5, 6, 7 and 8.
+ENTRY_JOB_LEVEL_MAX = 8
+
+#: The two columns whose patch condition is "greater than zero", so that
+#: **0 inherits on them as surely as -1 does**.
+#:
+#: Straight out of the layout, where JobLevel takes Level's condition by
+#: ditto:
+#:
+#:     add_column|Level|short      // 7C - if greater than zero, ...
+#:     add_column|JobLevel|short   // 7E - ' '
+#:
+#: `ENTRY_INHERIT_VALUES` has said this in prose since it was written -
+#: "-1 (in fact any value of 0 or less)" - and nothing could act on prose.
+#: Anything deciding whether a field is inheriting has to ask this too, or
+#: it reads a stored 0 on these two as a real value.
+ENTRY_POSITIVE_ONLY_FIELDS = ("Level", "JobLevel")
+
+# Both are real columns with a documented sentinel, and the wording above
+# is where this came from - so if one of them ever loses its entry there,
+# this tuple is naming a column nothing knows about.
+assert all(field in ENTRY_INHERIT_VALUES
+           for field in ENTRY_POSITIVE_ONLY_FIELDS), (
+    "ENTRY_POSITIVE_ONLY_FIELDS names a column with no inherit value: "
+    f"{[f for f in ENTRY_POSITIVE_ONLY_FIELDS if f not in ENTRY_INHERIT_VALUES]}")
+assert all("0 or less" in ENTRY_INHERIT_VALUES[field][1]
+           for field in ENTRY_POSITIVE_ONLY_FIELDS), (
+    "a column here no longer says '0 or less' in its own help text, so "
+    "either the layout changed or this tuple is wrong")
+
+#: The values that are not a plain number, per field. Read through
+#: `entry_special_values` alongside the twelve id fields' table, so the
+#: dropdown entry and the Inherit entry for the same value cannot disagree.
+ENTRY_VALUE_SPECIALS: dict[str, dict[int, str]] = {
+    # 0 is not job 0x4A. FFTPatcher calls it Base and so does Zodi's list.
+    "JobUnlock": {0: "Base"},
+    # FFTPatcher's own name for it, which says what it randomises rather
+    # than only that it does. Its `levelStrings` calls byte 254 "Party
+    # level - Random"; "Random" alone reads as "a random level 1-99".
+    "Level": {ENTRY_RANDOM_VALUE: "Party Level - Random"},
+    # Job Level has no value that is not a plain job level.
+    "JobLevel": {},
+    "Bravery": {ENTRY_RANDOM_VALUE: "Random"},
+    "Faith": {ENTRY_RANDOM_VALUE: "Random"},
+    # Spriteset and Initial Direction have none: every value in their lists
+    # is a name for that number, not an escape from it.
+    "Spriteset": {},
+    "InitialDirection": {},
+}
+
+# The same two rules the twelve id fields' table carries, for the same
+# reasons. A special sitting on a field's own inherit value would merge
+# "leave this alone" with a real answer; a field in one table and not the
+# other would be a dropdown with no specials or specials with no dropdown.
+assert set(ENTRY_VALUE_SPECIALS) == set(ENTRY_VALUE_FIELDS), (
+    "ENTRY_VALUE_SPECIALS and ENTRY_VALUE_FIELDS must cover the same six "
+    f"fields; these appear in one but not the other: "
+    f"{sorted(set(ENTRY_VALUE_SPECIALS) ^ set(ENTRY_VALUE_FIELDS))}")
+assert not [
+    field for field, specials in ENTRY_VALUE_SPECIALS.items()
+    if ENTRY_INHERIT_VALUES.get(field, (None,))[0] in specials
+], "a value field's special collides with its own inherit value"
+assert not set(ENTRY_VALUE_SPECIALS) & set(ENTRY_SPECIAL_VALUES), (
+    "a field cannot be both a list of rows and a list of values: "
+    f"{sorted(set(ENTRY_VALUE_SPECIALS) & set(ENTRY_SPECIAL_VALUES))}")
+
+
+def entry_level_choices() -> dict:
+    """
+    `{value: what it reads}` for the Level column, 1-199 plus Random.
+
+    Built rather than written out, because 199 lines of "Party level + 62"
+    is 199 chances to typo one. The two facts it is built from -
+    `ENTRY_LEVEL_PARTY` and `ENTRY_LEVEL_MAX` - are stated above with what
+    was measured.
+    """
+    found = {level: str(level) for level in range(1, ENTRY_LEVEL_PARTY)}
+    found[ENTRY_LEVEL_PARTY] = "Party level"
+    for level in range(ENTRY_LEVEL_PARTY + 1, ENTRY_LEVEL_MAX + 1):
+        found[level] = f"Party level + {level - ENTRY_LEVEL_PARTY}"
+    return found
+
+
 # Present is a bitmask patch, not a checkbox. The layout: "if not 255, it's
 # cast to byte and patches that respective field with the mask 0xC
 # (b00001100)". Real modded data settles it - Zodi's own Dark Knight
@@ -948,6 +1204,14 @@ ENTRY_NUMERIC_FIELDS = {
     for name, text in _ENTRY_NUMERIC_TEXT.items()
 }
 
+# The six value fields keep their labels HERE and only here - the companion
+# to the note beside ENTRY_VALUE_FIELDS, which is defined earlier in this
+# file and so cannot check this itself. They became dropdowns; they did not
+# stop being numbers, and "Job Unlock" is still what the row is called.
+assert set(ENTRY_VALUE_FIELDS) <= set(ENTRY_NUMERIC_FIELDS), (
+    "every value field needs its label and bounds in ENTRY_NUMERIC_FIELDS; "
+    f"missing: {sorted(set(ENTRY_VALUE_FIELDS) - set(ENTRY_NUMERIC_FIELDS))}")
+
 # Per-field confidence, rendered in the tab so a guess never reads as a
 # fact. See the tier definitions in this section's header comment.
 ENTRY_FIELD_CONFIDENCE = {
@@ -995,10 +1259,23 @@ ENTRY_CONFIDENCE_LABELS = {
 # UnknownFlags bit fields now sit together (they are one uint in the game's
 # memory), and the fields whose meaning is genuinely unknown are collected
 # at the bottom rather than salted through the useful ones.
+# Section membership and order, both from real use.
+#
+# The two Job Command fields moved out of Identity and to the TOP of
+# Abilities: they pick a command set, which is what the three ability slots
+# under them modify, so reading the five together is how somebody actually
+# thinks about a unit. Zodi's wording: "change the order of the Abilities
+# drop down to be Primary Job Command, Secondary Job Command, Reaction,
+# Support, and then Movement."
+#
+# Equipment leads with the hands because that is what a mod author changes
+# first and what decides a unit's whole role - "Right Hand, Left Hand, Head,
+# Body, and then Accessory" - rather than running top-to-bottom down the
+# body as the ENTD byte order happens to.
 ENTRY_FIELD_SECTIONS = {
-    "Identity": ["Unknown4", "MainJob", "JobUnlock", "JobLevel", "EntryUnknown1D", "SecondarySkillset", "Spriteset"],
-    "Abilities": ["Reaction", "Support", "Movement"],
-    "Equipment": ["Head", "Body", "Accessory", "RightHand", "LeftHand"],
+    "Identity": ["Unknown4", "MainJob", "JobUnlock", "JobLevel", "Spriteset"],
+    "Abilities": ["EntryUnknown1D", "SecondarySkillset", "Reaction", "Support", "Movement"],
+    "Equipment": ["RightHand", "LeftHand", "Head", "Body", "Accessory"],
     "Stats & Level": ["Level", "Bravery", "Faith"],
     "Placement & Presence": ["PositionX", "PositionY", "InitialDirection", "HigherElevation", "Present", "Disable", "LoadFormation", "UnitId+characontrolid+Id"],
     "Unit Markers & Turn Order (UnknownFlags)": ["Unknown8E", "Unknown8F", "Unknown90", "Unknown91", "Unknown92", "Unknown93", "Unknown94", "Unknown95", "Unknown96", "Unknown97", "Unknown99"],
@@ -1024,6 +1301,41 @@ ENTRY_FIELD_LABELS = {
     "RightHand": "Right Hand",
     "LeftHand": "Left Hand",
 }
+
+# The twelve id fields are exactly the twelve that have a list of values
+# meaning something other than "a row id". Checked here rather than at
+# ENTRY_SPECIAL_VALUES only because that table is defined earlier, beside
+# the inherit values it must not collide with.
+# The eighteen dropdown fields split cleanly in two, and must: a field is
+# either a list of rows in another table or a list of values, and where its
+# names come from depends on which. Checked here because ENTRY_VALUE_FIELDS
+# is defined earlier, beside the inherit values it must not collide with.
+assert not set(ENTRY_VALUE_FIELDS) & set(ENTRY_FIELD_LABELS), (
+    "a field cannot be both a list of rows and a list of values: "
+    f"{sorted(set(ENTRY_VALUE_FIELDS) & set(ENTRY_FIELD_LABELS))}")
+
+assert set(ENTRY_SPECIAL_VALUES) == set(ENTRY_FIELD_LABELS), (
+    "ENTRY_SPECIAL_VALUES and ENTRY_FIELD_LABELS must cover the same twelve "
+    f"fields; these appear in one but not the other: "
+    f"{sorted(set(ENTRY_SPECIAL_VALUES) ^ set(ENTRY_FIELD_LABELS))}")
+
+
+def entry_special_values(field_name: str) -> dict:
+    """
+    `{value: what it means}` for the values of a column that are not ids.
+
+    Single source of truth for both the Encounters dropdowns and their
+    captions, for the same reason `entry_inherit_value` is: the control and
+    the words under it cannot then disagree.
+
+    Both tables, because a caller asking "what does 254 mean on this field"
+    should not have to know whether the field is one of the twelve that
+    point at rows or one of the six that hold values. The two cannot
+    overlap - asserted where ENTRY_VALUE_SPECIALS is defined - so the order
+    of the lookup does not matter.
+    """
+    return dict(ENTRY_SPECIAL_VALUES.get(field_name)
+                or ENTRY_VALUE_SPECIALS.get(field_name) or {})
 
 
 def entry_inherit_value(field_name: str):
@@ -1069,7 +1381,7 @@ CHARANAME_NUMERIC_FIELDS = {
     "DLCFlags": (0, 255, "DLC Flags", ""),
 }
 CHARANAME_BOOL_FIELDS = {
-    "IsGeneric": ("Generic Unit", "Checked for reusable/generic named units (e.g. story guests), unchecked for unique named characters."),
+    "IsGeneric": ("Generic Unit", "Checked for generic named units, unchecked for unique named characters."),
 }
 
 # ---------------------------------------------------------------------------
@@ -1378,53 +1690,42 @@ POACH_TEXT_FIELDS = ["Name", "NameSingular", "NamePlural", "Name2", "Description
 POACH_NUMERIC_FIELDS = {
     # name: (min, max, label, help text)
     "DLCFlags": (0, 255, "DLC Flags", ""),
-    "Cost": (0, 65535, "Cost", "Shop buy price, if this carcass is ever sold anywhere."),
-    "SellPrice": (0, 65535, "Sell Price", "Confirmed: equals round(Cost / 2) in all 96 real rows checked."),
-    "IconId": (0, 65535, "Icon ID", (
-        "References the game's icon sheet - same field name/meaning as Ability/Item's own IconId "
-        "field (a confirmed FF16Tools name, not a guess). Confirmed: the common and rare variant of "
-        "a given monster's carcass always share one value in all 96 real rows checked. Not the same "
-        "icon reference as Is Rare's own \"IconId = 503 + this\" disassembly note below - that's a "
-        "separate, hardcoded icon computed elsewhere in the game's code, not this column."
-    )),
-    "ProducedItemId": (0, MAX_ITEM_ID, "Produces / Unlocks Item", (
-        "Inferred, not confirmed: FF16Tools calls this field \"Unknown2C\", and even the layout "
-        "file's own reverse-engineering notes don't name it - but its value matches this carcass's "
-        "own flavor text almost exactly, by real ItemData.xml id (95 of 96 real rows checked - e.g. "
-        "Chocobo Carcass -> 253 Phoenix Down, whose own description literally reads \"Used to produce "
-        "a tuft of phoenix down\"; the one exception is itself a real oddity in the game's own text, "
-        "not a pattern break). Likely the item this carcass unlocks/produces at the Poacher's Den shop."
-    )),
-    "Unknown1C": (0, 255, "Unknown1C", (
-        "0 in every real row checked. PoachItem.layout's own disassembly note speculates \"noun "
-        "bytes?\" (possibly grammatical classification data used when building sentences around this "
-        "item's name, e.g. gender/article agreement) - a real lead, not confirmed."
-    )),
+    # Cost, Sell Price and Produces / Unlocks Item carry no note, at Zodi's
+    # request. What Produces' note said - that the field's meaning is
+    # INFERRED (FF16Tools calls it Unknown2C; its value matches the
+    # carcass's own flavour text on 95 of 96 real rows, e.g. Chocobo Carcass
+    # -> 253 Phoenix Down) - is recorded here rather than lost, and HANDOFF
+    # says so.
+    "Cost": (0, 65535, "Cost", ""),
+    "SellPrice": (0, 65535, "Sell Price", ""),
+    "IconId": (0, 65535, "Icon ID",
+               "References the position on the ui_poachers_den_monster_icon_uitx texture."),
+    "ProducedItemId": (0, MAX_ITEM_ID, "Produces / Unlocks Item", ""),
+    # Unknown1C, 1E, 20 and 35: shortened to at most 150 characters, with a
+    # hyphen only between two numbers - Zodi's two rules, checked by
+    # `test_qt_poaching` with len() and a regex rather than by eye. Written
+    # from the rows, not from the old notes: measured on 1.4.0, 1.5.1 and
+    # 1.5.2, the old 1C note ("0 in every real row checked") was wrong - 8
+    # English rows hold 1, exactly the carcasses whose English name starts
+    # with a vowel. The same suite checks every fact below against the data.
+    "Unknown1C": (0, 255, "Unknown1C",
+                  '1 on the 8 English rows whose name starts with a vowel, 0 '
+                  'on every other row. Inferred: whether English says "an" '
+                  'rather than "a".'),
     "Unknown1D": (0, 255, "Unknown1D", "1 in every real row checked."),
-    "Unknown1E": (0, 255, "Unknown1E", (
-        "0 in every real English row checked, but 1 in every real French row checked - a genuine "
-        "per-language difference in the game's own data, not a copy/paste mistake in this tool. "
-        "Plausibly connected to Unknown1C's own \"noun bytes?\" lead just above (grammatical gender/"
-        "article rules are exactly the kind of thing that would genuinely differ between English and "
-        "French for the same item) - a reasonable guess, not confirmed."
-    )),
+    "Unknown1E": (0, 255, "Unknown1E",
+                  '1 on every French row, 0 in every other language. Every '
+                  'French name starts "Carcasse", so perhaps grammatical '
+                  'gender. Not confirmed.'),
     "Unknown1F": (0, 255, "Unknown1F", "0 in every real row checked."),
-    "Unknown20": (0, 2147483647, "Unknown20", (
-        "0 in every real row checked. A full 4-byte int in PoachItem.layout (not a single byte like "
-        "its 1C-1F neighbors), so the input above allows the full range even though nothing observed "
-        "so far uses more than 0."
-    )),
-    "Unknown35": (0, 255, "Unknown35", (
-        "A second sequential index, separate from Key - common-variant carcasses run roughly 1-48 "
-        "and rare variants roughly 51-98 (by Key order), but this does NOT simply equal Icon ID + 50 "
-        "(checked against all 96 real rows - plenty of exceptions). PoachItem.layout's own "
-        "disassembly note calls this field \"bool\", but that's a real conflict with the actual data "
-        "(1-98 across real rows is clearly not a plain 0/1) - most likely explained by some code path "
-        "only ever testing this byte for zero-vs-nonzero without caring about its exact magnitude, "
-        "while the real stored values still carry the sequential-looking information above elsewhere. "
-        "Kept as a plain number (not a checkbox) so editing it can't destroy that magnitude - "
-        "genuinely unconfirmed either way, not auto-derived from Icon ID/Is Rare."
-    )),
+    "Unknown20": (0, 2147483647, "Unknown20",
+                  "0 in every real row checked. A four byte integer in "
+                  "PoachItem.layout, not one byte like 1C to 1F, so the box "
+                  "allows the full range."),
+    "Unknown35": (0, 255, "Unknown35",
+                  "A second index in Key order: common carcasses run 1-48, "
+                  "rare ones 51-98. The layout calls it a bool; the data "
+                  "does not, so it stays a number."),
     "Unknown36": (0, 255, "Unknown36", (
         "0 in all but 3 of the 96 real rows checked (Dryad Carcass<Icon=103>, Behemoth King "
         "Carcass<Icon=103>, Hydra Carcass) - meaning unknown."
@@ -1432,13 +1733,15 @@ POACH_NUMERIC_FIELDS = {
 }
 
 POACH_BOOL_FIELDS = {
+    # Shortened at Zodi's request (150 characters at most, no "-" outside
+    # a number range). What the long version carried, so it is not lost:
+    # the flag matches the "<Icon=103>" marker in the carcass's name on all
+    # 96 real rows, 48 each way; and PoachItem.layout says "used for icon.
+    # IconId = 503 + this" - a hardcoded icon computed from this byte,
+    # separate from the Icon ID column.
     "IsRare": ("Rare Variant", (
-        "Checked for the higher-quality \"<Icon=103>\" carcass variant of a monster, unchecked for "
-        "the common one - confirmed to match all 96 real rows exactly. PoachItem.layout's own "
-        "disassembly note adds real context beyond this table: \"used for icon. IconId = 503 + "
-        "this\" - i.e. some other part of the game computes a completely separate, hardcoded icon "
-        "(503 for common, 504 for rare) directly from this byte, unrelated to this table's own Icon "
-        "ID column above."
+        "Checked for a monster's rare carcass, unchecked for its common one. "
+        "The game also picks a separate icon from it: 503 if common, 504 if rare."
     )),
 }
 

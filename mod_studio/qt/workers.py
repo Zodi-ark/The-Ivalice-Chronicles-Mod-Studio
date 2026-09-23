@@ -153,6 +153,19 @@ class _RunningThreads(QObject):
         subprocess should not stop the application closing, and at that
         point the process is going away anyway.
         """
+        # A worker that can stop early is asked to, FIRST. `quit()` ends only
+        # the event loop, and a bulk export's `run()` is one long loop over
+        # thousands of files - so closing the window mid-export used to wait
+        # out the bound below and tear the thread down while it was still
+        # working. A cancellable worker stops at its next file instead,
+        # which is well inside the wait.
+        for thread in list(self._threads):
+            cancel = getattr(getattr(thread, "_worker", None), "cancel", None)
+            if callable(cancel):
+                try:
+                    cancel()
+                except RuntimeError:
+                    pass                   # The worker is already gone.
         for thread in list(self._threads):
             try:
                 thread.quit()

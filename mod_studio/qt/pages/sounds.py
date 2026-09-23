@@ -38,17 +38,21 @@ import hashlib
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QPlainTextEdit, QSpinBox,
+    QLineEdit, QListWidget, QMenu, QMessageBox, QPlainTextEdit, QSpinBox,
     QListWidgetItem, QPushButton, QSizePolicy, QSpinBox, QTreeView,
-    QSplitter, QVBoxLayout, QWidget
+    QSplitter, QVBoxLayout, QWidget, QGridLayout
 )
 
 from ... import pzd_data
 from ... import sound_data as sd
 from ... import paths
+from .. import export_dialogs
+from ..bulk_export import (
+    SOUND_FOLDER_LABEL, BulkExportRun, SoundExportWorker, files_under,
+)
 from ..models.texture_tree import TextureTreeModel
 from ..widgets.actions import (
     edit_counter_text, language_combo, page_intro)
@@ -58,6 +62,8 @@ from ..workers import Worker, run_in_thread
 from ..pages.textures import TexturePathFilter, TreePaneSizer
 from ..audio_output import LoopPlayer
 from ..widgets.waveform import WaveformView
+from ..widgets.stable_button import StableButton
+from ..widgets.status_line import StatusLine
 
 #: Where unpacked archives are cached for browsing. A new name, so the old
 #: cache is never read: builds before this one wrote a replacement's audio
@@ -70,6 +76,13 @@ SAB_CACHE = "sab_cache_2"
 #: against the real game listing with the tree's own font: the widest row
 #: under sound/ needs about 340px.
 SOUND_TREE_WIDTH = 360
+
+
+#: The four facts every track shows, in order: (key, label).
+TRACK_INFO_ROWS = (("format", "Format"), ("loop", "Game loop"),
+                   ("use", "In-game use"), ("source", "Source"))
+UNDO_REPLACEMENT = "Undo this track's replacement"
+UNDO_LOOP_CHANGE = "Undo this track's loop change"
 
 
 def clock_text(frames: int, rate: int) -> str:
@@ -166,6 +179,10 @@ class SoundsPage(QWidget):
         self.tracks = []
         self.current_track = None
         self._thread = None
+        #: The folder export on screen, if any - one at a time. Kept after it
+        #: finishes, so its result can be read (`last_bulk_export`).
+        self._bulk_run = None
+        self.last_bulk_export = None
 
         # The model is shared with Textures because the node types match.
         # What it is told about is this page's own edit store.
@@ -205,6 +222,13 @@ class SoundsPage(QWidget):
         self.tree.setMinimumWidth(280)
         self.tree.setColumnWidth(0, 300)
         self.tree.selectionModel().currentChanged.connect(self._on_selection)
+        # Folders only. This tree had no context menu at all; a folder now
+        # has one entry, the bulk export Zodi asked for beside the Textures
+        # one - "we should also do this for the Sounds page so users can
+        # bulk export wav files". An archive's own actions are on the right,
+        # where its tracks are, and nobody asked for them here.
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
         left.addWidget(self.tree, 1)
 
         self.empty_note = QLabel(
@@ -219,37 +243,69 @@ class SoundsPage(QWidget):
         left_holder.setLayout(left)
         split.addWidget(left_holder)
 
+        # -- the editor, laid out so that doing something moves nothing ---
+        #
+        # Reported: "when exporting tracks as WAV or Replacing tracks it
+        # moves elements of the page making it not look modern and it feels
+        # amateurish ... feel free to follow the design UI philosophy of the
+        # likes of Adobe, Apple, or various Digital Audio Workstations."
+        #
+        # Measured on this page before the change, at 1920: exporting moved
+        # the waveform down 32px, replacing a track moved it another 16 and
+        # the track list 16, and pressing Play moved Stop, Loop and both Set
+        # buttons 11px right. Every one was text appended to a label ABOVE
+        # the thing being worked on, or a button whose width is its text.
+        #
+        # What an audio editor's inspector does instead, and this does now:
+        #
+        # * FIXED FIELDS, NOT A PARAGRAPH. The track's facts are four
+        #   labelled rows that are always there - Format, Game loop, In-game
+        #   use, Source - so replacing a track changes a value, never the
+        #   number of lines.
+        # * A RESULT GOES BESIDE WHAT PRODUCED IT, in room that is always
+        #   laid out: Export and Replace report on their own row, the loop
+        #   buttons on theirs (`StatusLine`). Nothing is inserted above the
+        #   waveform, ever.
+        # * STATE IN A BADGE. "1 track replaced" sits right-aligned in the
+        #   title row, which is the title's height whatever it says.
+        # * BUTTONS THAT CHANGE THEIR WORDS KEEP THEIR WIDTH (`StableButton`).
+        # * LOADING IN PLACE. "Opening the archive..." is a line in the
+        #   track list itself, which is one row tall either way for the
+        #   single-track archives that are most of the game, rather than a
+        #   note that appears above it and vanishes.
         right = QVBoxLayout()
+        # Room between the groups, and none inside the header: the title
+        # and its path read as one thing, the track list as the next.
+        right.setSpacing(12)
+        header = QVBoxLayout()
+        header.setSpacing(2)
+        title_row = QHBoxLayout()
         self.selected_label = QLabel("Select a sound archive")
         self.selected_label.setStyleSheet("font-weight: 600; font-size: 12pt;")
-        self.selected_label.setWordWrap(True)
-        right.addWidget(self.selected_label)
+        title_row.addWidget(self.selected_label, 1)
+        #: What this mod does to the archive: "1 track replaced", "Whole
+        #: archive replaced". Empty when nothing is.
+        self.archive_badge = QLabel("")
+        self.archive_badge.setProperty("role", "ok")
+        title_row.addWidget(self.archive_badge, 0,
+                            Qt.AlignRight | Qt.AlignVCenter)
+        header.addLayout(title_row)
 
-        self.detail = QLabel("")
-        self.detail.setProperty("role", "muted")
-        self.detail.setWordWrap(True)
-        right.addWidget(self.detail)
-
-
-        self.tracks_note = QLabel("")
-        self.tracks_note.setProperty("role", "attention")
-        self.tracks_note.setWordWrap(True)
-        right.addWidget(self.tracks_note)
+        #: Where the archive is and what kind it is, on one line.
+        self.detail = StatusLine()
+        header.addWidget(self.detail)
+        right.addLayout(header)
 
         # No "Open this archive's tracks" button - selecting an archive
         # opens it. It existed because only the first selection opened
         # anything, so a second archive needed a manual push.
-
         self.track_list = QListWidget()
-        self.track_list.setMaximumHeight(160)
         self.track_list.currentItemChanged.connect(self._on_track_selected)
         self.track_list.setVisible(False)
         right.addWidget(self.track_list)
-
-        self.track_detail = QLabel("")
-        self.track_detail.setProperty("role", "muted")
-        self.track_detail.setWordWrap(True)
-        right.addWidget(self.track_detail)
+        #: What the list is saying INSTEAD of tracks - "Opening the
+        #: archive...", or why it couldn't - or "" when it holds tracks.
+        self.track_list_message = ""
 
         # In a widget, so the whole set can be hidden until an archive is
         # chosen. Five disabled buttons, a Loop points box and a Subtitle
@@ -258,15 +314,33 @@ class SoundsPage(QWidget):
         # with a screenshot.
         #
         # Laid out the way audio editors lay out a track (Audacity, Adobe
-        # Audition, Logic): what you can do to the track, then its waveform
-        # across the whole width, then the transport under it - every row
-        # only as wide as its buttons. They were five buttons stacked at
-        # full width, and giving this side more room made them five 1100px
-        # bars; reported with a screenshot.
+        # Audition, Logic): what the track is, what you can do to it, then
+        # its waveform across the whole width, then the transport under it -
+        # every row only as wide as its buttons.
         self.actions_box = QWidget()
         actions = QVBoxLayout(self.actions_box)
         actions.setContentsMargins(0, 0, 0, 0)
-        actions.setSpacing(8)
+        actions.setSpacing(10)
+
+        # The track's facts, as an inspector shows them: a label column and
+        # a value column, every row always present. A value too long for
+        # the room is elided and whole in its tooltip.
+        info = QGridLayout()
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setHorizontalSpacing(16)
+        info.setVerticalSpacing(4)
+        #: key -> the value's line. See `track_info_text`.
+        self.info_values = {}
+        for row, (key, label) in enumerate(TRACK_INFO_ROWS):
+            name = QLabel(label)
+            name.setProperty("role", "muted")
+            info.addWidget(name, row, 0)
+            value = StatusLine()
+            value.say("", "plain")
+            info.addWidget(value, row, 1)
+            self.info_values[key] = value
+        info.setColumnStretch(1, 1)
+        actions.addLayout(info)
 
         # Playback - see `play_track`. The playhead is read from the sound
         # device by this timer, never worked out from a clock.
@@ -285,7 +359,8 @@ class SoundsPage(QWidget):
         self.replace_button.setEnabled(False)
         self.replace_button.clicked.connect(self.replace_track)
         track_row.addWidget(self.replace_button)
-        self.clear_track_button = QPushButton("Undo this track's replacement")
+        self.clear_track_button = StableButton(
+            UNDO_REPLACEMENT, (UNDO_LOOP_CHANGE,))
         self.clear_track_button.setEnabled(False)
         self.clear_track_button.clicked.connect(self.clear_track_replacement)
         track_row.addWidget(self.clear_track_button)
@@ -293,7 +368,10 @@ class SoundsPage(QWidget):
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self.export_track)
         track_row.addWidget(self.export_button)
-        track_row.addStretch(1)
+        track_row.addSpacing(8)
+        #: What Export, Replace or Undo just did, beside them.
+        self.action_status = StatusLine()
+        track_row.addWidget(self.action_status, 1)
         actions.addLayout(track_row)
 
         self.waveform = WaveformView()
@@ -305,7 +383,7 @@ class SoundsPage(QWidget):
         actions.addWidget(self.waveform)
 
         transport = QHBoxLayout()
-        self.play_button = QPushButton("Play")
+        self.play_button = StableButton("Play", ("Pause",))
         self.play_button.setEnabled(False)
         self.play_button.clicked.connect(self.play_track)
         transport.addWidget(self.play_button)
@@ -314,7 +392,7 @@ class SoundsPage(QWidget):
         self.stop_button.clicked.connect(self.stop_track)
         transport.addWidget(self.stop_button)
         # Says its state: the theme draws a checked button like any other.
-        self.loop_button = QPushButton("Loop: on")
+        self.loop_button = StableButton("Loop: on", ("Loop: off",))
         self.loop_button.setCheckable(True)
         self.loop_button.setChecked(True)
         self.loop_button.setEnabled(False)
@@ -342,12 +420,11 @@ class SoundsPage(QWidget):
         self.position_label = QLabel("")
         self.position_label.setProperty("role", "muted")
         transport.addWidget(self.position_label)
-        transport.addStretch(1)
+        transport.addSpacing(12)
+        #: Why a loop edit or playback didn't happen, beside the buttons.
+        self.loop_note = StatusLine()
+        transport.addWidget(self.loop_note, 1)
         actions.addLayout(transport)
-        self.loop_note = QLabel("")
-        self.loop_note.setProperty("role", "attention")
-        self.loop_note.setWordWrap(True)
-        actions.addWidget(self.loop_note)
         right.addWidget(self.actions_box)
 
         # -- the subtitle for this recording ---------------------------------
@@ -372,9 +449,9 @@ class SoundsPage(QWidget):
         self.subtitle_box = QGroupBox("Subtitle")
         subtitle_column = QVBoxLayout(self.subtitle_box)
 
-        self.subtitle_status = QLabel("")
-        self.subtitle_status.setProperty("role", "muted")
-        self.subtitle_status.setWordWrap(True)
+        # One line, so an edit adding "1 field(s) edited" cannot wrap it
+        # and push the line being typed into down the page.
+        self.subtitle_status = StatusLine()
         subtitle_column.addWidget(self.subtitle_status)
 
         language_row = QHBoxLayout()
@@ -497,6 +574,18 @@ class SoundsPage(QWidget):
         return tree
 
     def refresh_tree(self) -> None:
+        # The unpack folder's contents have just changed, so anything this
+        # page cached FROM that folder is stale - the tree below is rebuilt
+        # for exactly that reason, and the voice index is read from the
+        # same folder.
+        #
+        # This is the hook because `app._on_setup_changed` already calls
+        # `refresh_tree` on every page that has one, and setup emits
+        # `setup_changed` at the end of every unpack, every conversion and
+        # every mod open. Naming a new signal would have added a second
+        # thing to remember; the list of names is what failed three times
+        # in `_on_setup_changed` itself.
+        self.forget_voice_index()
         tree = self._ensure_tree()
         self.model.set_root(tree)
         # Re-read both edit stores. Sounds is worse than Textures here:
@@ -537,10 +626,38 @@ class SoundsPage(QWidget):
         # previous archive's tracks under a new name.
         self.tracks = []
         self.current_track = None
-        self.track_list.clear()
+        self._show_track_info(None)
+        self._show_list_message("Opening the archive...")
         self._load_waveform()
-        self.tracks_note.setText("Opening the archive...")
         self.open_archive()
+
+    def _show_list_message(self, text: str) -> None:
+        """
+        Puts `text` in the track list in place of tracks - one row that
+        cannot be selected.
+
+        In the list rather than above it: the loading line used to be a
+        label that appeared over the list and vanished a moment later, so
+        every archive chosen made the page jump twice. The list is one row
+        tall for a message and one row tall for the one track most
+        archives hold, so opening one of those moves nothing.
+        """
+        self.track_list_message = text
+        self.track_list.clear()
+        item = QListWidgetItem(text)
+        item.setFlags(Qt.NoItemFlags)
+        item.setToolTip(text)
+        self.track_list.addItem(item)
+        self._fit_track_list(1)
+
+    def _fit_track_list(self, rows: int) -> None:
+        """As tall as `rows` rows, up to six."""
+        rows = max(1, min(rows, 6))
+        row = self.track_list.sizeHintForRow(0)
+        if row <= 0:
+            row = self.track_list.fontMetrics().height() + 4
+        self.track_list.setFixedHeight(
+            row * rows + 2 * self.track_list.frameWidth() + 2)
 
     def select_record(self, relative_path) -> bool:
         """
@@ -664,11 +781,45 @@ class SoundsPage(QWidget):
     _voice_index: dict = {}
     _voice_index_root = object()
 
+    def forget_voice_index(self) -> None:
+        """
+        Drops the cached index so the next lookup rebuilds it.
+
+        Reported from real use: "if the user only unpacks Sounds and music
+        on the General Set up page and then after that unpacks Game Data
+        and Sounds and music the Subtitle box will not appear on the Sounds
+        page until the user closes the session of Mod Studio and then
+        reopens it."
+
+        The cache below is keyed on the FOLDER'S PATH, and in that sequence
+        the path never changes - only its contents do. The first unpack
+        leaves a folder with no `.pzd` files in it at all (they come with
+        Game Data), so the index is built empty and cached as such; the
+        second unpack drops the `.pzd` files into that same folder, the
+        root still compares equal, and `_subtitle_for` goes on finding
+        nothing. `_refresh_subtitle` then takes its `entry is None` branch
+        and hides the box on every selection.
+
+        That restarting fixes it is the confirming detail rather than a
+        coincidence: a new page has the class-level sentinel above for its
+        `_voice_index_root`, so the comparison fails, so it rebuilds.
+
+        Invalidated rather than rebuilt here. The rebuild reads every
+        `.pzd` on disk, and the event that invalidates the index is not
+        the event that needs it - someone who unpacks and never opens
+        Sounds should not pay for a scan they will not look at.
+        """
+        # A fresh object, so the comparison in `voice_index` cannot match
+        # any path. Assigning None would collide with the real "no folder
+        # chosen" root and leave the empty index cached under it.
+        self._voice_index_root = object()
+
     def voice_index(self) -> dict:
         """
         `{voice path: (file, line id)}`, built once and kept.
 
-        Rebuilt only when the unpack folder changes. Reading every `.pzd`
+        Rebuilt when the unpack folder changes, and when
+        `forget_voice_index` says its contents have. Reading every `.pzd`
         costs about 0.4s for a text mod's 629 files and a few seconds for
         the game's 4,417 - cheap once, wasteful per selection.
         """
@@ -776,7 +927,7 @@ class SoundsPage(QWidget):
                 bool(edits.get("is_shortened", entry.is_shortened)))
         finally:
             self._loading_subtitle = False
-        self.subtitle_status.setText(
+        self.subtitle_status.say(
             f"{text_path}  \u00b7  line {line_id}"
             + (f"  \u00b7  {len(edits)} field(s) edited" if edits else ""))
         self.subtitle_revert.setEnabled(bool(edits))
@@ -822,7 +973,7 @@ class SoundsPage(QWidget):
         if not lines:
             self.state.pzd_edits.pop(path, None)
         edits = self.state.pzd_edits.get(path, {}).get(line_id, {})
-        self.subtitle_status.setText(
+        self.subtitle_status.say(
             f"{path}  \u00b7  line {line_id}"
             + (f"  \u00b7  {len(edits)} field(s) edited" if edits else ""))
         self.subtitle_revert.setEnabled(bool(edits))
@@ -880,15 +1031,20 @@ class SoundsPage(QWidget):
             # points or a subtitle, so none of that furniture is shown -
             # the pane says what to do and stops there.
             self.selected_label.setText("Select a sound archive")
-            self.detail.setText("")
-            self.tracks_note.setText("")
+            self.archive_badge.setText("")
+            self.archive_badge.setToolTip("")
+            self.detail.clear()
+            self.track_list_message = ""
             self.track_list.setVisible(False)
-            self.track_detail.setText("")
+            self._show_track_info(None)
             self.actions_box.setVisible(False)
             self.loop_box.setVisible(False)
             self.subtitle_box.setVisible(False)
             return
         self.actions_box.setVisible(True)
+        self.track_list.setVisible(True)
+        if not self.track_list.count():
+            self._fit_track_list(1)
         self.loop_box.setVisible(self._track_loops())
 
         self.selected_label.setText(node.name)
@@ -902,21 +1058,26 @@ class SoundsPage(QWidget):
                 lines.append(f"Type: {kind}")
         except Exception:                                     # noqa: BLE001
             pass
+        self.detail.say("  \u00b7  ".join(lines), "muted")
 
+        # What the mod does to it, as a badge in the title row - which is
+        # the title's height whatever the badge says, so an edit appearing
+        # moves nothing. It used to be a third line under the path.
+        badge = []
         tracks = self.state.sound_edits.get(node.relative_path) or {}
         if tracks:
             loops_only = sum(1 for edit in tracks.values()
                              if isinstance(edit, dict) and not edit.get("source_path"))
-            parts = []
             if len(tracks) - loops_only:
-                parts.append(f"{len(tracks) - loops_only} track(s) replaced")
+                badge.append(f"{len(tracks) - loops_only} track(s) replaced")
             if loops_only:
-                parts.append(f"{loops_only} loop(s) changed")
-            lines.append(", ".join(parts) + ".")
+                badge.append(f"{loops_only} loop(s) changed")
         whole = self.state.sound_file_replacements.get(node.relative_path)
         if whole:
-            lines.append(f"Whole archive replaced with: {whole}")
-        self.detail.setText("\n".join(lines))
+            badge.append("Whole archive replaced")
+        self.archive_badge.setText(", ".join(badge))
+        self.archive_badge.setToolTip(
+            f"Whole archive replaced with: {whole}" if whole else "")
         self._refresh_subtitle()
 
         # Said plainly rather than shown as an empty list. An archive whose
@@ -962,15 +1123,15 @@ class SoundsPage(QWidget):
         source = self._source_path()
         exe = getattr(self.state, "audiomog_exe_path", None)
         if source is None:
-            self.tracks_note.setText("The unpacked game folder isn't set.")
+            self._show_list_message("The unpacked game folder isn't set.")
             return
         if exe is None:
-            self.tracks_note.setText(
+            self._show_list_message(
                 "AudioMog couldn't be found. It normally ships in this tool's "
                 "tools folder - set it under General Setup, Advanced options.")
             return
 
-        self.tracks_note.setText("Opening the archive...")
+        self._show_list_message("Opening the archive...")
         worker = UnpackArchiveWorker(
             Path(exe), source, self.current_node.relative_path,
             self._cache_root_for(source), as_name=self.current_node.name)
@@ -981,24 +1142,32 @@ class SoundsPage(QWidget):
     def set_tracks(self, tracks) -> None:
         """Fills the track list. Separate so it can be driven without AudioMog."""
         self.tracks = list(tracks)
-        self.track_list.clear()
-        replaced = (self.state.sound_edits.get(
-            self.current_node.relative_path) or {}) if self.current_node else {}
-        for track in self.tracks:
-            item = QListWidgetItem(self._track_label(track))
-            item.setData(Qt.UserRole, track.index)
-            self.track_list.addItem(item)
-        self.track_list.setVisible(bool(self.tracks))
+        if not self.tracks:
+            # Said plainly rather than shown as an empty list. An archive
+            # whose tracks cannot be read is a different thing from an
+            # archive with no tracks in it, and the second would be a lie.
+            self._show_list_message("This archive holds no tracks.")
+            return
+        # Rebuilt without the selection signal: `_after_track_change`
+        # rebuilds the list to relabel it, and the selection it restores is
+        # the same track, so nothing should look as though it was chosen
+        # anew.
+        blocked = self.track_list.blockSignals(True)
+        try:
+            self.track_list.clear()
+            for track in self.tracks:
+                item = QListWidgetItem(self._track_label(track))
+                item.setData(Qt.UserRole, track.index)
+                self.track_list.addItem(item)
+        finally:
+            self.track_list.blockSignals(blocked)
+        self.track_list_message = ""
+        self.track_list.setVisible(True)
         # As tall as its rows, up to six. Most archives hold one track, and
         # a 160px box for one line was height the waveform needed.
-        if self.tracks:
-            rows = min(len(self.tracks), 6)
-            self.track_list.setFixedHeight(
-                self.track_list.sizeHintForRow(0) * rows
-                + 2 * self.track_list.frameWidth() + 2)
-        self.tracks_note.setText("")
-        if self.tracks:
-            self.track_list.setCurrentRow(0)
+        self._fit_track_list(len(self.tracks))
+        self.current_track = None
+        self.track_list.setCurrentRow(0)
 
     def _archive_opened(self, tracks) -> None:
         self.set_tracks(tracks)
@@ -1006,70 +1175,96 @@ class SoundsPage(QWidget):
     def _archive_failed(self, message: str) -> None:
         # Selecting the archive again retries, so there is nothing to
         # re-enable - the failure just has to be readable.
-        self.tracks_note.setText(f"Couldn't open that archive: {message}")
+        self._show_list_message(f"Couldn't open that archive: {message}")
 
     # -- a track ---------------------------------------------------------------
 
     def _on_track_selected(self, current, _previous) -> None:
-        if current is None:
+        if current is None or current.data(Qt.UserRole) is None:
             self.current_track = None
             self._refresh_track_buttons()
             return
         index = current.data(Qt.UserRole)
-        self.current_track = next(
-            (t for t in self.tracks if t.index == index), None)
+        chosen = next((t for t in self.tracks if t.index == index), None)
+        # A result belongs to the track it was about.
+        if chosen is not self.current_track:
+            self.action_status.clear()
+            self.loop_note.clear()
+        self.current_track = chosen
         self._refresh_track_detail()
 
     def _refresh_track_detail(self, reload_audio: bool = True) -> None:
         if reload_audio:
             self._load_waveform()
-        track = self.current_track
-        if track is None:
-            self.track_detail.setText("")
-            self._refresh_track_buttons()
-            return
-        info = track.info
-        lines = [f"{info.duration_sec:.1f}s, {info.sample_rate} Hz, "
-                 f"{info.channels} channel(s)"]
-        if info.loop_start is not None:
-            lines.append(f"Loops from sample {info.loop_start} to "
-                         f"{info.loop_end}.")
-        else:
-            lines.append("No loop points.")
-        if track.users:
+        self._show_track_info(self.current_track)
+        self._refresh_track_buttons()
+        if self.current_track is not None:
+            self._sync_loop_fields()
+
+    def _show_track_info(self, track) -> None:
+        """
+        The four facts, for `track` - or dashes, keeping every row, when
+        there is no track yet.
+        """
+        values = {key: "\u2014" for key, _label in TRACK_INFO_ROWS}
+        kinds = {key: "muted" for key, _label in TRACK_INFO_ROWS}
+        if track is not None:
+            info = track.info
+            channels = f"{info.channels} channel{'s' if info.channels != 1 else ''}"
+            values["format"] = (f"{info.duration_sec:.1f} s  \u00b7  "
+                                f"{info.sample_rate:,} Hz  \u00b7  {channels}")
+            if info.loop_start is not None:
+                values["loop"] = (f"Loops from sample {info.loop_start} to "
+                                  f"{info.loop_end}")
+            else:
+                values["loop"] = "No loop points"
             # A STRING, not a list. This did `", ".join(track.users[:6])`,
             # which slices the first six CHARACTERS and comma-joins them -
             # so `FID_MUSIC_TRACK_068_OGG` rendered as "Used by: F, I, D, _,
             # M, U". Reported as "some letters I don't know what this is",
             # which is exactly what it was.
             #
-            # Labelled the way the Tkinter column is. The value is the
-            # in-game identifier AudioMog records in TrackUsers.txt, and it
-            # is the only thing that tells you which of 300 files named
-            # music_000NN is the one you are looking for.
-            lines.append(f"In-game use: {describe_track_users(track.users)}")
-        edit = self._replacements().get(track.index)
-        if isinstance(edit, dict) and not edit.get("source_path"):
-            lines.append("Loop points changed - the game's own audio, with your loop.")
-        elif isinstance(edit, dict):
-            lines.append(f"Replaced with {Path(edit['source_path']).name}.")
-            try:
-                mine = sd.read_wav_info(Path(edit["source_path"]))
-            except Exception:                                 # noqa: BLE001
-                mine = None
-            # Said, not fixed: AudioMog writes the file's own rate and
-            # channels into the archive, and whether the game resamples has
-            # not been tested - so this is a hint, not a refusal.
-            if mine is not None and ((mine.sample_rate, mine.channels)
-                                     != (info.sample_rate, info.channels)):
-                lines.append(
-                    f"Your file is {mine.sample_rate:,} Hz with "
-                    f"{mine.channels} channel(s); the game's is "
-                    f"{info.sample_rate:,} Hz with {info.channels}. If it "
-                    f"plays wrongly in game convert it to match.")
-        self.track_detail.setText("\n".join(lines))
-        self._refresh_track_buttons()
-        self._sync_loop_fields()
+            # The value is the in-game identifier AudioMog records in
+            # TrackUsers.txt, and it is the only thing that tells you which
+            # of 300 files named music_000NN is the one you are looking for.
+            values["use"] = (describe_track_users(track.users) if track.users
+                             else "Not recorded")
+            values["source"] = "The game's own audio"
+            edit = self._replacements().get(track.index)
+            if isinstance(edit, dict) and not edit.get("source_path"):
+                values["source"] = "The game's own audio, with your loop"
+            elif isinstance(edit, dict):
+                values["source"] = (
+                    f"Replaced with {Path(edit['source_path']).name}.")
+                try:
+                    mine = sd.read_wav_info(Path(edit["source_path"]))
+                except Exception:                             # noqa: BLE001
+                    mine = None
+                # Said, not fixed: AudioMog writes the file's own rate and
+                # channels into the archive, and whether the game resamples
+                # has not been tested - so this is a hint, not a refusal.
+                # The same row, in the attention colour, rather than a line
+                # of its own that appears and pushes the waveform down.
+                if mine is not None and ((mine.sample_rate, mine.channels)
+                                         != (info.sample_rate, info.channels)):
+                    values["source"] += (
+                        f" Your file is {mine.sample_rate:,} Hz with "
+                        f"{mine.channels} channel(s); the game's is "
+                        f"{info.sample_rate:,} Hz with {info.channels}. If "
+                        f"it plays wrongly in game convert it to match.")
+                    kinds["source"] = "attention"
+            for key in ("format", "loop", "use"):
+                kinds[key] = "plain"
+            if kinds["source"] == "muted":
+                kinds["source"] = "plain"
+        for key, line in self.info_values.items():
+            line.say(values[key], kinds[key])
+
+    def track_info_text(self) -> str:
+        """The facts as the rows read them, "Label: value" per line."""
+        labels = dict(TRACK_INFO_ROWS)
+        return "\n".join(f"{labels[key]}: {line.text()}"
+                         for key, line in self.info_values.items())
 
     def _refresh_track_buttons(self) -> None:
         has_track = self.current_track is not None
@@ -1213,13 +1408,13 @@ class SoundsPage(QWidget):
         self._stop_playback()
         self._playhead = 0
         self._pcm = None
-        self.loop_note.setText("")
         path = self._audio_source()[0]
         if path is not None:
             try:
                 self._pcm = self._pcm_for(path)
             except Exception as exc:                          # noqa: BLE001
-                self.loop_note.setText(f"Couldn't read the audio: {exc}")
+                self.loop_note.say(f"Couldn't read the audio: {exc}",
+                                   "attention")
         self.waveform.set_audio(self._pcm)
         self._show_loop()
         self._update_position()
@@ -1240,8 +1435,9 @@ class SoundsPage(QWidget):
             self.position_label.setText("")
             return
         rate = self._pcm.sample_rate
-        self.position_label.setText(
-            f"{clock_text(self._playhead, rate)} / {clock_text(self._pcm.frames, rate)}")
+        text = (f"{clock_text(self._playhead, rate)} / "
+                f"{clock_text(self._pcm.frames, rate)}")
+        self.position_label.setText(text)
 
     def play_track(self, _checked=False) -> None:
         """
@@ -1265,7 +1461,7 @@ class SoundsPage(QWidget):
             self.audio.play(self._pcm, frame, start, end, self._looping())
         except Exception as exc:                              # noqa: BLE001
             self._set_playing(False)
-            self.loop_note.setText(f"Couldn't play that: {exc}")
+            self.loop_note.say(f"Couldn't play that: {exc}", "attention")
             return
         self._playhead = int(frame)
         self._set_playing(True)
@@ -1289,7 +1485,7 @@ class SoundsPage(QWidget):
         if not self._playing:
             return
         self._playhead = self._current_frame()
-        self.waveform.set_playhead(self._playhead)
+        self.waveform.set_playhead(self._playhead, follow=True)
         self._update_position()
 
     def _on_play_finished(self) -> None:
@@ -1317,6 +1513,20 @@ class SoundsPage(QWidget):
     def _stop_playback(self) -> None:
         self.audio.stop()
         self._set_playing(False)
+
+    def changeEvent(self, event):                                # noqa: N802
+        # The list is a FIXED height, worked out from a row's height - and
+        # a row's height is the stylesheet's. A theme change in Settings
+        # restyles the rows, so the list is refitted to them, or the next
+        # archive chosen would refit it and move everything under it.
+        # After the children have restyled, which is why it is queued.
+        super().changeEvent(event)
+        if event.type() in (QEvent.StyleChange, QEvent.FontChange):
+            QTimer.singleShot(0, self._refit_track_list)
+
+    def _refit_track_list(self) -> None:
+        if self.track_list.count():
+            self._fit_track_list(len(self.tracks) or 1)
 
     def hideEvent(self, event):                                  # noqa: N802
         # Leaving the page stops the music, rather than leaving it playing
@@ -1384,7 +1594,7 @@ class SoundsPage(QWidget):
             self.loop_end.setValue(int(end))
         finally:
             self._loading_loop = False
-        self.loop_note.setText("")
+        self.loop_note.clear()
         self._show_loop()
         if dropped or not had_edit:
             self._mark_track()
@@ -1438,11 +1648,11 @@ class SoundsPage(QWidget):
         else:
             end = here
         if end - start < sd.MIN_MEANINGFUL_LOOP_SAMPLES:
-            self.loop_note.setText(
+            self.loop_note.say(
                 "The loop's start has to come before its end - move the "
                 "playhead left of the End flag first." if which == "start" else
                 "The loop's end has to come after its start - move the "
-                "playhead right of the Start flag first.")
+                "playhead right of the Start flag first.", "attention")
             return
         self._set_loop(start, end)
 
@@ -1450,7 +1660,7 @@ class SoundsPage(QWidget):
         if self.current_track is None:
             return
         if path is None:
-            path, _ = QFileDialog.getSaveFileName(
+            path = export_dialogs.save_file(
                 self, "Export track as WAV",
                 f"{self.current_track.stem}.wav", "WAV audio (*.wav)")
         if not path:
@@ -1458,11 +1668,82 @@ class SoundsPage(QWidget):
         try:
             sd.export_track_wav(self.current_track.wav_path, Path(path))
         except Exception as exc:                              # noqa: BLE001
-            self.track_detail.setText(
-                self.track_detail.text() + f"\n\nCouldn't export: {exc}")
+            self.action_status.say(f"Couldn't export: {exc}", "attention")
             return
-        self.track_detail.setText(
-            self.track_detail.text() + f"\n\nExported to {path}")
+        self.action_status.say(f"Exported to {path}", "ok")
+
+    # -- bulk export -------------------------------------------------------------
+
+    def _show_context_menu(self, point) -> None:
+        index = self.tree.indexAt(point)
+        if not index.isValid():
+            return
+        node = self.model.node_at(index)
+        if node is None or getattr(node, "is_file", False):
+            return
+        menu = QMenu(self.tree)
+        export_folder = menu.addAction(SOUND_FOLDER_LABEL)
+        export_folder.setEnabled(not self.bulk_export_running())
+        chosen = menu.exec(self.tree.viewport().mapToGlobal(point))
+        if chosen is export_folder:
+            self.export_folder_as_wav(node=node)
+
+    def bulk_export_running(self) -> bool:
+        return self._bulk_run is not None and self._bulk_run.running
+
+    def export_folder_as_wav(self, _checked=False, node=None,
+                             destination: str | None = None):
+        """
+        Exports every track of every archive under a folder as WAV files,
+        mirroring the game's folder structure under the folder picked.
+
+        Each archive is unpacked FRESH, into a private folder, from the
+        game's own file - not from the browsing cache, and not from a
+        whole-archive replacement an opened mod brought in. See
+        `bulk_export` for the naming rule and the rest. `destination` is
+        for tests, which cannot answer a folder dialog.
+
+        Nothing can be exported without AudioMog, so that is said before
+        anything starts rather than as fourteen thousand identical
+        failures afterwards.
+        """
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        if node is None or not root or self.bulk_export_running():
+            return None
+        exe = getattr(self.state, "audiomog_exe_path", None)
+        if exe is None:
+            box = QMessageBox(self)
+            box.setWindowTitle("Can't export")
+            box.setIcon(QMessageBox.Information)
+            box.setText(
+                "AudioMog couldn't be found, and every sound archive has to "
+                "go through it. It normally ships in this tool's tools "
+                "folder - set it under General Setup, Advanced options.")
+            box.setAttribute(Qt.WA_DeleteOnClose)
+            box.show()
+            self.refusal_box = box
+            return None
+        relative_paths = [leaf.relative_path for leaf in files_under(node)]
+        if not relative_paths:
+            return None
+        if destination is None:
+            destination = export_dialogs.choose_folder(
+                self, f"Export {len(relative_paths):,} sound archives from "
+                      f"{node.relative_path} to which folder?")
+        if not destination:
+            return None
+        worker = SoundExportWorker(root, relative_paths, destination, exe)
+        run = BulkExportRun(
+            self, worker,
+            f"Exporting the tracks of {len(relative_paths):,} sound archives "
+            f"from {node.relative_path} as WAVs into {destination}")
+        run.done.connect(self._bulk_export_done)
+        self._bulk_run = run
+        run.start()
+        return run
+
+    def _bulk_export_done(self, result) -> None:
+        self.last_bulk_export = result
 
     def replace_track(self, _checked=False, path: str | None = None) -> None:
         """
@@ -1479,8 +1760,8 @@ class SoundsPage(QWidget):
         if self.current_track is None or self.current_node is None:
             return
         if path is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Choose a replacement WAV", "",
+            path = export_dialogs.open_file(
+                self, "Choose a replacement WAV",
                 # `All files` for the same reason the image dialogs have
                 # one, and because the Tkinter tab has always carried it: a
                 # dialog with a single pattern cannot open a WAV whose
@@ -1493,8 +1774,7 @@ class SoundsPage(QWidget):
         try:
             replacement_info = sd.check_replacement_wav(Path(path))
         except Exception as exc:                              # noqa: BLE001
-            self.track_detail.setText(
-                self.track_detail.text() + f"\n\nCouldn't replace: {exc}")
+            self.action_status.say(f"Couldn't replace: {exc}", "attention")
             return
         # The dict shape `stage_sound_export` reads - `{track_index:
         # {"source_path", "loop_start", "loop_end"}}` - not a bare path, which
@@ -1522,16 +1802,20 @@ class SoundsPage(QWidget):
             "source_path": Path(path), "loop_start": start, "loop_end": end,
         }
         self._after_track_change()
+        self.action_status.say("Track replaced.", "ok")
 
     def clear_track_replacement(self) -> None:
         if self.current_track is None or self.current_node is None:
             return
         archive = self.state.sound_edits.get(self.current_node.relative_path)
+        undone = bool(archive) and self.current_track.index in archive
         if archive:
             archive.pop(self.current_track.index, None)
             if not archive:
                 self.state.sound_edits.pop(self.current_node.relative_path, None)
         self._after_track_change()
+        if undone:
+            self.action_status.say("Track undone.", "muted")
 
     def _after_track_change(self) -> None:
         selected = self.current_track.index if self.current_track else None

@@ -551,6 +551,20 @@ def stylesheet(dark, backdrop=False) -> str:
     QLabel[role="ok"]       {{ color: {c['ok']}; }}
     QLabel[role="attention"]{{ color: {c['attention']}; }}
     QLabel[role="danger"]   {{ color: {c['danger']}; }}
+    /*
+      A texture preview pane, on the Textures page. A quiet canvas with a
+      hairline, so Current and Replacement read as two equal slots even
+      when one is empty or holds a 56px icon in the middle of it - which is
+      what makes them comparable at a glance - and so the empty pixels of a
+      transparent texture sit on a known ground rather than on more page.
+      The placeholder text ("Nothing staged...") is muted, like every other
+      "nothing here" line in the tool.
+    */
+    QLabel[role="preview"]  {{ background: {surface_alt};
+                               border: 1px solid {c['border']};
+                               border-radius: 4px;
+                               padding: 8px;
+                               color: {c['text_muted']}; }}
 
     QFrame#Sidebar {{ background: {sidebar}; border: none; }}
     QFrame#Sidebar QLabel {{ background: transparent; color: {c['sidebar_text']}; }}

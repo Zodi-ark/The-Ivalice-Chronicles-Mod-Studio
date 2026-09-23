@@ -28,8 +28,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ... import ability_defaults
 from ... import constants as c
 from ... import item_xml_io as ix
+from ... import nxd_data
 from ..widgets.actions import (
     page_intro,
     ViewToggles, apply_view_toggles, mark_edited, select_list_row,
@@ -330,17 +332,21 @@ def equip_bonus_effects(values: dict, field_order,
 #:      2     353px    8 of 128   (so the cap dropped to 1)
 #:      2     288px    0 of 128   with the empty-row suffix removed
 #:      3     344px    6 of 128
+#:      2     343px    2 of 128   with ABILITIES counted as users
+#:      1     277px    0 of 128
+#:      3     387px    9 of 128
 #:
-#: So it is back to 2. The suffix that forced it down to 1 said "no items"
-#: on every row nothing used, and that suffix is gone - this table cannot
-#: make that claim, because an ability's base Inflict Status is hardcoded in
-#: the game and was never data this tool held. The warning lives in the
-#: page description now, and the rows got their second status back.
+#: Back to 1, and for the fourth time the cause is the suffix rather than
+#: the statuses. `data/AbilityActionDefaults.txt` made the ability half of
+#: the usage index readable, and **31 rows now carry a `. N users` suffix
+#: where 8 did** - two of them the long `Cancel: ...` rows, which is what
+#: tipped cap 2 over. The comment above said any change to the row
+#: invalidates the measurement; this is that, happening again.
 #:
 #: The tooltip still carries every status either way. A clipped label loses
 #: information silently; "+7 more" loses it visibly and points at where to
 #: look.
-INFLICT_STATUS_CAP = 2
+INFLICT_STATUS_CAP = 1
 
 #: The option type that is NOT written into the label.
 #:
@@ -547,6 +553,39 @@ USAGE_NOUNS = {
     "item_options": ("users", ""),
 }
 
+#: What a row nothing uses says, per table: `(the line, the tooltip)`.
+#:
+#: Reported from real use, both of them, and the fault was the same in each:
+#: the sentence named the MECHANISM instead of answering the question.
+#:
+#:     "Not used by any item, counting any pending OptionsAbilityId edits."
+#:     "Not used by any item, counting any pending EquipBonusId edits."
+#:
+#: `OptionsAbilityId` is a column name out of the nxd table; a modder
+#: reading the page has no reason to know it, and the clause it sits in was
+#: reassuring the reader about a staleness problem they had not thought to
+#: worry about. The pending edits ARE counted - that is worth being true,
+#: not worth saying every time.
+#:
+#: The two tables then differ, and the difference is the point:
+#:
+#:   * Inflict Status has BOTH kinds of user. Since the vanilla ability
+#:     table shipped, 155 of the 368 abilities point at a status row, so a
+#:     row with no users has no ability users either and the line can say
+#:     so. It said "any item" while the list right above it was headed
+#:     "Used by abilities:", which reads as the line having missed them.
+#:   * Equip Bonus has only items. `ABILITY_USAGE_COLUMN` maps
+#:     `OptionsAbilityId` alone, so `ability_usage` returns `{}` here and
+#:     "or abilities" would be offering a kind of user that cannot exist.
+#:
+#: Kept beside `USAGE_NOUNS` because anyone changing one table's wording
+#: should see the other table's in the same glance.
+USAGE_EMPTY = {
+    "item_equip_bonus": ("Not used by any item.", "Used by: no items"),
+    "item_options": ("Not used by any ability or item.",
+                     "Used by: no items or abilities"),
+}
+
 
 def table_usage(state, column: str, through: str = "") -> dict:
     """
@@ -618,80 +657,142 @@ def table_usage(state, column: str, through: str = "") -> dict:
     return usage
 
 
+def _named_up_to(users: list) -> str:
+    """
+    `USAGE_LIST_LIMIT` names, then "and N more".
+
+    The same cap the visible "Used by" line uses, and it is needed in the
+    tooltip for the same reason it was needed there: Inflict Status row 0
+    is what everything that inflicts nothing points at, and it now has 104
+    items AND 213 abilities on it. A tooltip naming all 317 is a tooltip
+    taller than the screen.
+    """
+    shown = ", ".join(name for _id, name in users[:USAGE_LIST_LIMIT])
+    remaining = len(users) - USAGE_LIST_LIMIT
+    return shown + (f", and {remaining} more" if remaining > 0 else "")
+
+
+def _effective(values: dict, base: dict, column: str):
+    """
+    What an ability's column actually holds: its override, or the vanilla
+    value the override is declining to change.
+
+    None when neither is known.
+    """
+    try:
+        overridden = int(values.get(column, c.OVERRIDE_NOT_SET))
+    except (TypeError, ValueError):
+        overridden = c.OVERRIDE_NOT_SET
+    if overridden != c.OVERRIDE_NOT_SET:
+        return overridden
+    return base.get(column)
+
+
 def ability_usage(state, column: str) -> dict:
     """
-    `row id -> [(ability_id, name)]` from the ability OVERRIDE table.
+    `row id -> [(ability_id, name)]` for every ability that points here.
 
-    The other half of who uses an Inflict Status row, and the half the
-    index could not see. `OverrideAbilityActionData` carries its own
-    `InflictStatus` column, so an ability can point at one of these rows
-    without any item being involved - and a row that only an ability uses
-    read as `unused`, which invites exactly the edit that breaks it.
+    The other half of who uses an Inflict Status row. An ability reaches
+    one of these rows without any item being involved, and a row that only
+    an ability uses read as `unused` - which invites exactly the edit that
+    breaks it.
 
-    Only rows that SET the column count. `-1` is the sentinel for "do not
-    override", so it is not a reference to row -1 and not a reference to
-    row 0 either.
+    **This now reads the vanilla value behind a -1, and that is most of the
+    answer.** `OverrideAbilityActionData` holds -1 in `InflictStatus` on all
+    368 rows of the vanilla game, so reading the override alone found
+    nothing at all: every status row an ability uses looked unused, and the
+    tab carried a written warning saying so ("Beware abilities also use
+    these statuses though they are not listed in Used by"). With
+    `data/AbilityActionDefaults.txt` shipped there is a value behind each
+    -1, and **155 of the 368 abilities turn out to point at a status row** -
+    Raise and Arise at 32, Reraise at 33, Regen at 34, Protect at 35.
 
-    **A row whose own `Formula` override is 2 is excluded**, by the same
-    rule items follow: at 2 the id is an ability to cast, not a status row.
-    A row that does not override `Formula` at all is KEPT, and that is a
-    deliberate lean rather than an oversight - see `usage_certainty`.
+    An ability's OWN override still wins where it sets one, and a pending
+    edit wins over that, so repointing an ability on the Abilities tab moves
+    it between rows here without an export.
 
-    Empty when the ability overrides are not loaded, which is the normal
-    state before the game is unpacked. `usage_certainty` is what stops that
-    emptiness being reported as "nothing uses this row".
+    **A row whose effective `Formula` is 2 is excluded**, by the same rule
+    items follow: at 2 the id is an ability to cast, not a status row. That
+    used to have to guess when the formula was not overridden; the vanilla
+    formula is now known, and no ability has 2 as its base.
     """
     usage: dict = {}
     override_column = ABILITY_USAGE_COLUMN.get(column)
     if override_column is None:
         return usage
+    defaults = ability_defaults.cached()
     edits = getattr(state, "override_action_edits", None) or {}
-    for record in (getattr(state, "override_action_records", None) or []):
-        pending = edits.get(record.key, {})
-        values = {**(record.scalars or {}), **pending}
-        if _is_formula_2(values):
+    records = {r.key: r for r
+               in (getattr(state, "override_action_records", None) or [])}
+    # Every ability the tool knows of, from either source. A mod's own
+    # database holds only the override rows that mod ships, and the
+    # abilities it does not mention still have their vanilla values.
+    for ability_id in sorted(set(defaults) | set(records)):
+        base = defaults.get(ability_id) or {}
+        record = records.get(ability_id)
+        values = {**(getattr(record, "scalars", None) or {}),
+                  **edits.get(ability_id, {})}
+        if _effective(values, base, "Formula") == FORMULA_CASTS_ABILITY:
             continue
-        try:
-            row_id = int(values.get(override_column, c.OVERRIDE_NOT_SET))
-        except (TypeError, ValueError):
-            continue
-        if row_id < 0:
+        row_id = _effective(values, base, override_column)
+        if row_id is None or row_id < 0:
             continue
         usage.setdefault(row_id, []).append(
-            (record.key, ability_display_name(state, record.key)))
+            (ability_id, ability_display_name(state, ability_id)))
     return usage
 
 
-def ability_display_name(state, ability_id: int) -> str:
+def ability_display_name(state, ability_id: int, language: str = "en") -> str:
     """
     An ability's name as the Abilities tab shows it, pending renames and all.
 
-    Through `app.ability_choices` rather than reading the table here, so
-    renaming an ability on its own tab renames it in this list too - the
-    same wiring Poaching uses for Produces / Unlocks Item.
-    """
-    from ..app import ability_choices
+    **Through `nxd_data.effective_name`, which is the call the Abilities
+    page's own `_ability_label` makes.** It used to go through
+    `app.ability_choices`, and that disagreed with the page on 21 of the
+    512 abilities - measured: 184, 219, 220, 357-367 and others, every one
+    of them a row the page lists as `(unnamed)`.
 
-    return ability_choices(state).get(ability_id) or f"Ability {ability_id}"
+    The difference is a FALLBACK. `ability_choices` ends at
+    `ability_names.resolve_ability_name`, which drops back to the bundled
+    FFTPatcher name list when this game's own `Ability-en` has nothing, so
+    ability 359 read `Plunder Gil` here and `359 - (unnamed)` one tab over.
+    Reported from real use, and the wrong half is this one: a name the game
+    does not carry, printed as though the game carried it, is the same
+    mistake as the PlayStation ability table - a plausible value from an
+    older release presented as this game's.
+
+    So an ability the game leaves unnamed is `(unnamed)`, exactly as the
+    page says and exactly as the ITEM half of this line already did
+    (`getattr(record, "name", "") or "(unnamed)"`). The id travels in the
+    link beside the name, so the row is still reachable when the name is
+    not helpful.
+    """
+    return nxd_data.effective_name(state, "ability", ability_id,
+                                   language) or "(unnamed)"
 
 
 def usage_certainty(state) -> bool:
     """
     Whether the tool can see ability references at all right now.
 
-    `AbilityActionData.xml` ships EMPTY on purpose - the loader's own
-    comment says it exists only to point at `OverrideAbilityActionData` -
-    so an ability's base Inflict Status is hardcoded in the game and is not
-    data this tool has ever held. What it CAN see is the override table,
-    and only once the game is unpacked and converted.
+    There used to be three honest states for a row rather than two - used,
+    not used by anything visible, and **not knowable yet** - because an
+    ability's base Inflict Status is hardcoded in the game and was not data
+    this tool held. `AbilityActionData.xml` ships empty on purpose; all the
+    tool could see was the override table, and only after an unpack.
 
-    So there are three honest states for a row, not two: used, not used by
-    anything visible, and not knowable yet. Saying "unused" in the third
-    case is a claim about data the tool does not have, and a beginner who
-    repurposes a row on the strength of it breaks an ability - the exact
-    failure the label exists to prevent.
+    `data/AbilityActionDefaults.txt` removes the third state. It ships
+    populated, so the vanilla value behind every -1 is available before the
+    game is unpacked at all, and "no users" can mean what it says. That is
+    what let the tab's own description drop the warning it used to carry.
+
+    Still a function rather than `True`: deleting the file is supported and
+    puts the third state back, and a row that says `no items` on the
+    strength of a file somebody removed would be making a claim it cannot
+    support.
     """
-    return bool(getattr(state, "override_action_records", None))
+    return bool(ability_defaults.cached()
+                or getattr(state, "override_action_records", None))
 
 
 def equip_bonus_usage(state) -> dict:
@@ -1345,8 +1446,18 @@ class TableEditorPage(RefreshesWhenVisible, QWidget):
                  + (" \u00b7 ".join(phrases) if phrases else "(no effect)")]
         if self.shows_usage:
             users = self._usage.get(record.item_id, [])
-            lines.append("Worn by: " + (", ".join(n for _id, n in users)
-                                        if users else "nothing"))
+            # `USAGE_EMPTY` when there is nobody, and "Used by" rather than
+            # "Worn by" when there is. Changing only the empty half would
+            # leave one line with two labels depending on its state, which
+            # is worse than either. "Used by" is also the truer verb: the
+            # page's visible line already says it, and an Equip Bonus id
+            # sits on item types that are not worn.
+            #
+            # The list itself is unchanged - every user, uncapped. This
+            # tooltip exists to recover what the row shortened, so capping
+            # it would take back the thing it is for.
+            lines.append(("Used by: " + ", ".join(n for _id, n in users))
+                         if users else USAGE_EMPTY[self.table_key][1])
         return "\n".join(lines)
 
     def _usage_tooltip_line(self, row_id: int) -> str:
@@ -1354,15 +1465,14 @@ class TableEditorPage(RefreshesWhenVisible, QWidget):
         users = self._usage.get(row_id, [])
         abilities = self._ability_usage.get(row_id, [])
         if not users and not abilities:
-            return ("Used by: no items"
+            return (USAGE_EMPTY[self.table_key][1]
                     + ("" if self._usage_seen
                        else " (ability overrides not loaded)"))
         parts = []
         if users:
-            parts.append("Items: " + ", ".join(n for _id, n in users))
+            parts.append("Items: " + _named_up_to(users))
         if abilities:
-            parts.append("Abilities: "
-                         + ", ".join(n for _id, n in abilities))
+            parts.append("Abilities: " + _named_up_to(abilities))
         return "Used by - " + "; ".join(parts)
 
     def _dress_item(self, item: QListWidgetItem, record) -> None:
@@ -1441,8 +1551,7 @@ class TableEditorPage(RefreshesWhenVisible, QWidget):
         abilities = self._ability_usage.get(bonus_id, [])
         if not users and not abilities:
             self.usage_label.setText(
-                f"Not used by any item, counting any pending "
-                f"{self._usage_column} edits.{self._unseen_note()}")
+                USAGE_EMPTY[self.table_key][0] + self._unseen_note())
             return
         parts = []
         if users:

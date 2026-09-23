@@ -39,6 +39,10 @@ from ..widgets.field_rows import CollapsibleSection
 from ..widgets.form_scroll import FormScrollArea
 from ..workers import Worker, run_in_thread
 
+#: What the Open-an-existing-mod box says with no mod open - at startup, and
+#: again after Export Mod's "Start a new mod".
+NO_MOD_OPENED = "No mod opened - starting a new mod."
+
 # The groups come from `game_install.CONTENT_GROUPS`, not a list written
 # here. The first version was a hand-copy with keys "game_data", "textures"
 # and "sounds" and no folders attached - which looked right and was useless,
@@ -574,7 +578,7 @@ class SetupPage(QWidget):
         note.setWordWrap(True)
         column.addWidget(note)
 
-        self.mod_status = QLabel("No mod opened - starting a new mod.")
+        self.mod_status = QLabel(NO_MOD_OPENED)
         column.addWidget(self.mod_status)
 
         row = QHBoxLayout()
@@ -1953,6 +1957,16 @@ class SetupPage(QWidget):
         self._refresh_readiness()
         self.setup_changed.emit()
 
+    def forget_opened_mod(self) -> None:
+        """
+        Goes back to saying no mod is open, after Export Mod's "Start a new
+        mod" has emptied the edit stores.
+
+        Only what this page SHOWS. The stores themselves are
+        `clear_opened_mod_content`'s, which Export Mod has already called.
+        """
+        self.mod_status.setText(NO_MOD_OPENED)
+
     def _start_mod_nxd_recovery(self, mod_root: Path) -> None:
         """
         Converts the mod's `.nxd` files, on a worker thread.
@@ -2231,7 +2245,7 @@ class SetupPage(QWidget):
 
         destination = paths.local_data_dir() / "fft_data.sqlite"
         self._show_progress()
-        self._say("Converting the game data - this takes a minute.", "muted")
+        self._say("Converting the game data.", "muted")
 
         worker = ConvertWorker(Path(cli_path), nxd_dir, destination)
         self._thread = run_in_thread(
@@ -2455,11 +2469,14 @@ class SetupPage(QWidget):
         was_unpack = self._convert_after_adopt
         self._convert_after_adopt = False
         if result["nxd_dir"] is not None and not already_have_one:
+            # Same trim as `start_conversion`'s own line. Zodi quoted that
+            # one, but this is the message the UNPACK path actually shows,
+            # and leaving it would mean the sentence he asked about still
+            # appeared on the route he was describing.
             self._say(
-                ("Unpacked. Converting the game data now - this takes a "
-                 "minute.") if was_unpack else
-                ("That folder has game data but no database yet. Converting "
-                 "it now - this takes a minute."), "muted")
+                "Unpacked. Converting the game data now." if was_unpack else
+                "That folder has game data but no database yet. Converting "
+                "it now.", "muted")
             self.start_conversion()
 
     def _adopt_failed(self, message: str) -> None:
@@ -2587,23 +2604,87 @@ class SetupPage(QWidget):
         because a mod opened before a scan legitimately has neither - but
         the default is now 0 through the counter rather than a truthy
         object.
+
+        **Game Data is now read the same way, and was the one entry left
+        still asking the old question.** Reported from real use: unpacking
+        with only "Sounds and music" ticked said "Ready to edit: Game Data,
+        Sounds." `nxd_unpack_dir` is set whenever the unpack folder exists
+        and is non-empty (see `_adopted` and `reuse_previous_session`), so a
+        folder holding nothing but sounds made it truthy.
+
+        Measured before choosing the replacement, because "unpacked" and
+        "ready" turned out not to be the same thing:
+
+        * with `nxd/` unpacked and no database, `entry_records` and
+          `ability_records` are both empty and every data tab comes up
+          blank - `adopt_database` is the only thing that fills them. So
+          the unpacked-but-not-converted state is real, and is now said in
+          its own words instead of being rounded up or down.
+        * `mod_sqlite_path` was the other half of the old expression and is
+          a second route to the same overstatement: opening a mod that
+          ships its own `fft_data.sqlite` with the game never unpacked sets
+          it at line ~1942 WITHOUT calling `adopt_database`, so the status
+          read "Ready to edit: Game Data" against 0 encounter rows and 0
+          abilities. It is the Game Updates page's handle on the mod's own
+          tables, not a statement about the data tabs, and reporting
+          readiness from it was the same fault by a different door.
+
+        `nxd_sqlite_path` replaces both. It is set only by
+        `adopt_database`, and only after `looks_like_game_database` and
+        `load_database_tables` have both succeeded - so it says what
+        loaded, not what was attempted, which is the whole point of the
+        counters above.
         """
-        ready, missing = [], []
+        ready, pending, missing = [], [], []
         # "Game Data" rather than "the data tabs": the other two entries are
         # tab names and this one was not, so the sentence read as a list of
         # two proper nouns and a description. The sidebar says "Edit Game
         # Data"; this is the same thing under the same name.
-        (ready if self.state.mod_sqlite_path or self.state.nxd_unpack_dir
-         else missing).append("Game Data")
+        #
+        # `groups_present_in` is what separates "not unpacked" from
+        # "unpacked, not converted". It already answers exactly this
+        # question and its docstring says so; it just was not being asked.
+        if getattr(self.state, "nxd_sqlite_path", None):
+            ready.append("Game Data")
+        elif self._game_data_unpacked():
+            pending.append("Game Data")
+        else:
+            missing.append("Game Data")
         (ready if self._texture_count() else missing).append("Textures")
         (ready if self._sound_count() else missing).append("Sounds")
 
         parts = []
         if ready:
             parts.append("Ready to edit: " + ", ".join(ready) + ".")
+        if pending:
+            # Named separately rather than folded into either list. Folded
+            # into "ready" it is the bug above; folded into "not set up yet"
+            # it tells someone who has just unpacked several gigabytes that
+            # nothing happened, and hides the one thing that would explain
+            # an empty tab - the conversion did not finish.
+            parts.append("Unpacked, but not converted yet: "
+                         + ", ".join(pending) + ".")
         if missing:
             parts.append("Not set up yet: " + ", ".join(missing) + ".")
         self._say(" ".join(parts) or "Nothing set up yet.", "muted")
+
+    def _game_data_unpacked(self) -> bool:
+        """
+        Whether the unpack folder actually holds the game-data folder.
+
+        Asked of the folder rather than of `nxd_unpack_dir`'s truthiness,
+        which is the distinction this method exists to make.
+        """
+        unpacked = getattr(self.state, "nxd_unpack_dir", None)
+        if unpacked is None:
+            return False
+        try:
+            return bool(game_install.groups_present_in(
+                Path(unpacked)).get("game_data"))
+        except Exception:                                     # noqa: BLE001
+            # An unreadable folder is reported as nothing found rather than
+            # as unpacked. Overstating is the failure being fixed here.
+            return False
 
     def _texture_count(self) -> int:
         """How many textures the scan actually found. 0 if it never ran."""

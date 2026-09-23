@@ -46,6 +46,20 @@ from ..widgets.visible_refresh import RefreshesWhenVisible
 # The id that means "produces nothing". NOT -1 - see the module docstring.
 PRODUCED_ITEM_NONE = 0
 
+#: What three of the text columns are called ON SCREEN.
+#:
+#: "NameSingular", "NamePlural" and "Name2" are the columns' own names -
+#: FF16Tools' names via this tool's column map - and they are what the
+#: export writes, so they stay exactly as they are everywhere but the
+#: label. Asked for by name: "Name (Singular)", "Name (Plural)" and "Name
+#: (Alternative)". Only this page: Items carries the same three columns
+#: (`ITEM_TEXT_FIELDS`) and was not asked about.
+TEXT_FIELD_LABELS = {
+    "NameSingular": "Name (Singular)",
+    "NamePlural": "Name (Plural)",
+    "Name2": "Name (Alternative)",
+}
+
 
 # Re-exported so `from .poaching import TextFieldRow` keeps working.
 # The class itself now lives with every other row in
@@ -229,7 +243,8 @@ class PoachingPage(RefreshesWhenVisible, QWidget):
         text_column.setContentsMargins(0, 0, 0, 0)
         text_column.setSpacing(2)
         for field_name in c.POACH_TEXT_FIELDS:
-            row = TextFieldRow(field_name, field_name)
+            row = TextFieldRow(field_name,
+                               TEXT_FIELD_LABELS.get(field_name, field_name))
             row.edited.connect(self._on_field_edited)
             self.rows[field_name] = row
             text_column.addWidget(row)
@@ -295,18 +310,12 @@ class PoachingPage(RefreshesWhenVisible, QWidget):
                     field_name, label, low, high, note,
                     unknown=field_name.lower().startswith("unknown"))
             row.edited.connect(self._on_field_edited)
-            if field_name == "ProducedItemId":
-                # Live, as it is typed - not only when the record loads.
-                row.edited.connect(self._describe_produced_item)
             self.rows[field_name] = row
             _column_for(field_name).addWidget(row)
 
         for field_name, (label, note) in c.POACH_BOOL_FIELDS.items():
             row = BoolFieldRow(field_name, label, note)
             row.edited.connect(self._on_field_edited)
-            if field_name == "ProducedItemId":
-                # Live, as it is typed - not only when the record loads.
-                row.edited.connect(self._describe_produced_item)
             self.rows[field_name] = row
             _column_for(field_name).addWidget(row)
 
@@ -374,15 +383,19 @@ class PoachingPage(RefreshesWhenVisible, QWidget):
 
     def set_item_choices(self, id_to_name: dict) -> None:
         """
-        Remembers the item names, for the note beside Produced Item.
+        Remembers the item names. -1 is dropped: it is not a valid ItemData
+        id here.
 
-        The field is a number now rather than a dropdown, so these are used
-        to SAY what the number points at instead of to restrict what can be
-        typed. -1 is dropped: it is not a valid ItemData id here.
+        They used to feed a note beside Produced Item. **That note is gone**,
+        removed on request: the picker says "033 - Potion" in the control
+        itself, so the note only repeated it. It had been dormant once
+        already - guarded behind `hasattr(row, "set_note")`, which the
+        dropdown did not have - and came back when the dropdown row gained
+        `set_note` for the Hide field notes toggle. Unwired rather than
+        guarded this time, so a new method on the row cannot revive it.
         """
         self._item_names = {k: v for k, v in dict(id_to_name).items()
                             if k != -1}
-        self._describe_produced_item()
 
     def _produced_item_choices(self) -> dict:
         """
@@ -427,53 +440,6 @@ class PoachingPage(RefreshesWhenVisible, QWidget):
         row = getattr(self, "_produced_row", None)
         if row is not None:
             row.set_choices(self._produced_item_choices())
-
-    def _describe_produced_item(self) -> None:
-        """
-        Names the item the Produced Item id points at, live as it is typed.
-
-        Without this the field is a bare number and the author has to hold
-        the whole item table in their head.
-        """
-        row = self.rows.get("ProducedItemId")
-        if row is None:
-            return
-        # The dropdown says the name in the control itself, so there is
-        # nothing left for a note beside it to add - including for an id
-        # nothing answers to, which renders as "033 - (unnamed)" rather than
-        # needing a sentence. Kept as a guard rather than unwired, because
-        # the connection is made in three places and a fourth would be easy
-        # to miss.
-        if not hasattr(row, "set_note"):
-            return
-        value = (row.current_id() if hasattr(row, "current_id")
-                 else row.value.value())
-        if value == PRODUCED_ITEM_NONE:
-            row.set_note("Nothing - this carcass produces no item.")
-            return
-        name = (self._item_names or {}).get(value)
-        if name:
-            row.set_note(f"Item {value}: {name}")
-            return
-        # Two different situations, and they need different sentences.
-        #
-        # With no items loaded at all the tool cannot name ANY id, and
-        # saying the item is missing would be a lie about the mod. With the
-        # table loaded, an id nothing answers to is a real mistake worth
-        # seeing - and also the ordinary state of a mod that adds items,
-        # which is why it is phrased as a fact rather than an error.
-        if not self._item_names:
-            row.set_note(
-                f"Item {value} - unpack your game files on General Setup to "
-                f"see which item this is.")
-        else:
-            # Deliberately says nothing about how many items the GAME has.
-            # That would be a claim about vanilla, and the whole point of
-            # this tool is that the table in front of the reader may not be
-            # vanilla any more.
-            row.set_note(
-                f"Item {value} - no item with this id in the game data "
-                f"loaded here.")
 
     def refresh_records(self) -> None:
         # The item names come from the same tables the list does, so
@@ -570,8 +536,6 @@ class PoachingPage(RefreshesWhenVisible, QWidget):
 
     # -- copying across languages -------------------------------------------
 
-        # The note has to follow the record, not just the typing.
-        self._describe_produced_item()
 
     def languages(self) -> list:
         return [self.language_box.itemText(i)

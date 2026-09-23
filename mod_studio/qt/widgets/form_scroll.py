@@ -112,8 +112,16 @@ class FormScrollArea(QScrollArea):
         self._apply_reservation()
 
     def resizeEvent(self, event) -> None:                      # noqa: N802
-        super().resizeEvent(event)
+        # BEFORE the base class, which is what sizes the widget: it sizes it
+        # to the viewport bounded by the widget's maximum, so the maximum has
+        # to be the new one by then. Raised afterwards, it was a stale cap
+        # the widget had already been clamped to, and nothing came back to
+        # re-size it unless some later event happened to. A page resized
+        # while hidden - the window maximised with General Setup not the
+        # current page - then showed at its old, windowed width until the
+        # next resize. `self.width()` is already the new width here.
         self._apply_reservation()
+        super().resizeEvent(event)
 
     def showEvent(self, event) -> None:                        # noqa: N802
         # The frame width and the style's scrollbar extent are both only

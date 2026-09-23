@@ -283,6 +283,20 @@ class AssetExportWorker(Worker):
 
 class ExportPage(QWidget):
     exported = Signal(Path)
+    #: Every edit store was just emptied, so every page is showing a mod
+    #: that no longer exists.
+    #:
+    #: Separate from `exported`, which fires on a successful BUILD and
+    #: leaves the edits exactly where they were. These are opposite events
+    #: and one signal for both would make the listener guess from an empty
+    #: path which had happened.
+    #:
+    #: Opening a different mod clears the same stores and is already
+    #: covered - the setup page emits `setup_changed` right after, and that
+    #: is what asks every page to refresh. "Start a new mod" clears them
+    #: from here and told nobody, which left the Encounters tree drawing
+    #: the old mod's trades over data that had been thrown away.
+    mod_cleared = Signal()
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -1895,8 +1909,22 @@ class ExportPage(QWidget):
         self.open_folder_button.setEnabled(False)
         self.zip_button.setEnabled(False)
         self.refresh_summary()
-        self._say("Started a new mod - your previous edits have been cleared.",
+        self._say("Started a new mod. Your previous edits have been cleared.",
                   "muted")
+        # The stores are empty; the pages do not know that yet.
+        #
+        # Reported: load a mod, come here, press this, and the Encounters
+        # list is full of units that are wrong. Nothing had gone wrong with
+        # the clearing - `entry_edits` and `entry_rekeys` really were both
+        # empty - but the tree had already been BUILT around the mod's
+        # trades, and the only thing that rebuilds it is `refresh_records`.
+        # A traded row stayed drawn at the address it was traded to, and
+        # the row it had been spent from stayed grey.
+        #
+        # Emitted before `exported` so a listener that rebuilds on this one
+        # is not immediately followed by one acting on a build that did not
+        # happen.
+        self.mod_cleared.emit()
         self.exported.emit(Path())
 
     # -- helpers --------------------------------------------------------------------

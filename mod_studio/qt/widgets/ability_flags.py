@@ -33,17 +33,23 @@ from PySide6.QtWidgets import (
 
 from ... import constants as c
 from ... import nxd_data
+from .field_rows import FieldNoteLabel, _NoteDisplay
 
 
-def baseline_note(raw_value) -> str:
+def baseline_note(raw_value, inherited=None) -> str:
     """The same sentence the Tkinter panels show under each group."""
     if raw_value is None or raw_value == c.OVERRIDE_NOT_SET:
-        return "Vanilla: not overridden (inherits hardcoded behaviour)."
+        if inherited is None:
+            return "Vanilla: not overridden (inherits hardcoded behaviour)."
+        # The boxes above are now showing that byte's flags, so the note
+        # says where they came from instead of saying nothing is known.
+        return (f"Inheriting the ability's own behaviour, shown above "
+                f"(byte {int(inherited)}). Ticking Override starts from it.")
     return (f"Vanilla: already overridden in the base data "
             f"(value {int(raw_value)}).")
 
 
-class _PackedBytePanel(QWidget):
+class _PackedBytePanel(_NoteDisplay, QWidget):
     """Shared behaviour: an include box, All/Clear, checkboxes, a note."""
 
     edited = Signal()
@@ -53,6 +59,10 @@ class _PackedBytePanel(QWidget):
         self.is_unknown = False
         self._loading = False
         self.boxes: dict = {}
+        #: The vanilla byte behind this panel's -1, or None when nothing is
+        #: known. Set before `load`, the way the Encounters page sets its
+        #: Inherit entry's text before filling its rows.
+        self.inherited_value = None
 
         column = QVBoxLayout(self)
         column.setContentsMargins(0, 0, 0, 0)
@@ -92,7 +102,13 @@ class _PackedBytePanel(QWidget):
         self.grid.setSpacing(2)
         inner.addLayout(self.grid)
 
-        self.note = QLabel("")
+        # A `FieldNoteLabel`, wrapped, rather than a plain QLabel: it is the
+        # same kind of note as every field row's, so it answers to the same
+        # "Hide field notes" rule through `_NoteDisplay`. Wrapped, it never
+        # elides, so it never grows a tooltip repeating the sentence under
+        # the pointer - a plain QLabel given `setToolTip` would.
+        self._note_text = ""
+        self.note = FieldNoteLabel("")
         self.note.setProperty("role", "muted")
         self.note.setWordWrap(True)
         inner.addWidget(self.note)
@@ -101,6 +117,29 @@ class _PackedBytePanel(QWidget):
     @property
     def included(self) -> bool:
         return self.include.isChecked()
+
+    def set_inherited(self, value) -> None:
+        """
+        The vanilla byte this panel is inheriting, or None for "unknown".
+
+        "can you input the inherited values into the fields (including the
+        Element field and the four Flagsets) instead putting the value in
+        the field note."
+
+        A panel that is inheriting shows that byte's flags rather than an
+        empty grid. Nothing is written by it: `_on_override_edited` reads
+        `get_value()` only from an INCLUDED panel, so an untouched one
+        contributes nothing to the mod however its boxes are drawn.
+
+        What this is not allowed to become is the fabricated 0 the module
+        docstring warns about. 0 and "not set" are different: all-unchecked
+        packs to 209 for Flagset II, so drawing 0 would tick every inverted
+        flag while nothing is overridden. None still means none - the boxes
+        clear and the note says so.
+
+        Call it before `load`, which is what reads it.
+        """
+        self.inherited_value = None if value is None else int(value)
 
     def _on_flag(self, _on) -> None:
         if self._loading:
@@ -129,7 +168,17 @@ class _PackedBytePanel(QWidget):
 
     def apply_display(self, hide_notes: bool, hide_unknown: bool,
                       hide_comments: bool) -> None:
-        return
+        """
+        "Hide field notes" empties the note under the grid.
+
+        This was `return`, on the reading that these panels "carry no
+        notes" - `apply_view_toggles`' docstring said so. They do: each
+        load writes a sentence saying where the ticks came from. Measured on
+        the real table with notes hidden, all five went on showing it.
+        Never unknown and never a Comment, so the other two toggles have
+        nothing to act on here.
+        """
+        self._apply_note_display(hide_notes)
 
 
 class AbilityFlagGroupPanel(_PackedBytePanel):
@@ -166,18 +215,25 @@ class AbilityFlagGroupPanel(_PackedBytePanel):
     def load(self, raw_value, included: bool) -> None:
         self._loading = True
         try:
-            if raw_value in (None, c.OVERRIDE_NOT_SET):
-                # No byte to decode - see the module docstring. Byte 0 is
-                # not the same thing as "not set" for an inverted flag.
+            byte = raw_value
+            if byte in (None, c.OVERRIDE_NOT_SET):
+                # The vanilla byte if one is known, and only then. Byte 0 is
+                # still not the same thing as "not set" - see the module
+                # docstring - so with nothing known the boxes clear rather
+                # than decoding a fabricated 0.
+                byte = self.inherited_value
+            if byte is None:
                 for box in self.boxes.values():
                     box.setChecked(False)
             else:
                 states = nxd_data.unpack_flag_group(self.group_index,
-                                                    int(raw_value))
+                                                    int(byte))
                 for flag_id, box in self.boxes.items():
                     box.setChecked(bool(states.get(flag_id, False)))
             self.include.setChecked(bool(included))
-            self.note.setText(baseline_note(raw_value))
+            self._note_text = baseline_note(raw_value,
+                                            self.inherited_value)
+            self._show_note()
         finally:
             self._loading = False
 
@@ -205,13 +261,21 @@ class ElementFlagPanel(_PackedBytePanel):
     def load(self, raw_value, included: bool) -> None:
         self._loading = True
         try:
-            byte = (0 if raw_value in (None, c.OVERRIDE_NOT_SET)
-                    else int(raw_value))
+            if raw_value in (None, c.OVERRIDE_NOT_SET):
+                # 0 is the honest fallback HERE, unlike on a flag group: no
+                # element bit is stored inverted, so all-unchecked really
+                # does pack to 0 and drawing it invents nothing.
+                byte = 0 if self.inherited_value is None \
+                    else self.inherited_value
+            else:
+                byte = int(raw_value)
             states = nxd_data.unpack_element_value(byte)
             for name, box in self.boxes.items():
                 box.setChecked(bool(states.get(name, False)))
             self.include.setChecked(bool(included))
-            self.note.setText(baseline_note(raw_value))
+            self._note_text = baseline_note(raw_value,
+                                            self.inherited_value)
+            self._show_note()
         finally:
             self._loading = False
 

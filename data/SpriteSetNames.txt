@@ -1,0 +1,107 @@
+# Unit sprite names for The Ivalice Chronicles Mod Studio
+# =======================================================
+#
+# One sprite per line, `<id>|<name>`, for the Encounters tab's Spriteset
+# field (FFTPatcher calls it Unit). Blank lines and # lines are ignored.
+# Edit freely - this is your file, and deleting it only puts the bare
+# numbers back.
+#
+# The game ships these ids with no names: `Chara` is keyed 0-130 and holds
+# no text, and the Spriteset byte in the ENTD files spans exactly 0-130.
+#
+# So each name below says where it came from:
+#
+#   * (game)   - derived from YOUR OWN data. Every occupied ENTD slot using
+#                this sprite names the same unit in `CharaName-en`, so that
+#                is what the sprite is. 60 of them, in this game's own
+#                spelling - Marcel, Ultima, Cuchulainn, Adrammelech.
+#   * (fftpatcher) - your data has no single answer for this one (the three
+#                generic sprites are shared by everybody; the Undead job
+#                sprites name nobody), so the name is FFTPatcher's
+#                (Glain, https://github.com/Glain/FFTPatcher, GPL-3.0).
+#                It may be the older release's wording. See NOTICE.md.
+#
+# Ids with neither are simply absent, and show as a number.
+#
+# Regenerate with `dev/make_sprite_names.py`, which explains the rule and
+# what was measured before it was trusted.
+#
+
+# id|name
+
+# Derived from your own game data - every ENTD slot using this sprite
+# names this unit and no other.
+1|Ramza, chapter 1
+2|Ramza, chapter 2 & 3
+3|Ramza, chapter 4
+4|Delita, chapter 1
+5|Delita, chapter 2 & 3
+6|Delita, chapter 4
+7|Argath
+8|Zalbaag
+9|Dycedarg
+10|Larg
+11|Goltanna
+12|Ovelia
+13|Orlandeau
+14|Marcel
+15|Reis (human)
+16|Zalmour
+17|Gaffgarion
+18|Marach
+19|Simon
+20|Alma
+21|Orran
+22|Mustadio
+23|Gaffgarion
+24|Delacroix
+25|Rapha
+26|Marach
+27|Elmdore
+28|Tietra
+29|Barrington
+30|Agrias
+31|Beowulf
+32|Wiegraf, chapter 1
+33|Valmafra
+34|Mustadio
+35|Ludovich
+36|Folmarv
+37|Loffrey
+38|Isilud
+39|Cletienne
+40|Wiegraf, chapter 3
+41|Rapha
+42|Meliadoul
+43|Barich
+44|Alma
+45|Celia
+46|Lettie
+47|Meliadoul
+48|Alma
+49|Ajora
+50|Cloud
+51|Zalbaag, possessed
+52|Agrias
+60|Belias
+62|Zalera
+64|Hashmal
+65|Ultima, First Form
+67|Cúchulainn
+69|Adrammelech
+72|Reis (Dragon)
+73|Ultima, Second Form
+
+# From FFTPatcher, because your data has no single answer for these -
+# shared sprites, and ones no named unit uses. May be the older
+# release's wording.
+0|None
+61|Knight (Undead)
+63|Archer (Undead)
+66|Black Mage (Undead)
+68|Time Mage (Undead)
+70|Mystic (Undead)
+71|Summoner (Undead)
+128|Generic Male
+129|Generic Female
+130|Generic Monster

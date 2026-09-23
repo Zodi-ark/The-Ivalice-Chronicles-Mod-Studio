@@ -7,14 +7,15 @@ raw number in a field tells a user nothing, and every one of these lists is
 published knowledge that just needed converting from hex to the decimal the
 tables actually use.
 
-Four lists live here:
+Five lists live here:
 
   AbilityEffectNames.txt      Abilities -> Effect, "Effect ID"
   ChargeEffectTypeNames.txt   Abilities -> Unit Animations, "Charge Effect Type"
   AnimationIdNames.txt        Abilities -> Unit Animations, "Animation ID"
   FormulaNames.txt            Items -> Formula, Abilities -> Formula
+  SpriteSetNames.txt          Encounters -> Spriteset (FFTPatcher: Unit)
 
-All four are editable by the user and all four degrade to "just the number"
+All five are editable by the user and all five degrade to "just the number"
 if the file is missing or an id isn't in it.
 
 **Three of them annotate; Formula picks.** EffectId legitimately holds -1
@@ -25,6 +26,16 @@ FFTPatcher documents all 107 of them, and a number outside that range names
 no routine at all. Every weapon in the shipped table uses 1, 2, 3, 4, 6 or
 7. So Formula gets a dropdown and the other three get a suffix - the
 difference is whether the list is the whole domain or a partial gloss on it.
+
+**Sprite sets pick, like Formula, and for the same reason.** The game's own
+`Chara` table is keyed 0-130 and the Spriteset byte across the real ENTD
+files spans exactly 0-130, so the id space is known and closed - a number
+outside it names no sprite. Unlike the other four, this list is derived
+from the USER'S OWN data rather than transcribed: `dev/make_sprite_names.py`
+reads which unit each sprite belongs to out of their ENTD files and
+`CharaName-en`, and falls back to FFTPatcher only where their data has no
+single answer. The file says per block which is which, because a wrong
+name there would be wrong in this game's voice.
 """
 from __future__ import annotations
 
@@ -36,6 +47,7 @@ EFFECT_NAMES_FILE = "AbilityEffectNames.txt"
 CHARGE_EFFECT_NAMES_FILE = "ChargeEffectTypeNames.txt"
 ANIMATION_NAMES_FILE = "AnimationIdNames.txt"
 FORMULA_NAMES_FILE = "FormulaNames.txt"
+SPRITE_SET_NAMES_FILE = "SpriteSetNames.txt"
 
 _cache: dict = {}
 
@@ -92,6 +104,10 @@ def animation_names() -> dict:
 
 def formula_names() -> dict:
     return _load(FORMULA_NAMES_FILE)
+
+
+def sprite_set_names() -> dict:
+    return _load(SPRITE_SET_NAMES_FILE)
 
 
 def describe(names: dict, value) -> str:

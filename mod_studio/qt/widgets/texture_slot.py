@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from ... import paths
 from ... import texture_data as td
 from . import actions
+from .. import export_dialogs
 from ..workers import run_in_thread
 
 # Smaller than the Textures tab's 190. These sit beside a form rather than
@@ -378,8 +379,8 @@ class InlineTextureSlot(QWidget):
         if self.relative_path is None:
             return
         if path is None:
-            path, _filter = QFileDialog.getOpenFileName(
-                self, f"Replacement image for {self.title.text()}", "",
+            path = export_dialogs.open_file(
+                self, f"Replacement image for {self.title.text()}",
                 actions.image_open_filter(td.REPLACEMENT_IMAGE_EXTENSIONS))
         if not path:
             return
@@ -413,7 +414,7 @@ class InlineTextureSlot(QWidget):
         if self._current_image is None:
             return
         if path is None:
-            path, _filter = QFileDialog.getSaveFileName(
+            path = export_dialogs.save_file(
                 self, "Export texture as PNG",
                 Path(self.relative_path).stem + ".png",
                 "PNG image (*.png);;All files (*)")

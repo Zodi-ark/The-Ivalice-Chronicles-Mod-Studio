@@ -28,6 +28,35 @@ from .pages.settings import SettingsPage
 from .widgets.actions import ViewToggles
 
 STEPS = ["General Setup", "Edit Game Data", "Export Mod"]
+#: The narrowest the window may be - the width at which the widest page,
+#: Sounds, still has room for every one of its controls.
+#:
+#: It was 1100, and reported: "Sounds at the smallest window size (1100px
+#: wide): some buttons get cut off ... increase the width of the smallest
+#: window size so that the buttons on the sounds page no longer get cut
+#: off." Measured at 1100 with a track open, under the stylesheet: seven
+#: buttons drawn narrower than their words ("Set loop start here" 67px of
+#: the 151 it needs).
+#:
+#: Measured, not chosen - the window's own `minimumSizeHint` with a Sounds
+#: track open, which is the sum of:
+#:
+#:     sidebar                      220
+#:     page margins                  48
+#:     the file tree, at its least  298
+#:     the splitter's handle         14
+#:     the editor beside it         765   (the transport row: Play, Stop,
+#:                                         Loop, both Set buttons, the clock)
+#:                                 ----
+#:                                 1345
+#:
+#: Not read from the layout at run time, which was tried first: the editor's
+#: controls are HIDDEN until an archive is chosen, hidden widgets do not
+#: count towards a minimum, and so the window's hint at startup is 1028.
+#: `test_qt_quality_of_life` opens a track at this width and fails if any
+#: button is squeezed - so a page that grows past this is caught there,
+#: not on somebody's screen.
+MIN_WIDTH = 1345
 UTILITIES = ["Game Updates", "Settings"]
 
 # The ten Edit Game Data tabs, shown as children of that step in the sidebar
@@ -162,11 +191,14 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("The Ivalice Chronicles Mod Studio")
         self.setWindowIcon(application_icon())
-        self.resize(1280, 720)
+        self.resize(max(1280, MIN_WIDTH), 720)
+        #: Whether the first show has fitted the window to General Setup yet.
+        #: Once only: after that the size is the person's.
+        self._first_page_fitted = False
         # Qt can enforce a real minimum, which Tkinter never did. The tab
         # strip on Edit Game Data already spans nearly the full width at
         # 1280, so shrinking below this is not a supported layout.
-        self.setMinimumSize(1100, 640)
+        self.setMinimumSize(MIN_WIDTH, 640)
 
         saved = ui_settings.load()
         appearance = saved.get("appearance", "system")
@@ -728,7 +760,69 @@ class MainWindow(QMainWindow):
         first attempt at Mica appeared to do nothing.
         """
         super().showEvent(event)
+        if not self._first_page_fitted:
+            self._first_page_fitted = True
+            self.fit_height_to_current_page()
         self._apply_backdrop()
+
+    def fit_height_to_current_page(self) -> int:
+        """
+        Makes the window just tall enough that the page it opens on - General
+        Setup - needs no scrollbar. Returns the new height, or 0 if nothing
+        changed.
+
+        Reported: the first window was 720px tall and General Setup needed
+        about 780, so the first thing a new user saw was a scrollbar with
+        60px behind it. 720 was a number chosen for a page that no longer
+        looks like that one.
+
+        **Measured, not a new constant.** The page's content height at the
+        width it actually has (`heightForWidth`, because its wrapped notes
+        are shorter at a wider window) against the height it is given.
+        Called from the first `showEvent`: by then Qt has laid out every
+        child, so the numbers are real, but nothing is on screen yet, so the
+        window does not visibly jump.
+
+        Capped at the screen's working area less the caption strip Windows
+        puts above the client area, so it never grows past the taskbar -
+        on a short screen the scrollbar stays, as the lesser evil. And
+        centred when it grows, because Windows chooses where a new window
+        goes before this runs, and a taller window left where Windows put
+        it can hang off the bottom.
+        """
+        if self.windowState() & (Qt.WindowMaximized | Qt.WindowFullScreen):
+            return 0
+        page = self.stack.currentWidget()
+        # Checked for being a scroll area, not merely present: every QWidget
+        # HAS a `scroll` - the method that scrolls its contents - so a page
+        # without a scroll area of that name (the placeholder a bare window
+        # opens on) handed this a bound method.
+        scroll = getattr(page, "scroll", None)
+        if not isinstance(scroll, QScrollArea) or scroll.widget() is None:
+            return 0
+        body = scroll.widget()
+        width = (scroll.content_width() if hasattr(scroll, "content_width")
+                 else scroll.viewport().width())
+        needed = body.heightForWidth(width) if body.hasHeightForWidth() else -1
+        if needed < 0:
+            needed = body.sizeHint().height()
+        shortfall = needed - scroll.viewport().height()
+        if shortfall <= 0:
+            return 0
+        target = self.height() + shortfall
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        area = screen.availableGeometry() if screen is not None else None
+        caption = win_native.caption_inset()
+        if area is not None:
+            target = min(target, area.height() - caption)
+        if target <= self.height():
+            return 0
+        self.resize(self.width(), target)
+        if area is not None:
+            self.move(area.left() + max(0, (area.width() - self.width()) // 2),
+                      area.top() + max(0, (area.height() - target - caption)
+                                       // 2))
+        return target
 
     def _apply_backdrop(self) -> None:
         """

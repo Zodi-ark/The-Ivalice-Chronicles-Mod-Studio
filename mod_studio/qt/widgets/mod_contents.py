@@ -511,6 +511,12 @@ class ModContentsPane(QWidget):
     #: preview pane is not a place to render them.
     MAX_LISTED_ROWS = 40
 
+    #: `_encounter_names`' one read. A class attribute rather than an
+    #: `__init__` line because this pane is built in several places and
+    #: `EncounterNames.load()` reads a file that does not change while the
+    #: tool runs - the same bargain the Encounters page makes with it.
+    _encounter_name_cache = None
+
     def _changed_rows(self, key, language) -> list:
         """
         `[(row id, {field: new value})]` for one table in one language.
@@ -574,21 +580,86 @@ class ModContentsPane(QWidget):
         return "\n".join(lines)
 
     def _entry_summary(self) -> str:
+        """
+        What this mod does to `OverrideEntryData`, row by row.
+
+        Reported: "it does not say what exactly was done rather a generic
+        message such as '1 encounter row(s) changed.'" Every other table in
+        this pane lists its changed rows and the new values - `_row_detail`
+        has done that for the language-keyed tables all along - and this one
+        said only how many. A count is the one thing an author already
+        knows; what they came here to check is whether the right field on
+        the right unit is about to be written.
+
+        Same shape as `_row_detail` so the pane reads as one thing, with the
+        battle named because an address alone is not something anybody
+        recognises, and with the same `MAX_LISTED_ROWS` cap: a mod that
+        repurposes a hundred rows should not produce a hundred lines here.
+        """
         state = self.state
         changed = state.changed_entry_row_count()
         if not changed:
             return "No encounter rows changed."
         lines = [f"{changed} encounter row(s) changed.", ""]
         if state.entry_rekeys:
-            lines.append(f"{len(state.entry_rekeys)} row(s) moved to a "
+            lines.append(f"{len(state.entry_rekeys)} row(s) traded for a "
                          f"different address.")
         if state.entry_dropped:
             lines.append(f"{len(state.entry_dropped)} row(s) removed - the "
                          f"address is freed for reuse, and the game's row "
                          f"count is unchanged.")
+
+        names = self._encounter_names()
+        addresses = sorted(set(state.entry_edits) | set(state.entry_rekeys)
+                           | set(state.entry_dropped))
+        if addresses:
+            lines.append("")
+            lines.append("Changed rows:")
+        for address in addresses[:self.MAX_LISTED_ROWS]:
+            key, key2 = address
+            where = f"{key}/{key2}"
+            name = names.get(key)
+            lines.append(f"  {where}"
+                         + (f"  {name}" if name else ""))
+            moved = state.entry_rekeys.get(address)
+            if moved:
+                lines.append(f"      written to {moved[0]}/{moved[1]} "
+                             f"instead of {where}")
+            if address in state.entry_dropped:
+                lines.append("      removed")
+            for field, value in sorted(
+                    (state.entry_edits.get(address) or {}).items()):
+                shown = " ".join(str(value).split())
+                if len(shown) > 60:
+                    shown = shown[:57] + "..."
+                lines.append(f"      {field} = {shown}")
+        if len(addresses) > self.MAX_LISTED_ROWS:
+            lines.append(f"  ...and {len(addresses) - self.MAX_LISTED_ROWS} "
+                         f"more row(s)")
+
         lines.append("")
         lines.append(f"Writes {c.NXD_OVERRIDE_ENTRY_FILENAME}.")
         return "\n".join(lines)
+
+    def _encounter_names(self) -> dict:
+        """
+        `{key: the battle's name}`, or `{}` if the list will not load.
+
+        Read once per pane. Degrades to addresses without names rather than
+        failing, which is the same bargain the Encounters page makes with
+        the same file.
+        """
+        if self._encounter_name_cache is None:
+            try:
+                from ... import encounter_names
+                table = encounter_names.EncounterNames.load()
+                self._encounter_name_cache = {
+                    key: table.label_for(key) for key in range(512)
+                    if table.label_for(key)
+                    and table.label_for(key) != str(key)}
+            except Exception:                                 # noqa: BLE001
+                self._encounter_name_cache = {}
+        return self._encounter_name_cache
 
     def _edited_commands_of_kind(self, monsters: bool) -> int:
         """

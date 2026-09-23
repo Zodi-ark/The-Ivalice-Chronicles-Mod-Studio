@@ -23,18 +23,25 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSortFilterProxyModel, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEvent, QObject, QSortFilterProxyModel, Qt, QTimer, Signal,
+)
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
-    QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
+    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
+    QPushButton, QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
 )
 
 from ... import paths
 from ... import texture_data as td
+from .. import export_dialogs
+from ..bulk_export import (
+    TEXTURE_FOLDER_LABEL, BulkExportRun, TextureExportWorker, files_under,
+)
 from ..models.texture_tree import TextureTreeModel
 from ..widgets import actions
 from ..widgets.marked_tree import MarkedTreeView
+from ..widgets.status_line import StatusLine
 from ..workers import Worker, run_in_thread
 
 #: The file tree's width on first show; the editor gets the rest. Measured
@@ -91,31 +98,61 @@ class TexturePathFilter(QSortFilterProxyModel):
 
 # The FLOOR for a preview panel, not the ceiling.
 #
-# Two panels plus spacing have to fit the editor pane, which is about 430px
-# wide at the 1100 minimum - 260 each did not, and the replacement ran off
-# the right edge. So 190 is what a panel is guaranteed; `PreviewView` grows
-# it to whatever the pane actually has.
-#
-# It used to be a fixed size, which meant a 2048x2048 map background was
-# drawn at 190px on a 2560px monitor with most of the pane empty beside it.
-# Growing the panel does NOT mean growing the image past its own size - see
-# `PreviewView.set_native`.
+# Two panels plus spacing have to fit the editor pane at the 1100 minimum,
+# so 190 is what a panel is guaranteed; the compare grid grows both to
+# whatever the pane actually has.
 PREVIEW_SIZE = 190
 
-# ...and the ceiling. Past this a preview stops being a preview and the
-# buttons under it end up a long way from the thing they act on.
-PREVIEW_MAX = 560
+#: The largest a preview is ever DECODED to - a memory limit, no longer a
+#: display one.
+#:
+#: This was 560 and it capped the drawn size as well, "or the buttons under
+#: it end up a long way from the thing they act on". Reported with a
+#: screenshot: a 2048 x 1024 texture drawn about 300px wide in an area
+#: several times that size. The buttons are attached to their own pane now
+#: (see `TexturesPage`), so the reason for the display cap is gone and the
+#: picture gets the room - content first.
+#:
+#: What is left is the memory half of the old number, measured rather than
+#: guessed. A 4096 x 4096 `.tex` is 64MB of RGBA, copied several times on
+#: its way to the screen; peak RSS for one such preview, in this build:
+#:
+#:      carried at 560     290MB
+#:      carried at 2048    328MB
+#:      carried in full    408MB
+#:
+#: 2048 covers the widest pane a 4K monitor gives the editor, keeps two
+#: thirds of what the shrink saves, and lets the game's many 2048-wide
+#: textures through with no shrink copy at all.
+PREVIEW_MAX = 2048
 
 
 class PreviewView(QLabel):
     """
-    A texture preview that fills the space it is given, but never magnifies.
+    A texture preview that fills its pane, but never magnifies.
 
-    Shrinking a 2048px map background to fit is necessary; magnifying a
-    56x56 icon is not, and the game never does it either - a blown-up icon
-    is a blurry lie about what the texture looks like. So the PANEL grows
-    with the window and the IMAGE is drawn at its native size or smaller,
-    whichever is less.
+    **Fitted to the pane's own shape.** This used to fit the image into a
+    SQUARE the size of the pane's shorter side (capped at 560), so a 2:1
+    texture in a wide pane used half the box - the "preview wastes the
+    page" report. It is fitted to the actual width and height now, aspect
+    kept, the way Photoshop and Lightroom open an image: fit to view.
+
+    **Never magnified.** Shrinking a 2048px map background to fit is
+    necessary; magnifying a 56x56 icon is not, and the game never does it
+    either - a blown-up icon is a blurry lie about what the texture looks
+    like. So the PANEL grows with the window and the IMAGE is drawn at its
+    native size or smaller, whichever is less.
+
+    **What it shows does not decide how big it is.** A QLabel holding a
+    pixmap asks for the pixmap's size, and that looked like a way for the
+    pane with a large texture to out-grow the empty one beside it. Measured
+    rather than assumed: it cannot, because the compare grid gives both
+    columns equal stretch and Qt shares stretched space by stretch, not by
+    size hint - equal after growing, after shrinking back, and with the
+    divider dragged to the end. An override written against that fear
+    changed nothing any check could see, so it went; `test_qt_textures`
+    shrinks after growing and drags the divider, which is where it would
+    show if it ever came back.
 
     The native pixmap is kept, because rescaling a previously-scaled copy
     loses a little more each time the window is resized.
@@ -127,6 +164,9 @@ class PreviewView(QLabel):
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(PREVIEW_SIZE, PREVIEW_SIZE)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Word-wrapped so "Nothing staged for this texture." and a decode
+        # error fit a narrow pane instead of widening it.
+        self.setWordWrap(True)
 
     def set_native(self, pixmap) -> None:
         self._native = pixmap or QPixmap()
@@ -144,10 +184,12 @@ class PreviewView(QLabel):
     def _rescale(self) -> None:
         if self._native.isNull():
             return
-        limit = max(PREVIEW_SIZE, min(self.width(), self.height(), PREVIEW_MAX))
+        area = self.contentsRect()
+        width, height = area.width(), area.height()
         pixmap = self._native
-        if pixmap.width() > limit or pixmap.height() > limit:
-            pixmap = pixmap.scaled(limit, limit, Qt.KeepAspectRatio,
+        if width > 0 and height > 0 and (pixmap.width() > width
+                                         or pixmap.height() > height):
+            pixmap = pixmap.scaled(width, height, Qt.KeepAspectRatio,
                                    Qt.SmoothTransformation)
         self.setText("")
         self.setPixmap(pixmap)
@@ -170,10 +212,12 @@ def fit_for_preview(image, limit: int = PREVIEW_MAX):
     only on `.tex`. A `.tga` in this game is a small UI image, so the same
     code path never gets near the limit.
 
-    `PreviewView` never magnifies - it draws at native size or smaller - so
-    anything above `PREVIEW_MAX` was decoded, copied and carried around only
-    to be thrown away at draw time. A 4096 texture shrinks by about 53x
-    here, and what reaches the screen is identical.
+    `PreviewView` never magnifies - it draws at native size or smaller - and
+    no pane is wider than `PREVIEW_MAX`, so anything above it was decoded,
+    copied and carried around only to be thrown away at draw time. A 4096
+    texture shrinks to a quarter of its pixels here, and what reaches the
+    screen is identical. (The limit was 560 while the panel was capped at
+    560 too; see `PREVIEW_MAX` for what raising it costs.)
 
     The image's TRUE size is read before this is called, so the panel still
     reports the real dimensions rather than the shrunken ones.
@@ -218,7 +262,7 @@ class PreviewWorker(Worker):
         result = {"token": self.token,
                   "current": None, "current_error": "",
                   "replacement": None, "replacement_error": "",
-                  "size": None}
+                  "size": None, "replacement_size": None}
         if self.source_path is not None:
             try:
                 image = td.load_game_texture_preview(
@@ -259,6 +303,11 @@ class PreviewWorker(Worker):
                 # does this; this page did not.
                 if td.is_face_texture(str(self.token)):
                     image, _ = td.apply_seam_fix(image)
+                # Its TRUE size too, for the pane's heading: both panes are
+                # fitted to the same box, so two textures of different
+                # resolutions can be drawn the same size, and the heading is
+                # what says they are not.
+                result["replacement_size"] = image.size
                 # After the seam fix, which works on edge pixels and has to
                 # see the image at full size to be the fix it claims to be.
                 result["replacement"] = fit_for_preview(image)
@@ -319,6 +368,10 @@ class TexturesPage(QWidget):
         #: "it did not crash this time" is not a measurement - see
         #: `test_qt_textures`.
         self.previews_started = 0
+        #: The folder export on screen, if any - one at a time. Kept after it
+        #: finishes, so its result can be read (`last_bulk_export`).
+        self._bulk_run = None
+        self.last_bulk_export = None
 
         self.model = TextureTreeModel(edits=self.state.texture_edits)
         self.proxy = TexturePathFilter()
@@ -346,6 +399,8 @@ class TexturesPage(QWidget):
         # and that is fixed separately.
         split = QSplitter(Qt.Horizontal)
         split.setHandleWidth(14)
+        #: Kept, so a check can drag the divider the way a reader can.
+        self.split = split
 
         left = QVBoxLayout()
         self.search = QLineEdit()
@@ -396,74 +451,140 @@ class TexturesPage(QWidget):
         self.detail.setWordWrap(True)
         right.addWidget(self.detail)
 
-        # Current and pending replacement, side by side.
+        # -- the compare area -------------------------------------------
         #
-        # The page had no preview at all - a texture browser that shows
-        # filenames and asks you to remember what each one looks like. The
-        # Tkinter tab draws both, which is the only way to tell whether the
-        # replacement you staged is the one you meant.
-        previews = QHBoxLayout()
-        previews.setSpacing(14)
+        # Reported with a screenshot: a 2048 x 1024 texture drawn about 300px
+        # wide in an area several times that size, "Nothing staged for this
+        # texture." floating alone in the right half, and the three buttons
+        # stacked under the left preview at an awkward width. "Maybe Adobe
+        # or Apple has some design UI philosophy we can take inspiration
+        # from."
+        #
+        # Three borrowings, each answering one of those:
+        #
+        # * Content first (Apple's HIG): the picture is what somebody came
+        #   to look at, so the two panes take every pixel the page has left
+        #   and the picture is fitted to the pane's real shape. The old
+        #   version fitted it to a square and gave half the spare height to
+        #   a stretch under the buttons.
+        # * Lightroom's before/after: two panes the SAME size, one fit rule,
+        #   labels above - built as a grid, so row 1 is one height across
+        #   both columns by construction and a pane with more buttons under
+        #   it cannot come out shorter than the other.
+        # * Controls with what they act on (HIG again): Export acts on the
+        #   Current texture, so it sits under Current; Choose and Remove act
+        #   on the replacement, so they sit under Replacement. The empty
+        #   pane's "Nothing staged" now has its answer directly beneath it.
+        #
+        # What did not change: a small texture is still never magnified,
+        # and no button is squeezed - see `PreviewView` and
+        # `_even_compare_columns`.
+        compare = QGridLayout()
+        compare.setHorizontalSpacing(14)
+        compare.setVerticalSpacing(6)
         self.preview_panels = {}
-        for key, title in (("current", "Current"),
-                           ("replacement", "Replacement (pending)")):
-            panel = QVBoxLayout()
-            heading = QLabel(title)
+        #: The label above each pane. Carries the texture's true size once
+        #: it is known: the panes are fitted to one box, so two textures of
+        #: different resolutions can be drawn the same size, and this is
+        #: what says so.
+        self.preview_titles = {}
+        self._preview_title_text = {"current": "Current",
+                                    "replacement": "Replacement (pending)"}
+        for column, key in enumerate(("current", "replacement")):
+            heading = QLabel(self._preview_title_text[key])
             heading.setProperty("role", "muted")
-            panel.addWidget(heading)
+            # Wrapped: at the 1100 minimum a pane is about 240px, and
+            # "Replacement (pending)  ·  4096 x 2048 px" is wider than that.
+            # The grid gives row 0 one height across both columns, so a
+            # heading that wraps moves both panes down together.
+            heading.setWordWrap(True)
+            compare.addWidget(heading, 0, column)
             view = PreviewView()
             view.setProperty("role", "preview")
-            panel.addWidget(view, 1)
-            previews.addLayout(panel, 1)
+            compare.addWidget(view, 1, column)
+            compare.setColumnStretch(column, 1)
             self.preview_panels[key] = view
-        # No trailing stretch. The two panels share the width between them
-        # now; a spacer here would take it back and leave them at their
-        # minimum however wide the window was.
-        right.addLayout(previews, 1)
+            self.preview_titles[key] = heading
+        compare.setRowStretch(1, 1)
 
-        # Stacked in a column, not a row.
-        #
-        # Two buttons in a row needed 403px and the right-hand pane gets
-        # about 285px at the minimum window size, so the layout shrank them
-        # below their own minimum widths and clipped both labels. A column
-        # cannot run out of width. They were briefly a row while the page
-        # was stacked and the editor had the full width; with the side-by-
-        # side split back, so is this.
-        buttons = QVBoxLayout()
-        # Capped. Stacked in a column and left to fill, these ran the whole
-        # width of the editor pane - on a 2560px monitor that is a 780px
-        # "Remove replacement" button, which Zodi asked specifically not to
-        # end up with. The floor still comes from `sizeHint`, so they cannot
-        # clip at the 1100 minimum either.
-        button_width = 360
-        # Minimum widths from sizeHint, not from the layout's leftovers.
-        # This is the fifth clipped control in this project's history and
-        # the pattern is always the same: a button left to take whatever
-        # space remains gets less than its own text needs.
+        # Natural width, not stretched and not capped by a number. On a
+        # 2560px monitor these used to run the width of the pane - a 780px
+        # "Remove replacement", which Zodi asked specifically not to end up
+        # with - and then carried a 360px cap to stop it. Sized to their
+        # text instead, measured by Qt at layout time: the stylesheet is
+        # applied to the QApplication AFTER the pages are built, so a width
+        # computed here would be measured against an unstyled button.
         self.replace_button = QPushButton("Choose a replacement image...")
-        self.replace_button.setMinimumWidth(
-            self.replace_button.sizeHint().width() + 8)
-        self.replace_button.setMaximumWidth(button_width)
         self.replace_button.setEnabled(False)
         self.replace_button.clicked.connect(self.choose_replacement)
-        buttons.addWidget(self.replace_button)
         self.clear_button = QPushButton("Remove replacement")
-        self.clear_button.setMinimumWidth(
-            self.clear_button.sizeHint().width() + 8)
-        self.clear_button.setMaximumWidth(button_width)
         self.clear_button.setEnabled(False)
         self.clear_button.clicked.connect(self.clear_replacement)
-        buttons.addWidget(self.clear_button)
-
         self.export_button = QPushButton("Export this texture as PNG...")
-        self.export_button.setMinimumWidth(
-            self.export_button.sizeHint().width() + 8)
-        self.export_button.setMaximumWidth(button_width)
         self.export_button.setEnabled(False)
         self.export_button.clicked.connect(self.export_as_png)
-        buttons.addWidget(self.export_button)
-        right.addLayout(buttons)
-        right.addStretch(1)
+
+        #: What exporting just did - "Exported to ...", or why it could
+        #: not. Under the Export button, in a line that is always laid out.
+        #:
+        #: Reported with a screenshot: this used to be appended to the
+        #: detail text ABOVE the previews, so exporting pushed both panes
+        #: down and the picture got smaller. Here it moves nothing: the
+        #: Replacement column's two buttons already make this row taller
+        #: than one button and a line, and the line's height is reserved
+        #: while it is empty (see `StatusLine`).
+        self.export_status = StatusLine()
+        #: What the replacement is - "Replaced with: mine.png" - or why a
+        #: file was refused. Beside Remove replacement, which acts on it.
+        #:
+        #: Reported, the same way as the export line: "choosing a
+        #: replacement still pushes the previews down about 17px". It was a
+        #: second line of the detail text above the previews, so every
+        #: replacement chosen or removed moved both panes. Beside the Remove
+        #: button it sits in a row the button already makes, and costs no
+        #: height at all.
+        self.replacement_status = StatusLine()
+
+        #: Each pane's buttons, in a holder sized to its widest button, so
+        #: a stack is one tidy width rather than two ragged ones.
+        self.preview_actions = {}
+
+        # Current: Export, and under it the export's result. The status
+        # line is the pane's width, not the button's: a path needs the
+        # room, and the line takes no width of its own, so it cannot widen
+        # the column the two panes share evenly.
+        holder = QWidget()
+        stack = QVBoxLayout(holder)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.addWidget(self.export_button)
+        holder.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.preview_actions["current"] = holder
+        cell = QWidget()
+        cell_column = QVBoxLayout(cell)
+        cell_column.setContentsMargins(0, 0, 0, 0)
+        cell_column.setSpacing(6)
+        cell_column.addWidget(holder, 0, Qt.AlignLeft)
+        cell_column.addWidget(self.export_status)
+        cell_column.addStretch(1)
+        compare.addWidget(cell, 2, 0)
+
+        # Replacement: Choose above Remove at one width, and what the
+        # replacement is to the right of Remove. A grid, so the line
+        # shares Remove's row by construction.
+        cell = QWidget()
+        grid = QGridLayout(cell)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(6)
+        grid.addWidget(self.replace_button, 0, 0)
+        grid.addWidget(self.clear_button, 1, 0)
+        grid.addWidget(self.replacement_status, 1, 1)
+        grid.setColumnStretch(1, 1)
+        cell.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.preview_actions["replacement"] = cell
+        compare.addWidget(cell, 2, 1, Qt.AlignTop)
+        self.compare = compare
+        right.addLayout(compare, 1)
 
         # The tree gets two thirds. File names here run long
         # ("gt_2_map001_watersurface_02.tga") and the right-hand pane is a
@@ -588,15 +709,23 @@ class TexturesPage(QWidget):
         if node is None:
             self.selected_label.setText("Select a texture")
             self.detail.setText("")
+            self.export_status.clear()
+            self.replacement_status.clear()
             self.replace_button.setEnabled(False)
             self.clear_button.setEnabled(False)
             self.export_button.setEnabled(False)
             self._preview_token = None
             for key in getattr(self, "preview_panels", {}):
                 self._set_preview(key, None, "")
+                self._set_title(key)
             return
 
         self.selected_label.setText(node.name)
+        # A result belongs to the texture it was about. Left up, it would
+        # say "Exported to ..." under a different texture.
+        if node is not getattr(self, "_status_node", None):
+            self.export_status.clear()
+        self._status_node = node
         replacement = self.state.texture_edits.get(node.relative_path)
         lines = [node.relative_path]
         if td.is_face_texture(node.relative_path):
@@ -607,10 +736,12 @@ class TexturesPage(QWidget):
             # A dict now, not a bare path - printing it raw would show
             # `{'source_path': PosixPath('...'), 'is_face_texture': False}`.
             source = replacement.get("source_path", "")
-            lines.append(
+            self.replacement_status.say(
                 f"Replaced with: {Path(source).name}"
                 + ("  (recovered from the opened mod, kept as-is)"
-                   if replacement.get("already_staged") else ""))
+                   if replacement.get("already_staged") else ""), "plain")
+        else:
+            self.replacement_status.clear()
         self.detail.setText("\n".join(lines))
         self.replace_button.setEnabled(True)
         self.clear_button.setEnabled(bool(replacement))
@@ -622,9 +753,20 @@ class TexturesPage(QWidget):
         if not index.isValid():
             return
         node = self.model.node_at(index)
-        # Folders have nothing to replace. A menu of three greyed-out items
-        # says less than no menu at all.
-        if node is None or not getattr(node, "is_file", False):
+        if node is None:
+            return
+        # A folder has nothing to replace - a menu of three greyed-out file
+        # actions says less than no menu at all - but it does have one thing
+        # to do: export, which is what a user asked for by name. "I want a
+        # bulk export feature, so you can right-click on a directory and it
+        # will export PNGs mirroring the directory structure."
+        if not getattr(node, "is_file", False):
+            menu = QMenu(self.tree)
+            export_folder = menu.addAction(TEXTURE_FOLDER_LABEL)
+            export_folder.setEnabled(not self.bulk_export_running())
+            chosen = menu.exec(self.tree.viewport().mapToGlobal(point))
+            if chosen is export_folder:
+                self.export_folder_as_png(node=node)
             return
         # Select it first, so the menu and the panel on the right are
         # talking about the same file.
@@ -699,6 +841,11 @@ class TexturesPage(QWidget):
         root = getattr(self.state, "nxd_unpack_dir", None)
         source = Path(root) / node.relative_path if root else None
 
+        # The sizes belong to the texture being loaded, which is not known
+        # yet - a heading still naming the previous texture's size under a
+        # "Loading..." would be the one wrong fact on the screen.
+        for key in self.preview_titles:
+            self._set_title(key)
         self._set_preview("current", None, "Loading...")
         if replacement:
             self._set_preview("replacement", None, "Loading...")
@@ -846,10 +993,56 @@ class TexturesPage(QWidget):
             self._set_preview(
                 "replacement", result["replacement"],
                 result["replacement_error"] or "")
-        if result["size"]:
-            width, height = result["size"]
-            self.detail.setText(
-                self.detail.text() + f"\n{width} x {height} px")
+        # In the headings rather than the detail line: each pane says what
+        # it holds, which is where a reader comparing the two looks.
+        self._set_title("current", result.get("size"))
+        self._set_title("replacement", result.get("replacement_size"))
+
+    def _set_title(self, key: str, size=None) -> None:
+        """A pane's heading, with the texture's true size once known."""
+        text = self._preview_title_text[key]
+        if size:
+            width, height = size
+            # Non-breaking inside the size, so a heading that has to wrap
+            # at the 1100 minimum moves "4096 x 2048 px" down whole rather
+            # than splitting it as "4096 x" / "2048 px".
+            text += (f"  \u00b7  {width}\u00a0x\u00a0{height}\u00a0px")
+        self.preview_titles[key].setText(text)
+
+    # -- keeping the two panes the same size ------------------------------------
+
+    def showEvent(self, event):                                # noqa: N802
+        super().showEvent(event)
+        self._even_compare_columns()
+
+    def changeEvent(self, event):                              # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.StyleChange, QEvent.FontChange):
+            self._even_compare_columns()
+
+    def _even_compare_columns(self) -> None:
+        """
+        Gives both panes the same floor: the wider of the two button stacks.
+
+        The grid gives the two columns equal stretch, which makes them equal
+        whenever there is room to spare. At the 1100 minimum there is not,
+        and each column then sits at its OWN floor - which is its buttons,
+        and "Choose a replacement image..." is wider than "Export this
+        texture as PNG...". Left alone, the panes would differ by that
+        difference exactly when the window is smallest.
+
+        Measured at show time, not in `__init__`: the stylesheet reaches the
+        buttons after the page is built, and a width taken before that is
+        the width of an unstyled button. Re-measured when the style or font
+        changes, which is what a theme switch in Settings does.
+        """
+        widest = max([PREVIEW_SIZE] + [holder.sizeHint().width()
+                                       for holder in self.preview_actions.values()])
+        if widest == getattr(self, "_compare_floor", None):
+            return
+        self._compare_floor = widest
+        for column in (0, 1):
+            self.compare.setColumnMinimumWidth(column, widest)
 
     def _previews_failed(self, message: str) -> None:
         self._preview_finished()
@@ -869,8 +1062,8 @@ class TexturesPage(QWidget):
             return
         allowed = td.allowed_replacements(self.current_node.relative_path)
         if path is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Choose a replacement image", "",
+            path = export_dialogs.open_file(
+                self, "Choose a replacement image",
                 actions.image_open_filter(allowed))
         if not path:
             return
@@ -884,7 +1077,7 @@ class TexturesPage(QWidget):
                 f"textures can only be replaced with "
                 f"{' or '.join(allowed)} files. "
                 f"{Path(path).name} was not used.")
-            self.detail.setText(self.refusal)
+            self.replacement_status.say(self.refusal, "attention")
             return
         self.refusal = ""
         self.set_replacement(self.current_node.relative_path, Path(path))
@@ -948,13 +1141,13 @@ class TexturesPage(QWidget):
             return
         source = self._source_path()
         if source is None:
-            self.detail.setText(
-                self.detail.text()
-                + "\n\nCan't export: the unpacked game folder isn't set.")
+            self.export_status.say(
+                "Can't export: the unpacked game folder isn't set.",
+                "attention")
             return
         if path is None:
             suggested = Path(self.current_node.name).with_suffix(".png").name
-            path, _ = QFileDialog.getSaveFileName(
+            path = export_dialogs.save_file(
                 self, "Export texture as PNG", suggested, "PNG images (*.png)")
         if not path:
             return
@@ -965,16 +1158,62 @@ class TexturesPage(QWidget):
                 paths.local_data_dir() / "texture_preview_cache")
             td.save_image_as_png(image, Path(path))
         except Exception as exc:                              # noqa: BLE001
-            self.detail.setText(
-                self.detail.text() + f"\n\nCouldn't export: {exc}")
+            self.export_status.say(f"Couldn't export: {exc}", "attention")
             return
-        self.detail.setText(self.detail.text() + f"\n\nExported to {path}")
+        self.export_status.say(f"Exported to {path}", "ok")
 
     def _source_path(self):
         root = getattr(self.state, "nxd_unpack_dir", None)
         if root is None or self.current_node is None:
             return None
         return Path(root) / self.current_node.relative_path
+
+    # -- bulk export -------------------------------------------------------------
+
+    def bulk_export_running(self) -> bool:
+        return self._bulk_run is not None and self._bulk_run.running
+
+    def export_folder_as_png(self, _checked=False, node=None,
+                             destination: str | None = None):
+        """
+        Exports every texture under a folder as PNG, mirroring the game's
+        folder structure under the folder the reader picks.
+
+        The work is `bulk_export.TextureExportWorker` on a thread; this is
+        the part that asks where, and puts it on screen. `destination` is
+        for tests, which cannot answer a folder dialog. Returns the
+        `BulkExportRun`, or None when there was nothing to start.
+
+        The ORIGINAL textures, from the unpacked game - never a staged
+        replacement, which is the author's own file already. See the module
+        docstring of `bulk_export` for that and the other choices.
+        """
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        if node is None or not root or self.bulk_export_running():
+            return None
+        relative_paths = [leaf.relative_path for leaf in files_under(node)]
+        if not relative_paths:
+            return None
+        if destination is None:
+            destination = export_dialogs.choose_folder(
+                self, f"Export {len(relative_paths):,} textures from "
+                      f"{node.relative_path or 'the game'} to which folder?")
+        if not destination:
+            return None
+        worker = TextureExportWorker(
+            root, relative_paths, destination,
+            getattr(self.state, "ff16tools_cli_path", None))
+        run = BulkExportRun(
+            self, worker,
+            f"Exporting {len(relative_paths):,} textures from "
+            f"{node.relative_path} as PNGs into {destination}")
+        run.done.connect(self._bulk_export_done)
+        self._bulk_run = run
+        run.start()
+        return run
+
+    def _bulk_export_done(self, result) -> None:
+        self.last_bulk_export = result
 
     def _after_change(self) -> None:
         # Named, so the model repaints this file and the folders above it

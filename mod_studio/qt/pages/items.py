@@ -296,7 +296,23 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         upper_row.setContentsMargins(0, 0, 0, 0)
         upper_row.setSpacing(10)
         upper_row.addWidget(self._build_textures_column())
-        upper_row.addWidget(self._build_info_panel(), 1)
+        # The names panel's HEIGHT is not a vote in how tall this half is.
+        #
+        # Reported: "by default the Base Item Data box should be higher up
+        # so that the 'Right-click a texture to edit' text and 'Base Item
+        # Data' text are closer together." The splitter gives this half its
+        # size hint, and a scroll area's hint is its content's, capped at
+        # 24 lines - 360px here, against 316 for the texture column beside
+        # it, so 44px of empty space sat under the column's last line.
+        #
+        # Ignored vertically, the texture column alone decides: the half
+        # opens exactly as tall as the two textures and their hint, and the
+        # names scroll inside it, which they were built to do. The divider
+        # still moves, so anyone who wants more names showing can drag it.
+        self.info_panel = self._build_info_panel()
+        self.info_panel.setSizePolicy(QSizePolicy.Preferred,
+                                      QSizePolicy.Ignored)
+        upper_row.addWidget(self.info_panel, 1)
         self.body.addWidget(upper)
 
         self.body.addWidget(self._build_stats_panel())
@@ -392,13 +408,6 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         column = QVBoxLayout(body)
         column.setContentsMargins(4, 4, 4, 4)
         column.setSpacing(2)
-
-        note = QLabel(
-            "These live in ItemData.xml and the tables it links into - "
-            "shared across every language, unlike the names above.")
-        note.setProperty("role", "muted")
-        note.setWordWrap(True)
-        column.addWidget(note)
 
         base_box = QGroupBox("Base Item Data")
         base_column = QVBoxLayout(base_box)
@@ -499,8 +508,7 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
             slot.view_requested.connect(self.jump_to_texture)
             column.addWidget(slot)
 
-        hint = QLabel("Right-click a picture for replace, export, clear and "
-                      "jump.")
+        hint = QLabel("Right-click a texture to edit.")
         hint.setProperty("role", "muted")
         hint.setWordWrap(True)
         column.addWidget(hint)
@@ -1002,9 +1010,15 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         empty is a legitimate mod.
         """
         label = c.NXD_LANGUAGE_LABELS.get(self.language, self.language)
+        # The second sentence is the copy button's, not the tables'. It
+        # used to say the stats below are shared, which is true and was not
+        # what a reader needed; what they need is what the button beside it
+        # will and will not carry. Checked against `copy_edits_to_languages`
+        # in `test_qt_items`: every non-text edit reaches all six other
+        # languages and no text field reaches any of them.
         text = (f"Editing {label} text, stored in its own "
-                f"Item-{self.language} table. The stats below are shared "
-                f"across every language.")
+                f"Item-{self.language} table. Copy to other languages copies "
+                f"everything except the text fields.")
         records = (self.state.item_records or {}).get(self.language)
         # Every name column, not just `Name`.
         #
