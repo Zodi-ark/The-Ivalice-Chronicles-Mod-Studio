@@ -69,7 +69,7 @@ from ..widgets.flow_layout import FlowLayout
 from ..widgets.map_view import MapView
 from ..workers import Worker, run_in_thread
 
-INTRO = ("The game's battle maps, drawn from its own files. Pick a map, turn it with the mouse "
+INTRO = ("The game's maps, drawn from its own files. Pick a map, turn it with the mouse "
          "and point at a tile for its surface and height. Click tiles to change them, or right "
          "click a picture to replace it.")
 
