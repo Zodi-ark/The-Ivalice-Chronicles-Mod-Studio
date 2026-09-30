@@ -36,6 +36,8 @@ from PySide6.QtWidgets import (
 
 from ... import constants as c
 from ... import nxd_data
+from ... import map_classic
+from ... import uib
 
 NXD_NOTE = ("Binary .nxd - rebuilt through FF16Tools, so this is a summary "
             "of what will change rather than a diff.")
@@ -300,6 +302,26 @@ class ModContentsPane(QWidget):
                  "AudioMog; a replaced whole archive goes in as it is.",
                  True, self._sound_summary,
                  lambda: state.has_any_sound_edits()),
+            ]),
+            ("UI Layouts", [
+                ("Edited screens",
+                 "Each is the game's own .uib with your numbers written in, "
+                 "made fresh from the game's copy at export.",
+                 True, self._layout_summary,
+                 lambda: state.has_any_uib_edits()),
+                ("Edited texture part lists",
+                 "Each is the game's own .utexpt with your part corners "
+                 "written in, made fresh from the game's copy at export.",
+                 True, self._part_list_summary,
+                 lambda: state.has_any_utexpt_edits()),
+            ]),
+            ("Map Editor", [
+                ("Edited battle maps",
+                 "Each is the game's own map file with your tiles written in, "
+                 "made fresh from the game's copy at export, in every file of the "
+                 "map that holds the same grid.",
+                 True, self._map_summary,
+                 lambda: state.has_any_map_edits()),
             ]),
         ])
 
@@ -738,6 +760,104 @@ class ModContentsPane(QWidget):
                 lines.append(f"{relative_path}\n    kept from the opened mod")
             else:
                 lines.append(f"{relative_path}\n    from {source}")
+        return "\n".join(lines)
+
+    def _layout_summary(self) -> str:
+        """Which screens change, and which boxes on each, with what."""
+        edits = {rel: boxes for rel, boxes in (self.state.uib_edits or {}).items()
+                 if boxes}
+        if not edits:
+            return "No screen layouts edited."
+        total = sum(len([key for key in boxes if key != uib.ANIMATION_KEYS])
+                    for boxes in edits.values())
+        keys = sum(len(boxes.get(uib.ANIMATION_KEYS) or {}) for boxes in edits.values())
+        lines = [f"{total} box(es)"
+                 + (f" and {keys} animation key(s)" if keys else "")
+                 + f" edited across {len(edits)} screen(s).", ""]
+        def said(name, value) -> str:
+            if name == "origin":
+                return f"position X {value[0]}, Y {value[1]}"
+            if name == "size":
+                return f"size {value[0]} x {value[1]}"
+            if name == "scale":
+                return f"scale {value[0]:g} x {value[1]:g}"
+            if name == "font_size":
+                return f"text size {value}"
+            if name == "colour":
+                return f"colour R {value[0]}, G {value[1]}, B {value[2]}, A {value[3]}"
+            if name == "opacity":
+                return f"opacity {value:g}"
+            return f"{name} {value}"
+
+        kinds = {uib.KEY_POSITION: "position", uib.KEY_SIZE: "size", uib.KEY_SCALE: "scale",
+                 uib.KEY_COLOUR: "colour", uib.KEY_OPACITY: "opacity",
+                 uib.KEY_CHILD_TIMELINE: "child animation"}
+        for rel in sorted(edits):
+            lines.append(rel)
+            for key, fields in sorted(edits[rel].items()):
+                if key == uib.ANIMATION_KEYS:
+                    continue
+                changed = "; ".join(said(name, value) for name, value in fields.items())
+                lines.append(f"    {key}: {changed}")
+            for key_id, edit in sorted((edits[rel].get(uib.ANIMATION_KEYS) or {}).items()):
+                component, animation, place = key_id.rsplit("/", 2)
+                what = kinds.get(edit.get("kind"), f"kind {edit.get('kind')}")
+                # Only what the edit holds. One made on the page holds every
+                # field; one recovered from a mod holds only the fields that
+                # differ from the game's (`uib.edits_between`), so a key whose
+                # easing alone changed has no frames to say.
+                timing = []
+                if "frame" in edit:
+                    timing.append(f"from frame {edit['frame']}")
+                if "frames" in edit:
+                    timing.append(f"for {edit['frames']} frames")
+                said_parts = [" ".join(timing)] if timing else []
+                if "easing" in edit:
+                    said_parts.append(f"easing {edit['easing']}")
+                if "value" in edit:
+                    said_parts.append("to " + ", ".join(f"{v:g}" if isinstance(v, float) else str(v)
+                                                        for v in edit["value"]))
+                lines.append(f"    {component}'s {animation} animation, key {place} - "
+                             f"{what} of {edit.get('target') or 'no box'}: "
+                             + (", ".join(said_parts) or "as the game has it"))
+        return "\n".join(lines)
+
+    def _part_list_summary(self) -> str:
+        """Which part lists change, and which parts on each, to what corners."""
+        edits = {rel: parts for rel, parts in (self.state.utexpt_edits or {}).items()
+                 if parts}
+        if not edits:
+            return "No texture part lists edited."
+        total = sum(len(parts) for parts in edits.values())
+        lines = [f"{total} part(s) edited across {len(edits)} part list(s).", ""]
+        for rel in sorted(edits):
+            lines.append(rel)
+            for index, part in sorted(edits[rel].items()):
+                x1, y1, x2, y2 = part["rect"]
+                lines.append(f"    part {index}, {part['name']}: corners {x1}, {y1} to "
+                             f"{x2}, {y2}")
+        return "\n".join(lines)
+
+    def _map_summary(self) -> str:
+        """Which grids change, and which tiles on each, to what."""
+        edits = {name: tiles for name, tiles in (self.state.map_edits or {}).items() if tiles}
+        if not edits:
+            return "No battle maps edited."
+        total = sum(len(tiles) for tiles in edits.values())
+        maps = len(self.state.edited_map_numbers())
+        lines = [f"{total} tile(s) edited on {maps} map(s).", ""]
+        said = {"no_walk": lambda v: "units can't stand here" if v else "units can stand here",
+                "no_cursor": lambda v: "the cursor can't stop here" if v else "the cursor can stop here",
+                "pass_through": lambda v: "units cross it without stopping" if v
+                else "units don't cross it without stopping",
+                "slope": lambda v: "slope " + map_classic.SLOPES.get(v, (str(v),))[0]}
+        for name in sorted(edits, key=map_classic.file_order):
+            lines.append(f"{map_classic.relative_path(name)} and the files holding the same grid")
+            for (x, z, level), changes in sorted(edits[name].items()):
+                where = f"tile {x}, {z}" + (", upper level" if level else "")
+                what = "; ".join(said[f](v) if f in said else f"{f.replace('_', ' ')} {int(v)}"
+                                 for f, v in changes.items())
+                lines.append(f"    {where}: {what}")
         return "\n".join(lines)
 
     def _sound_summary(self) -> str:

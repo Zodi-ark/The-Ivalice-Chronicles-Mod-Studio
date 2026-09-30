@@ -39,7 +39,9 @@ from .pages.review import ReviewPage
 from .pages.setup import SetupPage
 from .pages.sounds import SoundsPage
 from . import wheel_guard
+from .pages.map_editor import MapEditorPage
 from .pages.textures import TexturesPage
+from .pages.ui_layouts import UiLayoutsPage
 from .shell import MainWindow, application_icon
 
 
@@ -356,6 +358,8 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     # not ready" look identical from inside the page.
     pages["Textures"] = TexturesPage(state)
     pages["Sounds"] = SoundsPage(state)
+    pages["UI Layouts"] = UiLayoutsPage(state)
+    pages["Map Editor"] = MapEditorPage(state)
     pages["Unit Names"] = UnitNamesPage(state)
     pages["All Game Data"] = DataBrowserPage(state)
     # Built unconditionally like the rest, for the reason recorded above:
@@ -652,6 +656,20 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         abilities_page.jump_to_texture.connect(
             lambda path: window.open_tab("Textures", str(path)))
 
+    # UI Layouts' right-click jump: a box's texture, or the folder of them
+    # when that is the better place to land (the page's `box_menu` says why).
+    layouts_page = pages.get("UI Layouts")
+    if layouts_page is not None:
+        layouts_page.jump_to_texture.connect(
+            lambda path: window.open_tab("Textures", str(path)))
+
+    # The Map Editor's right-click jump: the enhanced picture under the
+    # pointer, which the Textures page replaces.
+    maps_page = pages.get("Map Editor")
+    if maps_page is not None:
+        maps_page.jump_to_texture.connect(
+            lambda path: window.open_tab("Textures", str(path)))
+
     window.setup_page = setup
     window.export_page = export
     window.review_page = review
@@ -710,7 +728,7 @@ def main() -> int:
     # otherwise leave Python to destroy a live QThread during teardown,
     # which aborts.
     from .workers import running_threads
-    app.aboutToQuit.connect(lambda: running_threads().stop_all())
+    app.aboutToQuit.connect(lambda: running_threads().stop_all(quitting=True))
 
     window = build_window(state)
 

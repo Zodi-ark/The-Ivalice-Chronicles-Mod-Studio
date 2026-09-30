@@ -12,16 +12,17 @@ Two texture formats live side by side in an unpacked game folder:
 Face portrait textures (ui/ffto/common/face/texture/) need one more step:
 FF16Tools' BC7 encoder leaves fully-transparent pixels black instead of
 inheriting a neighboring colour, which shows up in-game as a visible black
-seam around the portrait. apply_seam_fix() ports Zodi's own fix_portrait_
-seam.py algorithm directly (already proven working, unchanged here) and is
-applied automatically to any replacement staged for a face texture path -
-no separate script for the user to run.
+seam around the portrait. apply_seam_fix() is the Portrait Seam Fixer's own
+algorithm (`fix_portrait_seam.py`'s `_fix_array`, numpy and scipy), applied
+automatically to any replacement staged for a face texture path - no
+separate script for the user to run.
 """
 
 from __future__ import annotations
 
 import hashlib
 import shutil
+import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -227,9 +228,13 @@ def save_image_as_png(img, dest_path: Path) -> None:
 def load_game_texture_preview(path: Path, cli_path: Optional[Path], cache_dir: Path):
     """
     Loads an EXISTING unpacked-game texture (.tga or .tex) for preview.
-    .tga loads directly; .tex is converted to .dds via FF16Tools.CLI
-    tex-conv first (cached under cache_dir so repeated previews of the
-    same file don't reconvert every time).
+
+    .tga loads directly. A .tex is converted to a .dds and cached under
+    `cache_dir`, so a texture looked at again is not converted again. The
+    conversion is done here, in Python, for a .tex this module reads and
+    that is small enough to be quicker that way (`tex_as_dds`); anything
+    else goes to FF16Tools.CLI tex-conv, as every .tex did before. Both ways
+    give the same pixels, and both leave the same kind of .dds in the cache.
     """
     if not path.exists():
         raise ValueError(f"No texture file found at {path.name} - this id/path doesn't exist in the unpacked game.")
@@ -239,9 +244,6 @@ def load_game_texture_preview(path: Path, cli_path: Optional[Path], cache_dir: P
         return load_any_image(path)
 
     if ext == ".tex":
-        if cli_path is None:
-            raise ValueError("FF16Tools.CLI.exe isn't set up (General Setup) - needed to preview .tex files.")
-        cache_dir.mkdir(parents=True, exist_ok=True)
         # Keyed on which file this is, not just what it's called.
         #
         # The key used to be the bare filename, so the game's `foo.tex` and
@@ -261,23 +263,77 @@ def load_game_texture_preview(path: Path, cli_path: Optional[Path], cache_dir: P
         digest = hashlib.sha256(fingerprint.encode("utf-8", "replace")).hexdigest()[:16]
         staged = cache_dir / f"{digest}_{path.name}"
         dds_path = staged.with_suffix(".dds")
-        if not dds_path.exists():
-            from . import ff16tools
-            shutil.copy(path, staged)
-            code = ff16tools.run_tex_to_dds(cli_path, staged)
-            if code != 0 or not dds_path.exists():
-                raise ValueError(
-                    f"FF16Tools.CLI tex-conv failed converting {path.name} for preview (exit code {code})."
-                )
-            # Bounded AFTER writing, so the entry just made is counted and
-            # the oldest go first. Nothing pruned this before, and a preview
-            # of a .tex leaves TWO files behind - a copy of the .tex and its
-            # .dds - so browsing the texture tree grew this folder without
-            # limit. The game ships 10,011 textures; at a few megabytes a
-            # pair that is tens of gigabytes for someone who scrolls
-            # through looking for something.
-            prune_preview_cache(cache_dir)
+        if dds_path.exists():
+            return load_any_image(dds_path)
+
+        # Read here if it can be. Anything that cannot - a format this does
+        # not handle, a texture too big to be quicker here, a damaged file -
+        # goes the way every .tex went before, so what the preview shows is
+        # never worse than it was.
+        image = None
+        try:
+            dds = tex_as_dds(path.read_bytes(), IN_PROCESS_MAX_PACKED_BYTES)
+            image = _image_from_dds(dds)
+        except Exception:                                     # noqa: BLE001
+            image = None
+        if image is not None:
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                _write_whole(dds_path, dds)
+                prune_preview_cache(cache_dir)
+            except OSError:
+                pass            # a preview that could not be cached is still a preview
+            return image
+
+        if cli_path is None:
+            raise ValueError("FF16Tools.CLI.exe isn't set up (General Setup) - needed to preview .tex files.")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        from . import ff16tools
+        shutil.copy(path, staged)
+        code = ff16tools.run_tex_to_dds(cli_path, staged)
+        if code != 0 or not dds_path.exists():
+            raise ValueError(
+                f"FF16Tools.CLI tex-conv failed converting {path.name} for preview (exit code {code})."
+            )
+        # Bounded AFTER writing, so the entry just made is counted and
+        # the oldest go first. Nothing pruned this before, and a preview
+        # of a .tex leaves TWO files behind - a copy of the .tex and its
+        # .dds - so browsing the texture tree grew this folder without
+        # limit. The game ships 10,011 textures; at a few megabytes a
+        # pair that is tens of gigabytes for someone who scrolls
+        # through looking for something.
+        prune_preview_cache(cache_dir)
         return load_any_image(dds_path)
+
+
+def _image_from_dds(dds: bytes):
+    """A DDS held in memory as an RGBA `PIL.Image` - `load_any_image`'s read."""
+    import io
+
+    from PIL import Image
+
+    return Image.open(io.BytesIO(dds)).convert("RGBA")
+
+
+def _write_whole(path: Path, data: bytes) -> None:
+    """
+    Writes a file so that nobody ever reads half of it: to a name of its
+    own first, then renamed into place. Both pages preview textures on
+    threads of their own, so one can be reading the cache while the other
+    writes the same entry.
+    """
+    import os
+    import uuid
+
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.part")
+    try:
+        temporary.write_bytes(data)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 #: How much converted-preview data to keep on disk.
@@ -329,160 +385,534 @@ def prune_preview_cache(cache_dir: Path,
 
 
 # =============================================================================
-# Seam fix (ported from Zodi's fix_portrait_seam.py - algorithm unchanged)
+# Reading a .tex without FF16Tools
 # =============================================================================
+#
+# A preview used to cost one FF16Tools run per .tex: copy the file into the
+# cache, start the program, wait for it to write a .dds, read that back. For
+# an icon the program's start-up is nearly all of it, and the UI Layouts page
+# asks for dozens of sheets per screen.
+#
+# The format is small. A .tex holds one picture as chunks (FF16Tools'
+# `TextureFile.GetTextureData`): each chunk stored as it is when its packed
+# and unpacked sizes match, otherwise packed with GDeflate - DirectStorage's
+# version of DEFLATE, the same codes spread over 32 interleaved bit streams.
+# Unpacked, the pixels are BC1-BC7 blocks or plain RGBA, with each row padded
+# to 256 bytes. `TextureFile.GetAsDds` takes the padding out and puts a DDS
+# header in front, which Pillow reads. This does the same in memory, for the
+# first mip - the one Pillow shows - and hands Pillow the same bytes.
+#
+# **Checked, not assumed:** the nine bar textures Zodi exported to PNG through
+# the Textures page (so through the real FF16Tools, on his machine) come out
+# pixel for pixel identical, and the GDeflate step alone gives byte for byte
+# what NVIDIA's own decoder gives on every real .tex available here (sixteen:
+# BC7 and RGBA, one with stored blocks). `dev/test_tex_decode.py` holds both.
+#
+# The decoder is a port of the GDeflate reference decompressor in NVIDIA's
+# fork of libdeflate (github.com/NVIDIA/libdeflate, branch `gdeflate`, file
+# lib/gdeflate_decompress_template.h): Copyright 2016 Eric Biggers (MIT) and
+# Copyright (c) 2020-2022 NVIDIA CORPORATION & AFFILIATES (Apache-2.0). This
+# is a translation into Python with changes; see NOTICE.md.
+
+#: The largest .tex (by packed size) read here rather than by FF16Tools.
+#:
+#: Python unpacks GDeflate at about 0.35 seconds per packed megabyte on the
+#: machine this was built on - whatever the picture, because the time goes
+#: per code read and there is about one per packed byte. FF16Tools unpacks
+#: natively but costs a program start per texture, which on Windows is a
+#: .NET start-up: not measured, but not less than a few tenths of a second.
+#: A megabyte keeps this path to about that, so it is never much slower and
+#: usually far quicker (an icon: a few milliseconds). Bigger textures go to
+#: FF16Tools as before. Either way the pixels are the same, so this number
+#: decides speed only.
+IN_PROCESS_MAX_PACKED_BYTES = 1024 * 1024
+
+#: DXGI numbers for the pixel formats read here: the ones Pillow's DDS reader
+#: handles, keyed by the .tex's own format number (FF16Tools'
+#: `TexturePixelFormat`). Anything else goes to FF16Tools, exactly as before.
+_TEX_BC_FORMATS = {
+    0x107420: (71, 8),     # BC1_UNORM
+    0x117430: (74, 16),    # BC2_UNORM
+    0x127430: (77, 16),    # BC3_UNORM
+    0x137120: (80, 8),     # BC4_UNORM
+    0x147230: (83, 16),    # BC5_UNORM
+    0x147231: (84, 16),    # BC5_SNORM
+    0x157330: (95, 16),    # BC6H_UF16
+    0x157331: (96, 16),    # BC6H_SF16
+    0x167430: (98, 16),    # BC7_UNORM
+    0x168430: (99, 16),    # BC7_UNORM_SRGB
+}
+_TEX_RGBA_FORMATS = {
+    0xA0450: 27,           # R8G8B8A8_TYPELESS
+    0xA1450: 28,           # R8G8B8A8_UNORM
+    0xA2450: 29,           # R8G8B8A8_UNORM_SRGB
+}
+
+
+class TexNotReadHere(ValueError):
+    """A .tex this module leaves to FF16Tools; the message says why."""
+
+
+# -- GDeflate ------------------------------------------------------------------
+
+_GD_STREAMS = 32
+_GD_TILE = 64 * 1024
+# DEFLATE's length and distance codes, as GDeflate uses them: the Deflate64
+# variant, where length codes 285-287 are 3 plus sixteen more bits.
+_GD_LENGTH_BASE = (3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+                   35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 3, 3, 3)
+_GD_LENGTH_EXTRA = (0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+                    3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 16, 16, 16)
+_GD_DIST_BASE = (1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+                 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
+                 8193, 12289, 16385, 24577, 32769, 49153)
+_GD_DIST_EXTRA = (0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+                  7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14)
+_GD_PRECODE_ORDER = (16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2,
+                     14, 1, 15)
+#: A table slot no code reaches. Its symbol is past the end of every list
+#: above, so reading one fails at once instead of looping on zero bits.
+_GD_NO_CODE = 400 << 4
+_gd_static = None
+
+
+def _gd_table(lengths, bits: int = 15) -> list:
+    """
+    A full lookup for canonical DEFLATE codes: indexed by the next `bits`
+    bits of a stream (lowest first), each slot holds `(symbol << 4) |
+    code length`.
+    """
+    size = 1 << bits
+    table = [_GD_NO_CODE] * size
+    count = [0] * 16
+    for length in lengths:
+        count[length] += 1
+    count[0] = 0
+    code, first = 0, [0] * 16
+    for length in range(1, 16):
+        code = (code + count[length - 1]) << 1
+        first[length] = code
+    for symbol, length in enumerate(lengths):
+        if not length:
+            continue
+        code = first[length]
+        first[length] += 1
+        if code >= 1 << length:
+            raise ValueError("over-subscribed code lengths")
+        reversed_code = int(format(code, f"0{length}b")[::-1], 2)
+        table[reversed_code::1 << length] = [(symbol << 4) | length] * (size >> length)
+    return table
+
+
+def _gd_static_tables():
+    global _gd_static
+    if _gd_static is None:
+        _gd_static = (_gd_table([8] * 144 + [9] * 112 + [7] * 24 + [8] * 8),
+                      _gd_table([5] * 32))
+    return _gd_static
+
+
+def _gdeflate_tile(data: bytes, out_size: int) -> bytes:
+    """
+    One 64 KB page of a GDeflate stream. The reference decoder's structure,
+    step for step: 32 bit buffers, each topped up with the stream's next
+    32 bits whenever it holds fewer than 32 after its turn; a match's length
+    is read in one round and its distance, from the same buffer, in the
+    next.
+    """
+    padded = bytes(data) + bytes(-len(data) % 4 + 256)
+    words = struct.unpack_from(f"<{len(padded) // 4}I", padded)
+    wi = _GD_STREAMS
+    buf = list(words[:_GD_STREAMS])
+    left = [32] * _GD_STREAMS
+    out = bytearray()
+    pending = [None] * _GD_STREAMS
+    while True:
+        # Block header, always on stream 0.
+        b = buf[0]
+        final, kind = b & 1, (b >> 1) & 3
+        buf[0] = b >> 3
+        left[0] -= 3
+        if left[0] < 32:
+            buf[0] |= words[wi] << left[0]
+            wi += 1
+            left[0] += 32
+        if kind == 0:
+            # Stored: a 16-bit count on stream 0, then one byte per stream
+            # in turn, starting at stream 0.
+            count = buf[0] & 0xFFFF
+            buf[0] >>= 16
+            left[0] -= 16
+            if len(out) + count > out_size:
+                raise ValueError("a stored block runs past the page")
+            idx = 0
+            for _ in range(count):
+                out.append(buf[idx] & 0xFF)
+                buf[idx] >>= 8
+                left[idx] -= 8
+                if left[idx] < 32:
+                    buf[idx] |= words[wi] << left[idx]
+                    wi += 1
+                    left[idx] += 32
+                idx = (idx + 1) & 31
+            if final:
+                break
+            continue
+        if kind == 1:
+            lit_table, dist_table = _gd_static_tables()
+        elif kind == 2:
+            b = buf[0]
+            n_lit = (b & 31) + 257
+            n_dist = ((b >> 5) & 31) + 1
+            n_pre = ((b >> 10) & 15) + 4
+            buf[0] = b >> 14
+            left[0] -= 14
+            if left[0] < 32:
+                buf[0] |= words[wi] << left[0]
+                wi += 1
+                left[0] += 32
+            pre = [0] * 19
+            idx = 0
+            for i in range(n_pre):
+                pre[_GD_PRECODE_ORDER[i]] = buf[idx] & 7
+                buf[idx] >>= 3
+                left[idx] -= 3
+                if left[idx] < 32:
+                    buf[idx] |= words[wi] << left[idx]
+                    wi += 1
+                    left[idx] += 32
+                idx = (idx + 1) & 31
+            pre_table = _gd_table(pre, 7)
+            lengths = []
+            idx = 0
+            while len(lengths) < n_lit + n_dist:
+                e = pre_table[buf[idx] & 127]
+                size, symbol = e & 15, e >> 4
+                if not size:
+                    raise ValueError("a code length code that is not in the table")
+                buf[idx] >>= size
+                left[idx] -= size
+                if symbol < 16:
+                    lengths.append(symbol)
+                elif symbol == 16:
+                    if not lengths:
+                        raise ValueError("a repeat with nothing before it")
+                    lengths.extend([lengths[-1]] * (3 + (buf[idx] & 3)))
+                    buf[idx] >>= 2
+                    left[idx] -= 2
+                elif symbol == 17:
+                    lengths.extend([0] * (3 + (buf[idx] & 7)))
+                    buf[idx] >>= 3
+                    left[idx] -= 3
+                else:
+                    lengths.extend([0] * (11 + (buf[idx] & 127)))
+                    buf[idx] >>= 7
+                    left[idx] -= 7
+                if left[idx] < 32:
+                    buf[idx] |= words[wi] << left[idx]
+                    wi += 1
+                    left[idx] += 32
+                idx = (idx + 1) & 31
+            if len(lengths) != n_lit + n_dist:
+                raise ValueError("code lengths run past their count")
+            lit_table = _gd_table(lengths[:n_lit])
+            dist_table = _gd_table(lengths[n_lit:])
+        else:
+            raise ValueError("block type 3 does not exist")
+
+        idx = 0
+        waiting = 0                     # bit n set: stream n reads a distance next
+        while True:
+            if (waiting >> idx) & 1:
+                length, at = pending[idx]
+                b = buf[idx]
+                e = dist_table[b & 32767]
+                size, symbol = e & 15, e >> 4
+                b >>= size
+                extra = _GD_DIST_EXTRA[symbol]
+                distance = _GD_DIST_BASE[symbol] + (b & ((1 << extra) - 1))
+                buf[idx] = b >> extra
+                left[idx] -= size + extra
+                if distance > at:
+                    raise ValueError("a match reaches back before the start")
+                start = at - distance
+                if distance >= length:
+                    out[at:at + length] = out[start:start + length]
+                else:
+                    for k in range(length):
+                        out[at + k] = out[start + k]
+                waiting &= ~(1 << idx)
+            else:
+                b = buf[idx]
+                e = lit_table[b & 32767]
+                size, symbol = e & 15, e >> 4
+                if symbol < 256:
+                    out.append(symbol)
+                    buf[idx] = b >> size
+                    left[idx] -= size
+                elif symbol == 256:
+                    buf[idx] = b >> size
+                    left[idx] -= size
+                    break
+                else:
+                    code = symbol - 257
+                    extra = _GD_LENGTH_EXTRA[code]
+                    b >>= size
+                    length = _GD_LENGTH_BASE[code] + (b & ((1 << extra) - 1))
+                    buf[idx] = b >> extra
+                    left[idx] -= size + extra
+                    if len(out) + length > out_size:
+                        raise ValueError("a match runs past the page")
+                    pending[idx] = (length, len(out))
+                    out.extend(bytes(length))
+                    waiting |= 1 << idx
+            if left[idx] < 32:
+                buf[idx] |= words[wi] << left[idx]
+                wi += 1
+                left[idx] += 32
+            idx = (idx + 1) & 31
+            if len(out) > out_size:
+                raise ValueError("the page decodes to more than it holds")
+        # The block has ended. One more lap, from the stream that read the
+        # end, finishes the matches still waiting for their distances.
+        for _ in range(_GD_STREAMS):
+            if (waiting >> idx) & 1:
+                length, at = pending[idx]
+                b = buf[idx]
+                e = dist_table[b & 32767]
+                size, symbol = e & 15, e >> 4
+                b >>= size
+                extra = _GD_DIST_EXTRA[symbol]
+                distance = _GD_DIST_BASE[symbol] + (b & ((1 << extra) - 1))
+                buf[idx] = b >> extra
+                left[idx] -= size + extra
+                if distance > at:
+                    raise ValueError("a match reaches back before the start")
+                start = at - distance
+                for k in range(length):
+                    out[at + k] = out[start + k]
+                waiting &= ~(1 << idx)
+            if left[idx] < 32:
+                buf[idx] |= words[wi] << left[idx]
+                wi += 1
+                left[idx] += 32
+            idx = (idx + 1) & 31
+        if final:
+            break
+    if len(out) != out_size:
+        raise ValueError(f"a page unpacked to {len(out)} bytes, not {out_size}")
+    return bytes(out)
+
+
+def gdeflate_decompress(data: bytes, out_size: int) -> bytes:
+    """
+    Unpacks a GDeflate stream (DirectStorage's tile stream: an 8-byte header,
+    a table of page offsets, then the pages, each 64 KB unpacked).
+
+    Raises ValueError for anything that is not a stream of that shape or
+    does not unpack to exactly `out_size` bytes. Python's own errors from a
+    damaged stream (an index past the end) are left to the caller, which
+    treats every failure the same way.
+    """
+    if len(data) < 8:
+        raise ValueError("too short to be a GDeflate stream")
+    ident, check, pages, bits = struct.unpack_from("<BBHI", data, 0)
+    if ident != 4 or check != ident ^ 0xFF or bits & 3 != 1:
+        raise ValueError("not a GDeflate stream")
+    last = (bits >> 2) & 0x3FFFF
+    offsets = struct.unpack_from(f"<{pages}I", data, 8)
+    base = 8 + 4 * pages
+    out = []
+    for page in range(pages):
+        start = offsets[page] if page else 0
+        end = offsets[page + 1] if page < pages - 1 else start + offsets[0]
+        size = _GD_TILE if (page < pages - 1 or last == 0) else last
+        out.append(_gdeflate_tile(data[base + start: base + end], size))
+    result = b"".join(out)
+    if len(result) != out_size:
+        raise ValueError(f"unpacked to {len(result)} bytes, not {out_size}")
+    return result
+
+
+# -- .tex ------------------------------------------------------------------------
+
+def tex_as_dds(tex: bytes, max_packed: Optional[int] = None) -> bytes:
+    """
+    A .tex's first picture as a DDS in memory - its first mip, laid out the
+    way FF16Tools' `TextureFile.GetAsDds` lays it out, which is what Pillow
+    reads.
+
+    Two of GetAsDds' habits are kept on purpose, because the pixels have to
+    match what FF16Tools gives:
+
+    - rows are un-padded only when the picture is stored in chunks (the
+      256-byte padding comes from DirectStorage);
+    - of a block-compressed picture it copies `height // 4` rows of blocks,
+      so a height that is not a multiple of 4 leaves the last row of blocks
+      empty. It is left empty here too.
+
+    Raises `TexNotReadHere` for a file this does not read (more than one
+    picture, not a flat 2D picture, a pixel format Pillow cannot show, or
+    packed data over `max_packed`), and ValueError for a damaged one.
+    """
+    if tex[:4] != b"TEX ":
+        raise TexNotReadHere("not a .tex file")
+    pictures = tex[8]
+    chunk_count_total = struct.unpack_from("<H", tex, 10)[0]
+    if pictures != 1:
+        # FF16Tools writes these to a folder of their own, not one .dds.
+        raise TexNotReadHere(f"{pictures} pictures in one file")
+    (flags, fmt, _mips, width, height, _depth, data_offset, data_size,
+     _colour, chunk_index, chunk_count) = struct.unpack_from("<IIHHHHIIIHH", tex, 0x28)
+    if flags & 3 != 1:
+        raise TexNotReadHere("not a flat 2D picture")
+    if fmt in _TEX_BC_FORMATS:
+        dxgi, block_bytes = _TEX_BC_FORMATS[fmt]
+        pitch = max(1, (width + 3) // 4) * block_bytes
+        rows = height // 4
+        slice_rows = max(1, (height + 3) // 4)
+    elif fmt in _TEX_RGBA_FORMATS:
+        dxgi = _TEX_RGBA_FORMATS[fmt]
+        pitch = width * 4
+        rows = slice_rows = height
+    else:
+        raise TexNotReadHere(f"pixel format 0x{fmt:X}")
+    if not width or not height:
+        raise TexNotReadHere("an empty picture")
+
+    if (flags >> 3) & 1:
+        # Stored whole, not in chunks.
+        if max_packed is not None and data_size > max_packed:
+            raise TexNotReadHere("larger than is quicker to read here")
+        data = tex[data_offset:data_offset + data_size]
+    else:
+        if chunk_index + chunk_count > chunk_count_total:
+            raise ValueError("the picture names chunks the file does not list")
+        table = 0x28 + pictures * 0x20
+        chunks = [struct.unpack_from("<III", tex, table + i * 0x10)
+                  for i in range(chunk_index, chunk_index + chunk_count)]
+        packed = sum(bits >> 2 for _off, bits, _size in chunks)
+        if max_packed is not None and packed > max_packed:
+            raise TexNotReadHere("larger than is quicker to read here")
+        parts = []
+        for offset, bits, size in chunks:
+            blob = tex[offset:offset + (bits >> 2)]
+            if len(blob) != bits >> 2:
+                raise ValueError("a chunk runs past the end of the file")
+            # "This is how the game checks" (FF16Tools): same size, not packed.
+            parts.append(blob if (bits >> 2) == size else gdeflate_decompress(blob, size))
+        data = b"".join(parts)
+
+    stride = (pitch + 255) & ~255 if chunk_count else pitch
+    if rows and (rows - 1) * stride + pitch > len(data):
+        raise ValueError("the picture's data is shorter than its size says")
+    if stride == pitch:
+        first_mip = bytearray(data[:rows * pitch])
+    else:
+        first_mip = bytearray()
+        for row in range(rows):
+            first_mip += data[row * stride: row * stride + pitch]
+    first_mip += bytes(slice_rows * pitch - len(first_mip))
+
+    header = bytearray(4 + 124 + 20)
+    header[0:4] = b"DDS "
+    # size, flags (caps, height, width, pixel format, linear size), height,
+    # width, linear size, depth, mips
+    struct.pack_into("<7I", header, 4, 124, 0x81007, height, width, pitch, 0, 1)
+    struct.pack_into("<2I4s", header, 4 + 72, 32, 0x4, b"DX10")     # pixel format: FourCC DX10
+    struct.pack_into("<I", header, 4 + 104, 0x1000)                 # caps: texture
+    struct.pack_into("<5I", header, 128, dxgi, 3, 0, 1, 0)          # DXGI format, 2D, array of 1
+    return bytes(header) + bytes(first_mip)
+
+
+def decode_tex_in_process(path: Path, max_packed: Optional[int] = IN_PROCESS_MAX_PACKED_BYTES):
+    """
+    A .tex as an RGBA `PIL.Image`, read in Python - the same pixels
+    `load_game_texture_preview` gets from FF16Tools. Raises `TexNotReadHere`
+    for what it leaves to FF16Tools, and other exceptions for a damaged
+    file; the caller falls back to FF16Tools on either.
+    """
+    return _image_from_dds(tex_as_dds(Path(path).read_bytes(), max_packed))
+
+
+# =============================================================================
+# Seam fix (the Portrait Seam Fixer's `_fix_array`, as it is)
+# =============================================================================
+
+#: Said when the seam fix can't run: running from source without the two
+#: libraries it needs. A packaged build has them.
+SEAM_FIX_NEEDS = ("The face seam fix needs numpy and scipy, which aren't installed here. "
+                  "Install them with: pip install numpy scipy")
+
 
 def apply_seam_fix(img):
     """
     Returns (fixed_image, n_promoted). Input must be an RGBA `PIL.Image`.
 
-    Stage 1 dilates visible colour into fully-transparent regions so BC7
-    encoding never has to guess a colour for a "no data" pixel. Stage 2
-    promotes alpha from 0 to 4 (still imperceptibly transparent) inside any
-    4x4 block that also contains an opaque pixel, so the encoder doesn't
-    leave a solid black seam around the portrait in-game.
+    The "IVC Portrait Seam Fixer" (`fix_portrait_seam.py`, Zodi's) exactly:
+    its `_fix_array`, the same numpy and scipy calls in the same order, on
+    the picture as an RGBA array.
 
-    Ported from the numpy/scipy version, which used
-    `scipy.ndimage.distance_transform_edt` to find each transparent pixel's
-    nearest visible neighbour. That one call was the only thing scipy was
-    ever imported for, and it cost 96 MB of the shipped build once numpy
-    came with it.
+    Stage 1 gives every fully transparent pixel the colour of its nearest
+    visible one (`scipy.ndimage.distance_transform_edt`), so BC7 encoding
+    never guesses a colour for a pixel with no data. Stage 2 raises alpha
+    from 0 to 4 (still transparent to the eye) in any 4x4 block that also
+    holds an opaque pixel, so the encoder doesn't leave a dark line round
+    the portrait in the game.
 
-    What is IDENTICAL to the old version:
+    **Back to this from a Pillow rewrite** (Zodi: "There was an older fix
+    that worked better. Let go back to using that fix"). The rewrite
+    dropped numpy and scipy, 96 MB of the build then, and matched this
+    one's alpha exactly, but filled about 40% of the transparent pixels
+    that share a block with visible ones from a different neighbour - an
+    8-way ring fill, not the nearest by distance - and in the game it drew
+    the seam this is for. `dev/test_seam_fix.py` holds this function to
+    the script's own, byte for byte.
 
-    - the alpha channel, exactly, including the promoted count
-    - every visible pixel's colour - stage 1 only ever writes into pixels
-      with alpha 0
-    - the colour dilated into transparent pixels within DILATE_PASSES of
-      visible content, which is a true 8-neighbour nearest fill
-
-    What DIFFERS: transparent pixels further than DILATE_PASSES from any
-    visible pixel get the average visible colour rather than the nearest
-    one. That is deliberate and safe, because of what the fix is for.
-
-    BC7 encodes in 4x4 blocks. A block's colour endpoints are only pulled
-    about by transparent pixels if that same block also contains visible
-    ones - and any such pixel is within 3px of visible content. Beyond a
-    handful of pixels out, the whole block is invisible and the colour in
-    it cannot produce a seam because nothing in that block is drawn.
-    DILATE_PASSES is set well past that bound, so every pixel that can
-    affect a seam gets the exact nearest colour, and the fill beyond it is
-    a courtesy to the encoder rather than something the image depends on.
-
-    The old exact-everywhere fill also wasn't stable in the way it might
-    look: where two visible pixels are equidistant, which one wins is an
-    implementation detail of the distance transform, not a property of the
-    image.
+    Raises RuntimeError (`SEAM_FIX_NEEDS`) without numpy and scipy: a face
+    exported without its fix would show the seam, so it is not written
+    another way.
     """
-    from PIL import Image, ImageChops, ImageStat
+    try:
+        import numpy as np
+        from scipy import ndimage
+    except ImportError as exc:
+        raise RuntimeError(SEAM_FIX_NEEDS) from exc
+    from PIL import Image
 
-    DILATE_PASSES = 24
+    arr = np.array(img.convert("RGBA"), dtype=np.uint8)
 
-    w, h = img.size
-    r, g, b, a = img.split()
+    # -- fix_portrait_seam.py's _fix_array, unchanged ---------------------
+    h, w = arr.shape[:2]
+    result = arr.copy()
+    alpha = arr[:, :, 3].astype(np.int32)
 
-    # "Has colour" means any alpha at all, matching the old `alpha > 0`.
-    known = a.point(lambda v: 255 if v > 0 else 0).convert("L")
-    if not known.getbbox():
-        return img.copy(), 0
+    has_color = alpha > 0
+    if not has_color.any():
+        return Image.fromarray(result, "RGBA"), 0
 
-    # -- Stage 1: dilate colour outwards, one ring at a time ---------------
-    #
-    # Eight `ImageChops.offset` shifts per pass, each pasting whole pixels
-    # through a mask. Whole pixels matter: filtering the channels
-    # separately (a MaxFilter, say) would take red from one neighbour and
-    # green from another and invent a colour that is in no neighbour at
-    # all.
-    #
-    # Two things this has to get right, both of which are silent when wrong:
-    #
-    # `offset` WRAPS. Without blanking the wrapped edge, a pixel on the left
-    # border takes its colour from the right border - the one place in the
-    # image guaranteed to be unrelated to it.
-    #
-    # All eight directions are judged against the SAME snapshot of the
-    # known-pixel mask. Updating it between directions would let a pixel
-    # filled by the first direction act as a source for the seventh in the
-    # same pass, so the front would advance more than one ring per pass and
-    # do it faster along whichever axis happened to be listed first.
-    rgb = Image.merge("RGB", (r, g, b))
-    NEIGHBOURS = ((-1, 0), (1, 0), (0, -1), (0, 1),
-                  (-1, -1), (-1, 1), (1, -1), (1, 1))
+    # Stage 1 - colour dilation
+    _, nearest = ndimage.distance_transform_edt(~has_color, return_indices=True)
+    for ch in range(3):
+        result[:, :, ch] = arr[:, :, ch][nearest[0], nearest[1]]
 
-    def unwrapped(im, dx, dy, fill=0):
-        """`offset` result with the wrapped-around edge blanked out."""
-        if dx:
-            box = (0, 0, dx, h) if dx > 0 else (w + dx, 0, w, h)
-            im.paste(fill, box)
-        if dy:
-            box = (0, 0, w, dy) if dy > 0 else (0, h + dy, w, h)
-            im.paste(fill, box)
-        return im
+    # Stage 2 - BC7 block alpha promotion
+    opaque = alpha > 128
+    bh, bw = (h + 3) // 4, (w + 3) // 4
+    promoted = 0
+    for by in range(bh):
+        for bx in range(bw):
+            r0, r1 = by * 4, min(by * 4 + 4, h)
+            c0, c1 = bx * 4, min(bx * 4 + 4, w)
+            if opaque[r0:r1, c0:c1].any():
+                blk = result[r0:r1, c0:c1, 3]
+                mask = blk == 0
+                if mask.any():
+                    result[r0:r1, c0:c1, 3][mask] = 4
+                    promoted += int(mask.sum())
+    # -----------------------------------------------------------------------
 
-    for _ in range(DILATE_PASSES):
-        unknown = ImageChops.invert(known)
-        if not unknown.getbbox():
-            break
-        newly = Image.new("L", (w, h), 0)
-        for dx, dy in NEIGHBOURS:
-            src_known = unwrapped(ImageChops.offset(known, dx, dy), dx, dy)
-            fill = ImageChops.multiply(src_known, unknown)
-            # An earlier direction in this pass already claimed these, and
-            # the order is the priority: orthogonal neighbours before
-            # diagonal ones, which is what keeps the fill close to a true
-            # nearest rather than a square.
-            fill = ImageChops.subtract(fill, newly)
-            if not fill.getbbox():
-                continue
-            shifted = unwrapped(ImageChops.offset(rgb, dx, dy), dx, dy, (0, 0, 0))
-            rgb.paste(shifted, (0, 0), fill)
-            newly = ImageChops.lighter(newly, fill)
-        known = ImageChops.lighter(known, newly)
-
-    still_unknown = ImageChops.invert(known)
-    if still_unknown.getbbox():
-        # Everything left is far enough out to be invisible. Flat-fill it
-        # with the average visible colour so the encoder still has
-        # something coherent rather than black.
-        visible = a.point(lambda v: 255 if v > 0 else 0).convert("L")
-        mean = ImageStat.Stat(Image.merge("RGB", (r, g, b)), visible).mean
-        rgb.paste(tuple(int(round(c)) for c in mean), (0, 0), still_unknown)
-
-    # -- Stage 2: promote alpha inside blocks that contain opaque pixels ---
-    #
-    # Exactly the old rule: for each 4x4 block, if any pixel has alpha>128,
-    # every pixel in that block with alpha==0 becomes 4.
-    #
-    # Done with a downscale rather than a Python loop over blocks. A BOX
-    # resize averages each 4x4 group, so a block containing at least one
-    # 255 averages above 0 and a block containing none averages exactly 0 -
-    # which is the "any opaque in this block" test, at C speed.
-    opaque = a.point(lambda v: 255 if v > 128 else 0).convert("L")
-
-    # Pad to a whole number of blocks first. Without this the resize would
-    # spread a partial edge block across the wrong pixels, and the old code
-    # explicitly clamped those blocks with min(by*4+4, h).
-    pw, ph = (w + 3) // 4 * 4, (h + 3) // 4 * 4
-    if (pw, ph) != (w, h):
-        padded = Image.new("L", (pw, ph), 0)
-        padded.paste(opaque, (0, 0))
-        opaque = padded
-
-    block_any = opaque.resize((pw // 4, ph // 4), Image.BOX)
-    block_any = block_any.point(lambda v: 255 if v > 0 else 0)
-    block_mask = block_any.resize((pw, ph), Image.NEAREST).crop((0, 0, w, h))
-
-    transparent = a.point(lambda v: 255 if v == 0 else 0).convert("L")
-    promote = ImageChops.multiply(block_mask.convert("L"), transparent)
-    promote = promote.point(lambda v: 255 if v > 0 else 0).convert("L")
-
-    promoted = promote.histogram()[255]
-    if promoted:
-        a = a.copy()
-        a.paste(4, (0, 0), promote)
-
-    out_r, out_g, out_b = rgb.split()
-    return Image.merge("RGBA", (out_r, out_g, out_b, a)), promoted
+    return Image.fromarray(result.astype(np.uint8), "RGBA"), promoted
 
 
 # =============================================================================

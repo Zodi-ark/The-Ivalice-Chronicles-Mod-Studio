@@ -25,7 +25,7 @@ can do. What that proves and what it doesn't:
 | `data/`, `assets/`, `tools/` land where `project_root()` looks for them | that FF16Tools.CLI and AudioMog still launch as subprocesses from inside the bundle |
 | the frozen app launches, draws correctly, and loads the bundled reference tables | that `console=False` really suppresses the console |
 | no Qt binding is pulled in | that the icon and taskbar identity survive freezing |
-| the build is 173 MB, down from 483 MB | that Defender doesn't flag a fresh unsigned build |
+| the build is 173 MB, down from 483 MB | that Defender doesn't flag a fresh unsigned build - it did, once: `Trojan:Win32/Wacatac.C!ml` on a GitHub download. See `BUILDING.md`, **If Windows Defender flags the .exe** |
 
 A screenshot of the frozen Linux build was checked against the same page
 running unfrozen - the sidebar logo, the reference-table load and the
@@ -103,10 +103,15 @@ Measured, installed and zipped:
 |---|---|---|---|---|
 | first attempt | 175 MB | 81 MB | - | - |
 | scipy pruned | 154 MB | 74 MB | none | identical |
-| **current** (Pillow only) | **76 MB** | **33 MB** | done | see below |
+| Pillow only | 76 MB | 33 MB | done | see below |
 | no imaging at all | 58 MB | 22 MB | - | Textures loses replace |
+| **current**: Qt, Pillow, numpy and scipy | **274 MB** | **145 MB** | - | - |
 
-`tools/` is 17 MB of every row and isn't going anywhere.
+`tools/` is 17 MB of every row and isn't going anywhere. The first four
+rows were Tkinter builds. The last is the Qt interface on Linux, measured
+with `dev/inventory_build.py`: Qt is 96 MB of it there, and numpy and scipy
+91 MB, back since the seam fix is the Portrait Seam Fixer's own code again
+(below). Windows differs; Zodi's number is the one to trust.
 
 **The floor is 58 MB installed / 22 MB zipped** - CPython, tcl/tk, the
 stdlib, `tools/` and `data/`. That is the price of "the user doesn't need
@@ -141,6 +146,11 @@ are fully transparent, and the fix exists precisely so the encoder has *some*
 colour there rather than guessing. Visually it is immaterial. But it changes
 the exported bytes, and this project cares about a mod exporting the same way
 twice. **Not changed here.** Recorded so the trade is explicit.
+
+**Since decided, twice.** A Pillow rewrite of the fix went in later, and
+Zodi then asked for his Portrait Seam Fixer's own algorithm back: it is
+his script's numpy and scipy code again, byte for byte
+(`dev/test_seam_fix.py`), and numpy and scipy are in the build again.
 
 ## Why the first build was 483 MB
 

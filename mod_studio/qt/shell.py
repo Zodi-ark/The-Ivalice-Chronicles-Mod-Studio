@@ -78,7 +78,17 @@ UTILITIES = ["Game Updates", "Settings"]
 EDIT_TABS = [
     "Jobs", "Job Commands", "Abilities", "Items", "Equip Bonus",
     "Inflict Status",
-    "Poaching", "Treasure Hunter", "Encounters", "Unit Names", "Textures", "Sounds",
+    "Poaching", "Treasure Hunter", "Encounters", "Unit Names", "Textures",
+    # Straight after Textures, at Zodi's request: its pictures ARE the
+    # textures Textures replaces, and a box's right-click menu jumps there.
+    # Like Textures and Sounds, a tree of the game's files on the left and
+    # the chosen one drawn on the right.
+    "UI Layouts",
+    # After UI Layouts, where the mock-up Zodi approved put it: the other
+    # page that draws the game's own files, and whose pictures are textures
+    # the Textures page replaces.
+    "Map Editor",
+    "Sounds",
 
     # Last, and one entry rather than 550. The tables above have hand-built
     # controls because they are what most mods change; everything else in

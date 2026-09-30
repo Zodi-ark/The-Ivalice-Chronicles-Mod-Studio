@@ -180,17 +180,28 @@ def mark_edited(item, edited: bool) -> None:
     # what a marked row means. Detected by asking the item, not by importing
     # both classes and comparing types - a third row type would then work
     # here without this function knowing about it.
-    column = (0,) if hasattr(item, "childCount") else ()
-    font = item.font(*column)
-    font.setBold(edited)
-    item.setFont(*column, font)
-    if edited:
-        colours = theme.current()
-        item.setBackground(*column, QBrush(QColor(colours["edited_bg"])))
-        item.setForeground(*column, QBrush(QColor(colours["edited_fg"])))
+    #
+    # A tree row is marked in EVERY column. Column 0 alone left the rest of
+    # the row plain - UI Layouts' box list, "Boxes on this screen", had its
+    # Kind column unmarked, reported with a screenshot - so a two-column row
+    # read as half edited.
+    if hasattr(item, "childCount"):
+        tree = item.treeWidget()
+        count = tree.columnCount() if tree is not None else item.columnCount()
+        columns = [(column,) for column in range(max(1, count))]
     else:
-        item.setBackground(*column, QBrush())
-        item.setForeground(*column, QBrush())
+        columns = [()]
+    colours = theme.current()
+    for column in columns:
+        font = item.font(*column)
+        font.setBold(edited)
+        item.setFont(*column, font)
+        if edited:
+            item.setBackground(*column, QBrush(QColor(colours["edited_bg"])))
+            item.setForeground(*column, QBrush(QColor(colours["edited_fg"])))
+        else:
+            item.setBackground(*column, QBrush())
+            item.setForeground(*column, QBrush())
 
 
 class ViewToggles(QWidget):

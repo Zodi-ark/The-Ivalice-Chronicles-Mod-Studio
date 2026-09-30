@@ -22,6 +22,7 @@ report what is now editable.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -35,6 +36,8 @@ from ... import (
     audiomog, ff16tools, game_install, modconfig, nxd_data, paths, reloaded,
     ui_settings)
 from ... import sound_data as sd, texture_data as td
+from ... import map_classic as mc
+from ... import uib
 from ..widgets.field_rows import CollapsibleSection
 from ..widgets.form_scroll import FormScrollArea
 from ..workers import Worker, run_in_thread
@@ -1922,6 +1925,13 @@ class SetupPage(QWidget):
                 }
             self.state.sound_file_replacements = dict(recovered.sounds)
             self.state.other_file_replacements = dict(recovered.other)
+            # A mod made of files alone - textures, sounds, screen layouts -
+            # has no tables to say which mode it was made for; its data
+            # folder does. Export's clean-up of a screen with no edits left
+            # only works in the mode the mod was read in, so without this it
+            # never ran for such a mod - Zodi's own layout mods among them.
+            if not self.state.loaded_game_mode and recovered.game_mode:
+                self.state.loaded_game_mode = recovered.game_mode
             # Force the Textures and Sounds tabs to rescan, so the newly
             # staged entries appear. They rebuild the tree themselves now.
             self.state.texture_tree = None
@@ -1929,6 +1939,9 @@ class SetupPage(QWidget):
             if not recovered.is_empty():
                 self._log(f"Loaded this mod's replaced files: "
                           f"{recovered.summary()}.")
+            self._take_over_layouts()
+            self._take_over_part_lists()
+            self._take_over_maps()
 
         # The mod's own game data, converted from the `.nxd` files it ships.
         #
@@ -1956,6 +1969,229 @@ class SetupPage(QWidget):
             self._log(f"   {line}")
         self._refresh_readiness()
         self.setup_changed.emit()
+
+    def _take_over_layouts(self) -> None:
+        """
+        Turns the screen layouts this mod ships back into UI Layouts edits.
+
+        A `.uib` in a mod arrives among the carried-through files, because
+        until the UI Layouts page there was nothing else it could be. Now
+        each one is compared with the game's own copy: when the mod's file
+        is exactly the game's with some boxes' numbers changed - the only
+        kind of change the page makes - those numbers become edits on the
+        page, and export writes the file from the game's copy again. A copy
+        changed any other way (another tool, another game version) stays
+        carried through untouched, and the page shows it without editing it.
+
+        A copy identical to the game's is let go: the game already has it,
+        and carrying it would leave the screen uneditable for nothing. The
+        page writes such a copy itself when a row is ticked at the game's
+        own value, so without this, exporting and reopening a mod could lock
+        a screen the page made.
+
+        Needs the unpacked game to compare against. Without it every layout
+        stays carried through, which is exactly what happened before. So
+        does one the game has no file for at exactly that path - including
+        one spelled `UI/...` where the game says `ui/...`: the same file on
+        Windows, but the page knows screens by the game's spelling, and
+        taking the edits over under the mod's would hide them from it.
+        """
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        carried = self.state.other_file_replacements
+        layouts = [rel for rel in carried
+                   if rel.lower().endswith(uib.LAYOUT_EXTENSION)]
+        if not layouts or not game:
+            return
+        try:
+            known = set(uib.layout_paths(uib.scan_layout_tree(Path(game))))
+        except Exception:                                  # noqa: BLE001
+            known = set()
+        taken, same, kept, unmatched = 0, 0, 0, 0
+        for rel in sorted(layouts):
+            if rel not in known:
+                unmatched += 1
+                continue
+            try:
+                # `edits_between` never raises - a damaged copy is simply
+                # carried - so only reading the two files can fail here.
+                edits = uib.edits_between((Path(game) / rel).read_bytes(),
+                                          Path(carried[rel]).read_bytes())
+            except OSError:
+                edits = None
+            if edits:
+                self.state.uib_edits[rel] = edits
+                carried.pop(rel)
+                taken += 1
+            elif edits == {}:
+                carried.pop(rel)
+                same += 1
+            else:
+                kept += 1
+        if taken:
+            self._log(f"Opened {taken} of this mod's screen layout(s) as "
+                      f"UI Layouts edits.")
+        if same:
+            self._log(f"{same} of this mod's screen layout(s) "
+                      f"{'is' if same == 1 else 'are'} the same as the game's "
+                      f"own copy, so {'it' if same == 1 else 'they'} won't be "
+                      f"exported again - the game already has "
+                      f"{'it' if same == 1 else 'them'}.")
+        if kept:
+            self._log(f"Carrying {kept} screen layout(s) through as they are - "
+                      f"changed in ways the UI Layouts page doesn't make.")
+        if unmatched:
+            self._log(f"Carrying {unmatched} screen layout(s) through as they "
+                      f"are - the unpacked game has none at exactly the same "
+                      f"path to compare with.")
+
+    def _take_over_part_lists(self) -> None:
+        """
+        The same as `_take_over_layouts`, for the texture part lists
+        (`.utexpt`) the UI Layouts page edits: a mod's copy that is exactly
+        the game's with some parts' corners changed comes back as those
+        edits (`uib.part_edits_between`), one identical to the game's is let
+        go, and any other stays carried through untouched. Only a copy at
+        exactly a path the game has one - under the game's own spelling.
+        """
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        carried = self.state.other_file_replacements
+        lists = [rel for rel in carried if rel.lower().endswith(uib.PART_LIST_EXTENSION)]
+        if not lists or not game:
+            return
+        root = Path(game) / uib.LAYOUT_ROOT
+        try:
+            known = {path.relative_to(Path(game)).as_posix()
+                     for path in root.rglob("*" + uib.PART_LIST_EXTENSION)}
+        except OSError:
+            known = set()
+        taken, same, kept = 0, 0, 0
+        for rel in sorted(lists):
+            edits = None
+            if rel in known:
+                try:
+                    edits = uib.part_edits_between((Path(game) / rel).read_bytes(),
+                                                   Path(carried[rel]).read_bytes())
+                except OSError:
+                    edits = None
+            if edits:
+                self.state.utexpt_edits[rel] = edits
+                carried.pop(rel)
+                taken += 1
+            elif edits == {}:
+                carried.pop(rel)
+                same += 1
+            else:
+                kept += 1
+        if taken:
+            self._log(f"Opened {taken} of this mod's texture part list(s) as "
+                      f"UI Layouts edits.")
+        if same:
+            self._log(f"{same} of this mod's texture part list(s) "
+                      f"{'is' if same == 1 else 'are'} the same as the game's own "
+                      f"copy, so {'it' if same == 1 else 'they'} won't be exported "
+                      f"again - the game already has {'it' if same == 1 else 'them'}.")
+        if kept:
+            self._log(f"Carrying {kept} texture part list(s) through as they are - "
+                      f"changed in ways the UI Layouts page doesn't make, or with no "
+                      f"copy in the unpacked game at exactly that path.")
+
+    def _take_over_panel_meshes(self, game: Path, by_number: dict) -> int:
+        """
+        Lets go of the enhanced meshes this mod carries that are the game's
+        with only the highlight panels moved (`map_enhanced.panels_only`):
+        export makes them again from the grid edits, so carried through they
+        would go stale when an edit is put back. Kept when the map's grid is
+        still carried whole, whose panels no edit here would move.
+        """
+        from ... import map_enhanced as me
+        from ... import map_package as mpk
+
+        carried = self.state.other_file_replacements
+        let_go = 0
+        for rel in [r for r in carried if re.fullmatch(
+                re.escape(me.MESH_FOLDER) + r"/map_\d{3}_mesh\.bin", r, re.IGNORECASE)]:
+            number = int(re.search(r"map_(\d{3})_mesh", rel, re.IGNORECASE).group(1))
+            if any(r in carried for r in by_number.get(number, [])):
+                continue
+            try:
+                if not me.panels_only(me.mesh_path(game, number).read_bytes(),
+                                      Path(carried[rel]).read_bytes()):
+                    continue
+            except OSError:
+                continue
+            carried.pop(rel)
+            let_go += 1
+        return let_go
+
+    def _take_over_maps(self) -> None:
+        """
+        Turns the battle map files this mod ships back into Map Editor edits.
+
+        `_take_over_layouts`' move, made a grid at a time. A map keeps one
+        battle grid in several files and export writes a grid's edits into
+        all of them, so a mod's copies of one grid come back together or not
+        at all: when every copy the mod has is the game's own with the same
+        tiles changed where they sit - all this page changes
+        (`map_classic.tile_edits_between`) - those tiles become the grid's
+        edits and export writes them afresh. Copies all identical to the
+        game's are let go. A grid any copy of which changed another way, or
+        whose copies disagree, stays carried through untouched, every copy.
+
+        Needs the unpacked game to compare with, as layouts do; without it
+        every map file stays carried through.
+        """
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        carried = self.state.other_file_replacements
+        prefix = mc.MAP_FOLDER + "/"
+        by_number = {}
+        for rel in carried:
+            m = re.match(re.escape(prefix) + r"(?:map_|new_map_new_)map(\d{3})_\d+\.bin$", rel,
+                         re.IGNORECASE)
+            if m:
+                by_number.setdefault(int(m.group(1)), []).append(rel)
+        if not game:
+            return
+        folder = Path(game) / mc.MAP_FOLDER
+        taken = same = kept = 0
+        for number, rels in sorted(by_number.items()):
+            for key, files in mc.map_grids(folder, number).items():
+                spelled = {name.lower(): name for name in files}
+                mine = [rel for rel in rels if rel[len(prefix):].lower() in spelled]
+                if not mine:
+                    continue
+                found = []
+                for rel in mine:
+                    try:
+                        found.append(mc.tile_edits_between(
+                            (folder / spelled[rel[len(prefix):].lower()]).read_bytes(),
+                            Path(carried[rel]).read_bytes()))
+                    except OSError:
+                        found.append(None)
+                if any(edits is None or edits != found[0] for edits in found):
+                    kept += len(mine)
+                    continue
+                for rel in mine:
+                    carried.pop(rel)
+                if found[0]:
+                    self.state.map_edits[key] = found[0]
+                    taken += 1
+                else:
+                    same += len(mine)
+        panels = self._take_over_panel_meshes(Path(game), by_number)
+        if taken:
+            self._log(f"Opened {taken} of this mod's battle grid(s) as Map Editor edits.")
+        if panels:
+            self._log(f"{panels} of this mod's enhanced map mesh(es) only have their highlight "
+                      f"panels moved for its grid edits, which export does again: not carried "
+                      f"through.")
+        if same:
+            self._log(f"{same} of this mod's battle map file(s) "
+                      f"{'is' if same == 1 else 'are'} the same as the game's own copy, "
+                      f"so {'it' if same == 1 else 'they'} won't be exported again: the "
+                      f"game already has {'it' if same == 1 else 'them'}.")
+        if kept:
+            self._log(f"Carrying {kept} battle map file(s) through as they are, changed "
+                      f"in ways the Map Editor doesn't make.")
 
     def forget_opened_mod(self) -> None:
         """
@@ -2094,7 +2330,10 @@ class SetupPage(QWidget):
         for key, records in sorted((existing.table_edits or {}).items()):
             if records:
                 parts.append(f"{len(records)} {key.replace('_', ' ')}")
-        return parts or ["No table edits in it - textures or sounds only."]
+        # "textures or sounds only" stopped being true of every such mod
+        # when screen layouts became something a mod could be made of.
+        return parts or ["No table edits in it - only files it replaces, like "
+                         "textures, sounds or screen layouts."]
 
     # -- unpacking -----------------------------------------------------------------
 

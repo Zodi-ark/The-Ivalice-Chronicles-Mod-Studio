@@ -110,6 +110,11 @@ hiddenimports = [
     "PIL.ImageChops",
     "PIL.ImageStat",
     "PIL.DdsImagePlugin",   # .dds decode, including BC1-BC7
+    # The face seam fix (`texture_data.apply_seam_fix`), the Portrait Seam
+    # Fixer's own: imported inside the function, and without them a face
+    # texture is refused at export rather than written without its fix.
+    "numpy",
+    "scipy.ndimage",
 ]
 # `PIL.ImageTk` was here and has been removed. It is Pillow's bridge to
 # Tkinter - a Tk PhotoImage wrapper - and there is no Tkinter any more.
@@ -127,8 +132,10 @@ hiddenimports = [
 # the great majority of that is modules a desktop data editor never touches.
 # WebEngine alone is the largest single component: a full Chromium.
 #
-# Measured: the whole application imports exactly three Qt modules -
-# QtCore, QtWidgets and QtGui. Everything below is outside that set.
+# Measured: the whole application imports exactly four Qt modules -
+# QtCore, QtWidgets, QtGui and QtOpenGL, the last for the Map Editor, which
+# draws battle maps with the graphics card (`mod_studio/qt/map_render.py`).
+# Everything below is outside that set.
 #
 # `BUILDING.md` installs PySide6-Essentials rather than PySide6 so most of
 # this is never on disk to begin with. This list stays anyway: excludes are
@@ -183,7 +190,11 @@ EXCLUDE_QT = [
     "PySide6.QtHttpServer",
     "PySide6.QtTextToSpeech",
     "PySide6.QtVirtualKeyboard",
-    "PySide6.QtOpenGL",
+    # QtOpenGL is NOT here: the Map Editor draws off screen with its
+    # QOpenGLContext helpers, approved as a build change for 8.7 MB (2.2 MB
+    # zipped). QtOpenGLWidgets stays out - the page paints a QImage in an
+    # ordinary widget, because a QOpenGLWidget would switch the whole window
+    # to OpenGL compositing.
     "PySide6.QtOpenGLWidgets",
     # QtSql is excluded deliberately. The engine reads SQLite through the
     # stdlib `sqlite3` module and will keep doing so - backing a view with
@@ -197,7 +208,7 @@ EXCLUDE_QT = [
 ]
 
 # Group 2: weight pulled in transitively that a mod editor has no use for.
-# numpy/scipy/PIL ARE required (the Textures tab), so they are not here.
+# numpy, scipy and PIL ARE required (the Textures tab), so they are not here.
 #
 # The four below are the difference between a 483 MB build and a usable one,
 # and none of them is imported by this project. They arrive because
@@ -220,12 +231,10 @@ EXCLUDE_QT = [
 # source - but that is an engine change and belongs in its own session, so
 # the exclusions below deal with it from the packaging side for now.
 EXCLUDE_HEAVY = [
-    # The scientific stack is gone from the codebase entirely. It existed
-    # for two functions in texture_data.py, both now pure Pillow. Listed
-    # here so that if anything ever re-imports them the build fails loudly
-    # rather than quietly regaining 96 MB.
-    "numpy",
-    "scipy",
+    # numpy and scipy are BACK, for the face seam fix: Zodi asked for the
+    # Portrait Seam Fixer's own algorithm again after a Pillow rewrite drew
+    # the seam in the game. imageio is not: the script used it only to open
+    # .dds files, which Pillow reads itself here.
     "imageio",
     "cv2",
     "imageio_ffmpeg",
@@ -259,6 +268,18 @@ EXCLUDE_HEAVY = [
 # but only if nothing loaded still links against them - worth doing only with
 # a real check, not a guess, so it isn't done here.
 EXCLUDE_UNUSED_SUBPACKAGES = [
+    # Measured: the seam fix's one call loads scipy's _lib, ndimage, special
+    # and their small helpers with scipy 1.17, and linalg and sparse as well
+    # with 1.14, 1.15 and 1.16 (the scipy Python 3.10 gets). These are the
+    # parts none of them loads (about 65 MB of 1.17's 112). linalg and
+    # sparse stay in, so a build made with any of those scipys has what its
+    # seam fix imports; left out, the fix would fail in the build only.
+    "scipy.stats", "scipy.optimize", "scipy.spatial", "scipy.io",
+    "scipy.signal", "scipy.interpolate", "scipy.integrate", "scipy.cluster",
+    "scipy.odr", "scipy.datasets", "scipy.misc", "scipy.differentiate", "scipy.fftpack",
+    # Nothing of numpy's: scipy's import loads numpy.testing and numpy.f2py
+    # among others (measured), so a numpy trimmed by guesswork would break
+    # the fix in the build only.
     "PIL.ImageShow", "PIL.ImageGrab",
 ]
 
@@ -477,15 +498,17 @@ def _is_dropped_qt_library(dest: str) -> bool:
 # laptops. Dropping it would be the biggest single saving available and
 # would make the tool fail to start for exactly the users least able to
 # diagnose it. Set DROP_SOFTWARE_OPENGL below if you are shipping to a
-# known audience; it is off deliberately.
+# known audience; it is off deliberately. It is also what draws the Map
+# Editor's maps on those machines: the page needs OpenGL 3.3, which the
+# software renderer gives where the driver does not.
 
 DROP_SOFTWARE_OPENGL = False
 
-# The Qt Python bindings to keep. The application imports Core, Gui and
-# Widgets; DBus and Network are kept because Qt's own platform and TLS code
-# reaches for them and the saving is under 2 MB against the risk of a
-# failure that only appears on someone else's machine.
-_KEEP_BINDINGS = {"Core", "Gui", "Widgets", "Network", "DBus"}
+# The Qt Python bindings to keep. The application imports Core, Gui,
+# Widgets and OpenGL (the Map Editor); DBus and Network are kept because Qt's
+# own platform and TLS code reaches for them and the saving is under 2 MB
+# against the risk of a failure that only appears on someone else's machine.
+_KEEP_BINDINGS = {"Core", "Gui", "Widgets", "OpenGL", "Network", "DBus"}
 
 _QT_DEV_TOOLS = {
     "designer.exe", "linguist.exe", "assistant.exe", "uic.exe", "rcc.exe",
@@ -521,7 +544,7 @@ def _is_qt_dead_weight(dest: str) -> bool:
     # module `excludes` list names these too, but excludes act on the import
     # graph and the Qt hook adds the binding files as BINARIES, so one does
     # not imply the other. `QtOpenGL.pyd` alone is 8.3 MB and survived the
-    # excludes.
+    # excludes while it was excluded (it is kept now, for the Map Editor).
     if path.suffix in (".pyd", ".so") and path.name.startswith("Qt"):
         module = path.name.split(".")[0][2:]
         if module not in _KEEP_BINDINGS:

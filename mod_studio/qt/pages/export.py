@@ -17,6 +17,7 @@ than one that refuses.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -30,8 +31,12 @@ from PySide6.QtWidgets import (
 from ... import pzd_data
 from ... import item_xml_io as ix
 from ... import constants as c
+from ... import map_classic as mc
+from ... import map_enhanced as me
+from ... import map_package as mpk
 from ... import modconfig, paths, reloaded, xml_io
 from ... import sound_data as sd, texture_data as td
+from ... import uib
 from ..widgets.hairline_splitter import HairlineSplitter
 from ..widgets.field_rows import CollapsibleSection
 from ..nxd_export import NxdExportWorker
@@ -110,10 +115,21 @@ class AssetExportWorker(Worker):
 
     def __init__(self, mod_root, mode, texture_edits, sound_edits,
                  cli_path, audiomog_path, game_dir, pzd_edits=None,
-                 sound_file_replacements=None, other_file_replacements=None):
+                 sound_file_replacements=None, other_file_replacements=None,
+                 uib_edits=None, utexpt_edits=None, map_edits=None):
         super().__init__()
         self.mod_root = Path(mod_root)
         self.mode = mode
+        # Two levels deep, for the reason given for the layouts below.
+        self.map_edits = {name: {tile: dict(changes) for tile, changes in tiles.items() if changes}
+                          for name, tiles in (map_edits or {}).items() if tiles}
+        # Two levels deep, like the sound edits below: the page keeps
+        # editing its own dicts while this runs.
+        self.uib_edits = {rel: {key: dict(fields) for key, fields in boxes.items()}
+                          for rel, boxes in (uib_edits or {}).items() if boxes}
+        self.utexpt_edits = {rel: {index: {"name": part["name"], "rect": list(part["rect"])}
+                                   for index, part in parts.items()}
+                             for rel, parts in (utexpt_edits or {}).items() if parts}
         # A nested copy, for the reason given below about sound edits.
         self.pzd_edits = {rel: dict(lines)
                           for rel, lines in (pzd_edits or {}).items()
@@ -143,9 +159,70 @@ class AssetExportWorker(Worker):
         result = {"textures": 0, "texture_total": len(self.texture_edits),
                   "sounds": 0, "sound_total": len(archives),
                   "texts": 0, "text_total": len(self.pzd_edits),
+                  "layouts": 0, "layout_total": len(self.uib_edits),
+                  "part_lists": 0, "part_list_total": len(self.utexpt_edits),
+                  "maps": 0, "map_total": 0,
                   "carried": 0,
                   "carried_total": len(self.other_file_replacements),
                   "skipped": [], "errors": []}
+
+        # Screen layouts: the game's own file with this mod's numbers
+        # written where they sit. Needs nothing but the unpacked game - no
+        # FF16Tools - so it runs before the steps that can be skipped.
+        if self.uib_edits:
+            if self.game_dir is None:
+                result["errors"].append(
+                    "The unpacked game folder isn't set, and writing a "
+                    "screen layout needs the game's own copy to start from.")
+            else:
+                for relative_path, boxes in sorted(self.uib_edits.items()):
+                    original = self.game_dir / relative_path
+                    self.log.emit(f"Writing {relative_path}...")
+                    try:
+                        # Read NOW, not when the page was open: every number
+                        # this mod does not change should be the game's
+                        # current one.
+                        data, problems = uib.apply_edits(original.read_bytes(), boxes)
+                        destination = dest_root / relative_path
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.write_bytes(data)
+                        result["layouts"] += 1
+                        for problem in problems:
+                            result["errors"].append(f"{relative_path}: {problem}")
+                    except Exception as exc:                  # noqa: BLE001
+                        # One screen that can't be written is one line in
+                        # the report, as for every other kind of file - not
+                        # the end of the textures and sounds after it.
+                        result["errors"].append(f"{relative_path}: {exc}")
+
+        # Texture part lists: the game's own with this mod's corners written
+        # where they sit (`uib.apply_part_edits`), as layouts are.
+        if self.utexpt_edits:
+            if self.game_dir is None:
+                result["errors"].append(
+                    "The unpacked game folder isn't set, and writing a "
+                    "texture part list needs the game's own copy to start from.")
+            else:
+                for relative_path, parts in sorted(self.utexpt_edits.items()):
+                    original = self.game_dir / relative_path
+                    self.log.emit(f"Writing {relative_path}...")
+                    try:
+                        data, problems = uib.apply_part_edits(original.read_bytes(), parts)
+                        destination = dest_root / relative_path
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.write_bytes(data)
+                        result["part_lists"] += 1
+                        for problem in problems:
+                            result["errors"].append(f"{relative_path}: {problem}")
+                    except Exception as exc:                  # noqa: BLE001
+                        result["errors"].append(f"{relative_path}: {exc}")
+
+        # Battle maps: the game's own map files with this mod's tiles written
+        # where they sit (`map_classic.apply_tile_edits`), into every file of
+        # the map holding that grid (`map_classic.grid_files`) - which of them
+        # a battle reads is not known. Needs only the unpacked game.
+        if self.map_edits:
+            self._write_maps(dest_root, result)
 
         # Text files first: they are the cheapest and the most likely to
         # fail for a reason worth hearing early (no FF16Tools), and a person
@@ -278,7 +355,97 @@ class AssetExportWorker(Worker):
             except Exception as exc:                          # noqa: BLE001
                 result["errors"].append(f"{relative_path}: {exc}")
 
+        # After the files carried through: a mesh the mod carries (a map
+        # package's) gets its panels moved in the mod, not the game's.
+        if self.map_edits and self.game_dir is not None and self.mode != "classic":
+            self._write_panels(dest_root, result)
         return result
+
+    def _write_panels(self, dest_root: Path, result: dict) -> None:
+        """
+        The enhanced look's highlight panels, on the grid as edited.
+
+        The game draws a tile's move and target highlights on the enhanced
+        mesh's `panel_ui` polygons, not from the grid: Zodi raised every
+        tile two steps in the game, and the units stood on highlights left on
+        the ground. So each map whose enhanced-look grid (`map_package.
+        enhanced_grid_file`) has edits that move a panel gets its mesh with
+        the panels on the tiles as edited - the mod's own mesh when it
+        carries one, else the game's. Maps with no panels (33 of 108) or no
+        panel moved get no file.
+        """
+        folder = self.game_dir / mc.MAP_FOLDER
+        numbers = {}
+        for name in self.map_edits:
+            try:
+                numbers.setdefault(int(name.lower().split("map_map")[1][:3]), []).append(name)
+            except (IndexError, ValueError):
+                continue
+        for number in sorted(numbers):
+            relative_path = mpk.mesh_relative_path(number)
+            try:
+                if not me.mesh_path(self.game_dir, number).is_file():
+                    continue
+                grid = mpk.enhanced_grid_file(self.game_dir, number)
+                if grid is None:
+                    continue
+                edits = self.map_edits.get(mc.grid_key(folder, number, grid))
+                if not edits:
+                    continue
+                terrain = mc.read_mesh((folder / grid).read_bytes()).terrain
+                tiles = {(t.x, t.z, t.level): mc.Tile(t.x, t.z, t.level,
+                                                     mc.tile_with(t.raw, edits.get((t.x, t.z, t.level), {})))
+                         for t in terrain.tiles}
+                destination = dest_root / relative_path
+                base = (destination.read_bytes() if relative_path in self.other_file_replacements
+                        and destination.is_file() else me.mesh_path(self.game_dir, number).read_bytes())
+                data, moved = mpk.panels_for_tiles(base, self.game_dir, number, tiles)
+                if not moved:
+                    continue
+                result["map_total"] += 1
+                self.log.emit(f"Writing {relative_path}...")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+                result["maps"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["map_total"] += 1
+                result["errors"].append(f"{relative_path}: {exc}")
+
+    def _write_maps(self, dest_root: Path, result: dict) -> None:
+        if self.game_dir is None:
+            result["map_total"] += len(self.map_edits)
+            result["errors"].append(
+                "The unpacked game folder isn't set, and writing a battle map "
+                "needs the game's own copy to start from.")
+            return
+        folder = self.game_dir / mc.MAP_FOLDER
+        for name, tiles in sorted(self.map_edits.items()):
+            try:
+                number = int(name.lower().split("map_map")[1][:3])
+                files = mc.grid_files(folder, number, name)
+            except (IndexError, ValueError):
+                files = []
+            if not files:
+                result["map_total"] += 1
+                result["errors"].append(
+                    f"{mc.relative_path(name)}: the unpacked game has no battle grid in this file")
+                continue
+            result["map_total"] += len(files)
+            for file_name in files:
+                relative_path = mc.relative_path(file_name)
+                self.log.emit(f"Writing {relative_path}...")
+                try:
+                    # Read NOW: every byte this mod does not change should be
+                    # the game's current one.
+                    data, problems = mc.apply_tile_edits((folder / file_name).read_bytes(), tiles)
+                    destination = dest_root / relative_path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(data)
+                    result["maps"] += 1
+                    for problem in problems:
+                        result["errors"].append(f"{relative_path}: {problem}")
+                except Exception as exc:                          # noqa: BLE001
+                    result["errors"].append(f"{relative_path}: {exc}")
 
 
 class ExportPage(QWidget):
@@ -1047,6 +1214,9 @@ class ExportPage(QWidget):
             # replacement, as on the Sounds page's own counter.
             ("Sounds", state.edited_sound_track_count()
              + state.replaced_sound_file_count(), "replacement"),
+            ("UI Layouts", state.edited_uib_file_count(), "screen"),
+            ("Texture parts", state.edited_utexpt_file_count(), "part list"),
+            ("Map Editor", len(state.edited_map_numbers()), "map"),
             ("Subtitles", state.edited_pzd_line_count(), "line"),
             ("Game data (no tab)", state.rebased_table_count(), "merged table"),
             ("Carried through", state.carried_through_file_count(), "file"),
@@ -1085,6 +1255,9 @@ class ExportPage(QWidget):
                              or self._extra_table_files()
                              or self.state.pzd_edits
                              or self.state.texture_edits
+                             or self.state.uib_edits
+                             or self.state.utexpt_edits
+                             or self.state.has_any_map_edits()
                              or self.state.sound_edits
                              or self.state.sound_file_replacements
                              or self.state.other_file_replacements))
@@ -1140,6 +1313,12 @@ class ExportPage(QWidget):
             names.append("Replaced sound archives")
         if self.state.has_any_pzd_edits():
             names.append("Edited text files (.pzd)")
+        if self.state.has_any_uib_edits():
+            names.append("Edited screen layouts (.uib)")
+        if self.state.has_any_utexpt_edits():
+            names.append("Edited texture part lists (.utexpt)")
+        if self.state.has_any_map_edits():
+            names.append("Edited battle maps (fftpack/map, and bg/meshes where their highlights move)")
         if self.state.other_file_replacements:
             names.append("Carried-through files")
         return names
@@ -1194,6 +1373,179 @@ class ExportPage(QWidget):
                 pass
         return removed
 
+    def _remove_unedited_layouts(self, destination: Path, meta) -> list:
+        """
+        Removes the screen layouts this export no longer writes, on the same
+        terms as `_remove_unedited_tables`: only exporting over the folder
+        the mod was opened from, and only in the mode it was read in.
+
+        The table report, again: open a mod, untick the last edit on one of
+        its screens, export over the same mod, and the old file stayed
+        behind, still moving the box the page now shows back in its place.
+        A file goes only when it is provably one the UI Layouts page makes -
+        the game's own copy with numbers changed where they sit, or the
+        game's own copy unchanged (`uib.edits_between` says so) - and the
+        page has nothing for it now. A layout the mod carries whole, or one
+        made any other way, is left exactly where it is. Texture part lists
+        (`.utexpt`) the page edits go on the same terms.
+        """
+        state = self.state
+        loaded_root = getattr(state, "loaded_mod_root", None)
+        game = getattr(state, "nxd_unpack_dir", None)
+        if (loaded_root is None or not game
+                or getattr(state, "loaded_game_mode", None) != meta.game_mode):
+            return []
+        mod_root = destination / meta.mod_id
+        try:
+            if Path(loaded_root).resolve() != mod_root.resolve():
+                return []
+        except OSError:
+            return []
+        # Spelled out rather than `modconfig.data_output_dir`, which makes the
+        # folder - and a mod with nothing in it must not gain an empty one.
+        data_root = mod_root / "FFTIVC" / "data" / meta.game_mode
+        layouts_dir = data_root / uib.LAYOUT_ROOT
+        if not layouts_dir.is_dir():
+            return []
+        # Compared without case: on Windows `UI/...` and `ui/...` are one file.
+        still_written = {rel.lower() for rel, boxes in (state.uib_edits or {}).items() if boxes}
+        still_written |= {rel.lower() for rel, parts in (state.utexpt_edits or {}).items()
+                          if parts}
+        still_written |= {rel.lower() for rel in (state.other_file_replacements or {})}
+        # Texture part lists go on the same terms: only one the page can
+        # make (`uib.part_edits_between`), and only when it has nothing for it.
+        made_here = {uib.LAYOUT_EXTENSION: uib.edits_between,
+                     uib.PART_LIST_EXTENSION: uib.part_edits_between}
+        removed = []
+        for path in sorted(layouts_dir.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in made_here:
+                continue
+            rel = path.relative_to(data_root).as_posix()
+            if rel.lower() in still_written:
+                continue
+            try:
+                edits_between = made_here[path.suffix.lower()]
+                if edits_between((Path(game) / rel).read_bytes(), path.read_bytes()) is None:
+                    continue
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(rel)
+            # Folders this emptied go too, up to the data folder itself.
+            folder = path.parent
+            while folder != data_root and data_root in folder.parents:
+                try:
+                    if any(folder.iterdir()):
+                        break
+                    folder.rmdir()
+                except OSError:
+                    break
+                folder = folder.parent
+        return removed
+
+    def _remove_unedited_maps(self, destination: Path, meta) -> list:
+        """
+        Removes the battle map files this export no longer writes, on the
+        terms `_remove_unedited_layouts` keeps: only exporting over the folder
+        the mod was opened from, in the mode it was read in, and only a file
+        provably one the Map Editor makes - the game's own copy with tiles
+        changed where they sit, or unchanged (`map_classic.tile_edits_between`
+        says so) - that no edit writes now. A map file the mod carries whole,
+        or one changed any other way, stays where it is.
+        """
+        state = self.state
+        loaded_root = getattr(state, "loaded_mod_root", None)
+        game = getattr(state, "nxd_unpack_dir", None)
+        if (loaded_root is None or not game
+                or getattr(state, "loaded_game_mode", None) != meta.game_mode):
+            return []
+        mod_root = destination / meta.mod_id
+        try:
+            if Path(loaded_root).resolve() != mod_root.resolve():
+                return []
+        except OSError:
+            return []
+        data_root = mod_root / "FFTIVC" / "data" / meta.game_mode
+        removed = self._remove_unedited_panels(data_root, Path(game))
+        maps_dir = data_root / mc.MAP_FOLDER
+        if not maps_dir.is_dir():
+            return removed
+        folder = Path(game) / mc.MAP_FOLDER
+        still_written = set()
+        for name, tiles in (state.map_edits or {}).items():
+            if not tiles:
+                continue
+            try:
+                number = int(name.lower().split("map_map")[1][:3])
+            except (IndexError, ValueError):
+                continue
+            still_written |= {f.lower() for f in mc.grid_files(folder, number, name)}
+        carried = {rel.lower() for rel in (state.other_file_replacements or {})}
+        for path in sorted(maps_dir.iterdir()):
+            rel = path.relative_to(data_root).as_posix()
+            if (not path.is_file() or path.name.lower() in still_written
+                    or rel.lower() in carried):
+                continue
+            try:
+                if mc.tile_edits_between((folder / path.name).read_bytes(), path.read_bytes()) is None:
+                    continue
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(rel)
+        # Folders this emptied go too, up to the data folder itself.
+        for emptied in (maps_dir, maps_dir.parent):
+            try:
+                if removed and emptied.is_dir() and not any(emptied.iterdir()):
+                    emptied.rmdir()
+            except OSError:
+                pass
+        return removed
+
+    def _remove_unedited_panels(self, data_root: Path, game: Path) -> list:
+        """
+        An enhanced mesh an earlier export wrote for its highlight panels
+        (`map_enhanced.panels_only`: the game's with only panels moved) that
+        this one won't write - the grid edits that moved them are gone, or
+        move none now. One the mod carries, or changed any other way, stays.
+        """
+        meshes = data_root / me.MESH_FOLDER
+        if not meshes.is_dir():
+            return []
+        carried = {rel.lower() for rel in (self.state.other_file_replacements or {})}
+        folder = game / mc.MAP_FOLDER
+        removed = []
+        for path in sorted(meshes.iterdir()):
+            rel = path.relative_to(data_root).as_posix()
+            m = re.fullmatch(r"map_(\d{3})_mesh\.bin", path.name, re.IGNORECASE)
+            if not m or not path.is_file() or rel.lower() in carried:
+                continue
+            number = int(m.group(1))
+            try:
+                game_data = me.mesh_path(game, number).read_bytes()
+                if not me.panels_only(game_data, path.read_bytes()):
+                    continue
+                grid = mpk.enhanced_grid_file(game, number)
+                edits = (self.state.map_edits or {}).get(mc.grid_key(folder, number, grid)) if grid else None
+                if edits:
+                    terrain = mc.read_mesh((folder / grid).read_bytes()).terrain
+                    tiles = {(t.x, t.z, t.level): mc.Tile(t.x, t.z, t.level,
+                                                         mc.tile_with(t.raw, edits.get((t.x, t.z, t.level), {})))
+                             for t in terrain.tiles}
+                    if mpk.panels_for_tiles(game_data, game, number, tiles)[1]:
+                        continue                # written again, with them
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(rel)
+        for emptied in (meshes, meshes.parent):
+            try:
+                if removed and emptied.is_dir() and not any(emptied.iterdir()):
+                    emptied.rmdir()
+            except OSError:
+                pass
+        return removed
+
     def _has_asset_work(self) -> bool:
         """
         Whether the export has any file to write besides the tables.
@@ -1208,7 +1560,10 @@ class ExportPage(QWidget):
         return bool(state.texture_edits or state.sound_file_replacements
                     or state.other_file_replacements
                     or state.edited_sound_track_count()
-                    or state.has_any_pzd_edits())
+                    or state.has_any_pzd_edits()
+                    or state.has_any_uib_edits()
+                    or state.has_any_utexpt_edits()
+                    or state.has_any_map_edits())
 
     def _nxd_backed_edit_count(self) -> int:
         """
@@ -1656,7 +2011,15 @@ class ExportPage(QWidget):
         self._removed_tables = removed
         for name in removed:
             self._log(f"Removed {name}: none of its edits are left.")
-        self._log(f"Wrote {root}")
+        self._removed_layouts = self._remove_unedited_layouts(Path(destination), meta)
+        self._removed_layouts += self._remove_unedited_maps(Path(destination), meta)
+        for rel in self._removed_layouts:
+            self._log(f"Removed {rel}: none of its edits are left.")
+        # Not "Wrote": the textures, sounds, layouts and maps come after
+        # this, and a log that said Wrote first and then Writing ... last
+        # read as if the export were still going when it had finished (Zodi,
+        # after a .uib edit). `_finish_export` says when it has.
+        self._log(f"Building the mod in {root}")
         for name in written:
             self._log(f"   {name}")
         self.last_built = root
@@ -1673,8 +2036,8 @@ class ExportPage(QWidget):
 
         if self._has_asset_work():
             self._say(
-                "Tables written. Writing text files, converting textures "
-                "and repacking sound archives...", "muted")
+                "Tables written. Writing text files, screen layouts and battle "
+                "maps, converting textures and repacking sound archives...", "muted")
             self.export_button.setEnabled(False)
             worker = AssetExportWorker(
                 root, meta.game_mode, self.state.texture_edits,
@@ -1684,7 +2047,10 @@ class ExportPage(QWidget):
                 getattr(self.state, "nxd_unpack_dir", None),
                 pzd_edits=self.state.pzd_edits,
                 sound_file_replacements=self.state.sound_file_replacements,
-                other_file_replacements=self.state.other_file_replacements)
+                other_file_replacements=self.state.other_file_replacements,
+                uib_edits=self.state.uib_edits,
+                utexpt_edits=self.state.utexpt_edits,
+                map_edits=self.state.map_edits)
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -1731,6 +2097,7 @@ class ExportPage(QWidget):
 
     def _nxd_failed(self, message: str) -> None:
         self.export_button.setEnabled(True)
+        self._log(f"Stopped before the name, description and override edits were written: {message}")
         # The rest of the mod is real and on disk, so this is a partial mod
         # rather than a failed export - the same rule the asset stage
         # follows. Saying "export failed" sends someone looking for a folder
@@ -1747,6 +2114,9 @@ class ExportPage(QWidget):
         suffix = f" - {' and '.join(parts)}." if parts else ""
         if not self._said_trouble:
             self._say(f"Built your mod at {self.last_built}{suffix}", "ok")
+        # The log's last line says it is over, whatever came before it.
+        self._log(f"Finished with problems, listed above. Your mod is in {self.last_built}"
+                  if self._said_trouble else f"Finished. Your mod is in {self.last_built}")
         self.exported.emit(self.last_built)
 
     def _assets_done(self, result: dict) -> None:
@@ -1768,6 +2138,15 @@ class ExportPage(QWidget):
         if result.get("text_total"):
             parts.append(f"{result.get('texts', 0)} of "
                          f"{result['text_total']} text file(s)")
+        if result.get("layout_total"):
+            parts.append(f"{result.get('layouts', 0)} of "
+                         f"{result['layout_total']} screen layout(s)")
+        if result.get("part_list_total"):
+            parts.append(f"{result.get('part_lists', 0)} of "
+                         f"{result['part_list_total']} texture part list(s)")
+        if result.get("map_total"):
+            parts.append(f"{result.get('maps', 0)} of "
+                         f"{result['map_total']} battle map file(s)")
         if result.get("carried_total"):
             parts.append(f"{result.get('carried', 0)} of "
                          f"{result['carried_total']} carried-through file(s)")
@@ -1782,10 +2161,16 @@ class ExportPage(QWidget):
             not result["errors"] and not result["skipped"]
             and result["textures"] == result["texture_total"]
             and result["sounds"] == result["sound_total"]
+            and result.get("layouts", 0) == result.get("layout_total", 0)
+            and result.get("part_lists", 0) == result.get("part_list_total", 0)
+            and result.get("maps", 0) == result.get("map_total", 0)
             and result.get("carried", 0) == result.get("carried_total", 0))
         clean = (not result["errors"] and not result["skipped"]
                  and result["textures"] == result["texture_total"]
                  and result["sounds"] == result["sound_total"]
+                 and result.get("layouts", 0) == result.get("layout_total", 0)
+                 and result.get("part_lists", 0) == result.get("part_list_total", 0)
+                 and result.get("maps", 0) == result.get("map_total", 0)
                  and result.get("carried", 0) == result.get("carried_total", 0))
         if clean:
             self._say(f"Built your mod at {self.last_built} - {detail}.", "ok")
@@ -1803,12 +2188,14 @@ class ExportPage(QWidget):
 
     def _assets_failed(self, message: str) -> None:
         self.export_button.setEnabled(True)
+        self._log(f"Stopped before the textures, sounds, screen layouts and battle maps were "
+                  f"written: {message}")
         # The tables are on disk and are real, so this is a partial mod
         # rather than a failed export. Saying "export failed" would send
         # someone looking for a folder that exists and is half right.
         self._say(
-            f"The tables were written to {self.last_built}, but the textures "
-            f"and sounds couldn't be: {message}", "danger")
+            f"The tables were written to {self.last_built}, but the textures, "
+            f"sounds, screen layouts and battle maps couldn't be: {message}", "danger")
         self.exported.emit(self.last_built)
 
     # -- after building --------------------------------------------------------

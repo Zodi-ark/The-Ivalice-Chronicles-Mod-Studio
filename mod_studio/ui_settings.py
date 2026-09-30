@@ -41,6 +41,10 @@ DEFAULTS = {
     # columns that differ. Off by default because it's a lot of text; on
     # when you need the surrounding context to tell what a change means.
     "compare_show_full_rows": False,
+    # Map Editor: the battle grid over the map, and the card saying the
+    # surface and height of the tile under the pointer. Both on at first.
+    "map_show_tiles": True,
+    "map_show_tile_info": True,
     # Appearance, for the Qt interface. "system" follows the OS light/dark
     # setting live; "light" and "dark" pin it regardless of the OS.
     "appearance": "dark",

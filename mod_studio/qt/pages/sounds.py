@@ -31,10 +31,22 @@ would be lost - so the tracks listed are the ones in the file that ships.
 tree all work anywhere. Opening an archive to see its tracks does not, and
 the page says so instead of showing an empty track list that looks like an
 archive with nothing in it.
+
+**The first archive after the computer starts was slow** (reported by users
+through Zodi): slow once, then quick for every archive after, even across
+restarts of Mod Studio, until the next restart of the computer. AudioMog is
+a .NET Framework 4.7.2 program, and the first one to run after the computer
+starts loads the framework from the disk; after that it is in memory. So
+the first time the page is shown in a session it starts AudioMog once in
+the background with nothing to do (`AudioMogWarmUp`), and that first load
+happens while the person is still finding their file. Not measurable here:
+there is no Windows, and no cold start, in this environment.
 """
 from __future__ import annotations
 
 import hashlib
+import shutil
+import tempfile
 
 from pathlib import Path
 
@@ -46,7 +58,7 @@ from PySide6.QtWidgets import (
     QSplitter, QVBoxLayout, QWidget, QGridLayout
 )
 
-from ... import pzd_data
+from ... import audiomog, pzd_data
 from ... import sound_data as sd
 from ... import paths
 from .. import export_dialogs
@@ -126,6 +138,28 @@ class UnpackArchiveWorker(Worker):
         return tracks
 
 
+class AudioMogWarmUp(Worker):
+    """
+    Starts AudioMog once, on a file that isn't there, and waits for it to
+    stop: all it does is load, which is the part that is slow the first time
+    after the computer starts. Whatever it says is dropped, and the empty
+    folder it was pointed into is removed.
+    """
+
+    def __init__(self, exe_path: Path, timeout: float = 120.0):
+        super().__init__()
+        self.exe_path = Path(exe_path)
+        self.timeout = timeout
+
+    def run(self):
+        folder = Path(tempfile.mkdtemp(prefix="audiomog_warm_up_"))
+        try:
+            audiomog.run_to_completion(self.exe_path, folder / "nothing.sab", timeout=self.timeout)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        return None
+
+
 #: How many in-game users to name before saying "and N more".
 TRACK_USER_LIMIT = 12
 
@@ -171,6 +205,9 @@ def describe_track_users(users: str) -> str:
 
 class SoundsPage(QWidget):
     edits_changed = Signal()
+    #: AudioMog has been started once in this session (`_warm_up`): once for
+    #: the program, not per page.
+    warmed_up = False
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -1533,6 +1570,22 @@ class SoundsPage(QWidget):
         # behind another page with nothing on screen to stop it.
         self._stop_playback()
         super().hideEvent(event)
+
+    def showEvent(self, event):                                  # noqa: N802
+        super().showEvent(event)
+        self._warm_up()
+
+    def _warm_up(self) -> None:
+        """AudioMog started once in the background, the first time the page is shown (see the notes above)."""
+        exe = getattr(self.state, "audiomog_exe_path", None)
+        if SoundsPage.warmed_up or exe is None or not Path(exe).is_file():
+            return
+        SoundsPage.warmed_up = True
+        self._warm_up_thread = run_in_thread(AudioMogWarmUp(Path(exe)),
+                                             on_finished=self._warmed_up, on_failed=self._warmed_up)
+
+    def _warmed_up(self, _result=None) -> None:
+        """Nothing to say either way: it only had to load."""
 
     def _seek(self, frame: int) -> None:
         self._playhead = frame

@@ -28,7 +28,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
+    QAbstractItemView, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
     QPushButton, QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
 )
 
@@ -54,6 +54,7 @@ class TreePaneSizer(QObject):
     """
     Gives a splitter's first pane - the file tree - a set width the first
     time the splitter has a real width, and everything else to the editor.
+    With `last`, the set width goes to the last pane instead.
 
     Both file pages gave the tree 60% (`setSizes([3000, 2000])`): at 1080p,
     over 950px for names that need 340 (Sounds) or 370 (textures), while
@@ -63,9 +64,12 @@ class TreePaneSizer(QObject):
     this never moves it again.
     """
 
-    def __init__(self, splitter, width: int):
+    def __init__(self, splitter, width: int, last: bool = False):
         super().__init__(splitter)
         self._width = width
+        #: Size the LAST pane rather than the first: UI Layouts' box panel,
+        #: to the right of its picture.
+        self._last = last
         self._done = False
         splitter.installEventFilter(self)
 
@@ -73,8 +77,8 @@ class TreePaneSizer(QObject):
         if (not self._done and event.type() == QEvent.Resize
                 and watched.width() > self._width * 2):
             self._done = True
-            watched.setSizes([self._width,
-                              watched.width() - self._width - watched.handleWidth()])
+            rest = watched.width() - self._width - watched.handleWidth()
+            watched.setSizes([rest, self._width] if self._last else [self._width, rest])
         return False
 
 
@@ -682,10 +686,15 @@ class TexturesPage(QWidget):
         `open_tab` looks for. The shell deliberately knows nothing about
         what a page's records are, so a page that wants to be jumped to
         answers to that name; a texture's "record id" is its path.
+
+        A FOLDER's path works too, and lands with the folder open at the
+        top of the list: UI Layouts jumps to a folder when a box draws from
+        several textures there, or shows one the game swaps for another.
         """
         index = self.model.index_for_path(str(relative_path))
         if not index.isValid():
             return False
+        node = self.model.node_at(index)
         mapped = self.proxy.mapFromSource(index)
         if not mapped.isValid():
             # Hidden by the current filter. Cleared rather than reported as
@@ -696,7 +705,11 @@ class TexturesPage(QWidget):
             if not mapped.isValid():
                 return False
         self.tree.setCurrentIndex(mapped)
-        self.tree.scrollTo(mapped)
+        if node is not None and not node.is_file:
+            self.tree.expand(mapped)
+            self.tree.scrollTo(mapped, QAbstractItemView.PositionAtTop)
+        else:
+            self.tree.scrollTo(mapped)
         return True
 
     def _on_selection(self, current, _previous) -> None:
@@ -729,9 +742,10 @@ class TexturesPage(QWidget):
         replacement = self.state.texture_edits.get(node.relative_path)
         lines = [node.relative_path]
         if td.is_face_texture(node.relative_path):
+            # Zodi's words for it, as he gave them.
             lines.append(
-                "This is a face texture, so the edges get a seam fix on export "
-                "- without it the game draws a dark outline around the portrait.")
+                "An edge seam fix is applied on export otherwise the game renders the portrait "
+                "with dark outlines.")
         if replacement:
             # A dict now, not a bare path - printing it raw would show
             # `{'source_path': PosixPath('...'), 'is_face_texture': False}`.

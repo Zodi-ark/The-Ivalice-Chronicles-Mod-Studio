@@ -19,9 +19,13 @@ On Linux and macOS the extension means nothing; run it as before:
 
     python3 "The Ivalice Chronicles Mod Studio.pyw"
 
-Requires:  Python 3.10+ and PySide6 (`pip install PySide6`). The frozen
-           Windows build bundles both, so a user running the .exe installs
-           nothing.
+Requires:  Python 3.10+ and PySide6, and Pillow, numpy and scipy for the
+           parts that use them:
+               pip install PySide6-Essentials pillow numpy scipy
+           The frozen Windows build bundles all of these, so a user running
+           the .exe installs none of them. The bundled FF16Tools and
+           AudioMog need the .NET 9 Runtime and .NET Framework 4.7.2
+           either way: README.md, Requirements.
 
 This file is also what `packaging/ModStudio.spec` hands to PyInstaller, and
 PyInstaller decides what to bundle by following imports from here. That
@@ -102,7 +106,106 @@ def _report_startup_failure(error: BaseException) -> None:
     print(detail)
 
 
+#: Where a crash leaves its record, under `local_data/`.
+CRASH_LOG_NAME = "crash_log.txt"
+
+
+def _keep_a_crash_record() -> None:
+    """
+    Makes a crash leave a note behind, in `local_data/crash_log.txt`.
+
+    Under `pythonw.exe` a crash has nowhere to print. The window simply
+    goes, and the only trace is a line in Windows' Event Viewer naming a
+    system file - which is exactly how the UI Layouts crash was reported:
+    "Faulting module name: ucrtbase.dll, Exception code: 0xc0000409". That
+    says the program stopped itself; it cannot say where.
+
+    Two things are recorded, both only when something goes wrong:
+
+    - **Where every thread was**, from Python's own `faulthandler`: a
+      traceback per thread on a fatal signal or a Windows fault. Qt ends
+      the program with `abort()` when it gives up, and `faulthandler`
+      catches that too.
+    - **What Qt said last.** When Qt gives up it says why first ("QThread:
+      Destroyed while thread is still running") and then stops. The last
+      fifty messages are kept in memory and written out only on that final
+      one, so an ordinary run writes nothing.
+
+    The file is opened at start-up - a crash cannot open a file - and on a
+    clean exit it is cut back to what it held before, and deleted if that
+    was nothing. So it exists after a run only if that run crashed, and it
+    keeps earlier crashes until someone deletes it.
+
+    Never stops the program starting: every step is best effort.
+    """
+    try:
+        import atexit
+        import collections
+        import datetime
+        import faulthandler
+        import os
+
+        from mod_studio import paths
+
+        path = paths.local_data_dir() / CRASH_LOG_NAME
+        record = open(path, "a", encoding="utf-8")
+        before = record.tell()
+        record.write(f"--- The Ivalice Chronicles Mod Studio, started "
+                     f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} ---\n")
+        record.flush()
+        faulthandler.enable(file=record, all_threads=True)
+
+        recent = collections.deque(maxlen=50)
+
+        def qt_message(kind, _context, message):
+            from PySide6.QtCore import QtMsgType
+
+            recent.append(message)
+            if kind == QtMsgType.QtFatalMsg:
+                try:
+                    record.write("Qt's last messages, oldest first:\n")
+                    record.writelines(f"  {line}\n" for line in recent)
+                    record.flush()
+                except Exception:                              # noqa: BLE001
+                    pass
+            # Still printed, for anyone running from a terminal. Under
+            # pythonw there is no stderr and this does nothing.
+            if sys.stderr is not None:
+                try:
+                    sys.stderr.write(message + "\n")
+                except Exception:                              # noqa: BLE001
+                    pass
+
+        def tidy_up():
+            try:
+                faulthandler.disable()
+                record.truncate(before)
+                record.close()
+                if before == 0:
+                    os.remove(path)
+            except Exception:                                  # noqa: BLE001
+                pass
+
+        # Registered BEFORE PySide is first imported, because exit handlers
+        # run newest first and PySide tears the application down in one of
+        # its own. Registered after it, this would switch the record off
+        # before that teardown - which is where a thread still running at
+        # exit brings the program down.
+        atexit.register(tidy_up)
+
+        try:
+            from PySide6.QtCore import qInstallMessageHandler
+
+            qInstallMessageHandler(qt_message)
+        except Exception:                                      # noqa: BLE001
+            pass
+    except Exception:                                          # noqa: BLE001
+        pass
+
+
 if __name__ == "__main__":
+    # First, so a crash anywhere after this leaves a record.
+    _keep_a_crash_record()
     try:
         from mod_studio.qt.app import main
 

@@ -173,6 +173,9 @@ class WizardState:
         self.table_preserved = {}
         self.pzd_edits = {}
         self.texture_edits = {}
+        self.uib_edits = {}
+        self.utexpt_edits = {}
+        self.map_edits = {}
         self.sound_file_replacements = {}
         self.other_file_replacements = {}
         # Jobs, Job Commands and the XML tables, which this method's own
@@ -623,6 +626,89 @@ class WizardState:
 
     def has_any_texture_edits(self) -> bool:
         return bool(self.texture_edits)
+
+    # -- UI layouts (.uib, see uib.py) ---------------------------------------
+    #: Edited screen layouts:
+    #: `{relative_path: {"Component/Path": {field: value}}}`, e.g.
+    #: `{"ui/ffto/bar/ffto_bar_rumor_ver02.uib":
+    #:   {"Rumor/LayerRoot/Contents": {"origin": [100, 170]}}}`.
+    #:
+    #: Like `pzd_edits`, only the boxes and fields somebody changed are
+    #: stored, as the values they chose. At export they are applied to the
+    #: game's own copy of the file, numbers overwritten where they sit - so
+    #: an edit stays small, and stays right when a game update changes the
+    #: rest of the screen.
+    #:
+    #: Animation keys edited directly sit beside the boxes under one more
+    #: entry, `uib.ANIMATION_KEYS` ("@animation" - no box key can be it, a
+    #: box key always has a "/"): `{key id: {"kind", "target", "was_frame",
+    #: "frame", "frames", "easing", "value"}}`, e.g. `{"@animation":
+    #: {"Rumor/Show/4": {"kind": 5002, "target": "Contents", "was_frame": 0,
+    #: "frame": 0, "frames": 0, "easing": 1, "value": [600, 170]}}}`.
+    #: `kind`, `target` and `was_frame` (the key's start frame in the game's
+    #: copy) say which key it is, and are checked; the rest are optional -
+    #: see `uib.apply_edits`.
+    uib_edits: dict = field(default_factory=dict)
+
+    def edited_uib_file_count(self) -> int:
+        return sum(1 for boxes in self.uib_edits.values() if boxes)
+
+    def edited_uib_box_count(self) -> int:
+        from .uib import ANIMATION_KEYS
+        return sum(len([key for key in boxes if key != ANIMATION_KEYS])
+                   for boxes in self.uib_edits.values())
+
+    def has_any_uib_edits(self) -> bool:
+        return self.edited_uib_file_count() > 0
+
+    #: Edited texture part lists (the `.utexpt` cutting lists pictures on
+    #: screens are cut from): `{relative_path: {part index: {"name": str,
+    #: "rect": [x1, y1, x2, y2]}}}`, e.g.
+    #: `{"ui/ffto/bar/textureparts/ui_bar_bg_ramza_c01_uitx.utexpt":
+    #:   {1: {"name": "Ramza_color_09", "rect": [5, 3, 110, 188]}}}`.
+    #:
+    #: Only the parts somebody changed, as the corners they chose; export
+    #: writes them into the game's own copy where they sit
+    #: (`uib.apply_part_edits`). A part list is shared - one can cut the
+    #: pictures of fifty screens - so it is stored on its own, not under
+    #: any one screen's edits.
+    utexpt_edits: dict = field(default_factory=dict)
+
+    def edited_utexpt_file_count(self) -> int:
+        return sum(1 for parts in self.utexpt_edits.values() if parts)
+
+    def has_any_utexpt_edits(self) -> bool:
+        return self.edited_utexpt_file_count() > 0
+
+    # -- Battle maps (see map_classic.py) -------------------------------------
+    #: Edited battle grids: `{file name: {(x, z, level): {field: value}}}`,
+    #: keyed by the grid's name (`map_classic.grid_key`: the lowest numbered
+    #: classic map file holding it), e.g.
+    #: `{"map_map048_9.bin": {(5, 6, 0): {"height": 7, "surface": 3}}}`.
+    #:
+    #: Only the tiles and fields somebody changed, as the values they chose
+    #: (`map_classic.TILE_FIELDS`). At export they are written into the
+    #: game's own copy of that file, in place, and into every other file of
+    #: the same map holding the same grid byte for byte
+    #: (`map_classic.grid_files`), under the mod's `fftpack/map/`.
+    map_edits: dict = field(default_factory=dict)
+
+    def edited_map_numbers(self) -> list:
+        """The maps with a tile edit, as numbers."""
+        out = set()
+        for name, tiles in self.map_edits.items():
+            if tiles:
+                try:
+                    out.add(int(name.lower().split("map_map")[1][:3]))
+                except (IndexError, ValueError):
+                    continue
+        return sorted(out)
+
+    def edited_map_tile_count(self) -> int:
+        return sum(len(tiles) for tiles in self.map_edits.values())
+
+    def has_any_map_edits(self) -> bool:
+        return self.edited_map_tile_count() > 0
 
     # -- Sounds (.sab, via AudioMog - see sound_data.py) --------------------
     # Same unpacked_game_dir as Textures above - sound archives are real

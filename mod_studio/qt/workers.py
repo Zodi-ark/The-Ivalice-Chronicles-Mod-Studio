@@ -136,8 +136,11 @@ class _RunningThreads(QObject):
     def __init__(self):
         super().__init__()
         self._threads = set()
+        #: Set once the application has started quitting: no new thread
+        #: starts after that (see `run_in_thread`).
+        self.closing = False
 
-    def stop_all(self, milliseconds: int = 3000) -> None:
+    def stop_all(self, milliseconds: int = 3000, quitting: bool = False) -> None:
         """
         Asks every running thread to stop, and waits for it.
 
@@ -153,6 +156,16 @@ class _RunningThreads(QObject):
         subprocess should not stop the application closing, and at that
         point the process is going away anyway.
         """
+        # When the application is quitting (`quitting`, which only the exit
+        # path passes), nothing new starts from here on. Qt sends
+        # `aboutToQuit` while its event loop is still running, and the loop
+        # finishes the events it already has before it stops - a drawing's
+        # timer among them. A thread that started then was still running
+        # when Python took Qt apart, and aborted the program on its way out:
+        # caught by the UI Layouts stress run, closing mid-browse. The
+        # suites call this between checks too, to tidy up, and carry on.
+        if quitting:
+            self.closing = True
         # A worker that can stop early is asked to, FIRST. `quit()` ends only
         # the event loop, and a bulk export's `run()` is one long loop over
         # thousands of files - so closing the window mid-export used to wait
@@ -172,7 +185,17 @@ class _RunningThreads(QObject):
                 thread.wait(milliseconds)
             except RuntimeError:
                 pass                       # Already gone; nothing to wait for.
-        self._threads.clear()
+        # Only the threads that HAVE stopped are let go. Letting go of one
+        # still running destroys it on the spot, which is the very abort
+        # this is here to prevent; kept, it at least gets the time Python
+        # takes to close to finish in.
+        for thread in list(self._threads):
+            try:
+                if thread.isRunning():
+                    continue
+            except RuntimeError:
+                pass
+            self._threads.discard(thread)
 
     def hold(self, thread: QThread) -> None:
         self._threads.add(thread)
@@ -182,12 +205,41 @@ class _RunningThreads(QObject):
         thread.finished.connect(self.release)
 
     def release(self) -> None:
-        # `sender()` rather than `isFinished()`: Qt emits `finished` just
-        # BEFORE it sets the finished flag, so a fast queued delivery can
-        # arrive while `isFinished()` is still False and leave the thread
-        # held forever.
+        """
+        Lets go of a thread that has finished - once it has REALLY finished.
+
+        `sender()` rather than `isFinished()`: Qt emits `finished` just
+        BEFORE it sets the finished flag, so a fast queued delivery can
+        arrive while `isFinished()` is still False and leave the thread
+        held forever.
+
+        **The wait is the fix for the UI Layouts crash**, and for the
+        SIGSEGV/SIGBUS `test_qt_threads` died of for months, which was put
+        down to the sandbox (ten runs: 9 failing before, 0 after) - and very
+        likely for `test_qt_textures`' rarer ones (1 in 10 before, 0 in 10
+        after), whose previews come through here too. `finished` is emitted
+        from INSIDE Qt's own thread shutdown, and this slot can run on the
+        GUI thread while the worker thread is still in the rest of it.
+        Letting go here drops the last Python reference to the thread and
+        to its worker, and both are destroyed on the spot - while the other
+        thread may still be touching them. It used to be worse: the worker
+        was ALSO deleted by `deleteLater` on the worker thread at that same
+        moment, so two threads destroyed one object. Caught with native
+        backtraces: the GUI thread in `~QThread`, called from this discard,
+        and the worker thread in the worker's deferred delete, calling
+        through a null pointer. The window vanished with no message; on
+        Windows that is an exception in ucrtbase.dll, which is what Zodi's
+        Event Viewer recorded.
+
+        `wait()` returns within moments here - the thread is past its work
+        and only tidying up - and PySide releases the GIL while it waits
+        (measured), so nothing the thread still needs can be held up by it.
+        After it, nothing else runs on that thread, and the worker is
+        deleted by Python alone, on this thread.
+        """
         thread = self.sender()
         if thread is not None:
+            thread.wait()
             self._threads.discard(thread)
 
     def live_count(self) -> int:
@@ -250,6 +302,11 @@ def run_in_thread(worker: Worker, on_finished=None,
     after the work is over.
     """
     thread = QThread()
+    if running_threads().closing:
+        # The application is quitting: a thread started now would still be
+        # running when Python takes Qt apart, which aborts. The work is not
+        # wanted any more; nothing is started, and nothing reports back.
+        return thread
     worker.moveToThread(thread)
     thread.started.connect(worker.start)
 
@@ -288,7 +345,13 @@ def run_in_thread(worker: Worker, on_finished=None,
 
     worker.finished.connect(thread.quit)
     worker.failed.connect(thread.quit)
-    thread.finished.connect(worker.deleteLater)
+    # No `thread.finished.connect(worker.deleteLater)`. It was here, and it
+    # made two owners for one object: Qt deleted the worker on the worker
+    # thread as it shut down, while `_RunningThreads.release` - on the GUI
+    # thread, at the same moment - dropped the Python reference that owned
+    # it. The worker is Python's (it was made in Python, with no parent),
+    # so Python alone deletes it, after `release` has waited for the thread
+    # to be over. See `_RunningThreads.release`.
 
     thread.start()
     return thread
