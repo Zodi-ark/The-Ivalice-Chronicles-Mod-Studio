@@ -71,6 +71,7 @@ from ..map_render import Camera
 from ..widgets import actions
 from ..widgets.flow_layout import FlowLayout
 from ..widgets.map_view import MapView
+from ..widgets.number_boxes import FittedSpinBox
 from ..workers import Worker, run_in_thread
 
 INTRO = ("The game's maps, drawn from its own files. Pick a map, turn it with the mouse "
@@ -417,10 +418,9 @@ class TilePanel(QWidget):
         self.show_tile(None)
 
     def _spin(self, name: str) -> QSpinBox:
-        box = QSpinBox()
+        box = FittedSpinBox(90)
         low, high = mc.field_range(name)
         box.setRange(low, high)
-        box.setFixedWidth(90)
         return box
 
     def set_surface_names(self, names: dict) -> None:

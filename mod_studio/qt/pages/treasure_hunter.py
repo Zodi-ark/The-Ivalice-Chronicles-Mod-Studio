@@ -130,6 +130,17 @@ def _qimage(image) -> QImage:
     return QImage(data, image.width, image.height, image.width * 4, QImage.Format_RGBA8888).copy()
 
 
+def _stamp(path) -> Optional[tuple]:
+    """`(path, size, modified)` of a file there now, or None."""
+    if path is None:
+        return None
+    try:
+        found = Path(path).stat()
+    except OSError:
+        return None
+    return (str(path), found.st_size, found.st_mtime_ns)
+
+
 def _dot(colour: str, size: int = 12) -> QIcon:
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
@@ -217,8 +228,8 @@ class TreasureHunterPage(TableEditorPage):
         form.addStretch(1)
         scroll.setWidget(holder)
         self.scroll = scroll
-        #: Where the tile shown is, said under its fields: on the map's grid
-        #: or off it.
+        #: Said under the fields only when the tile shown is off the map's
+        #: grid, where the map can't mark it (`_say_place`).
         self.place_note = QLabel("")
         self.place_note.setProperty("role", "muted")
         self.place_note.setWordWrap(True)
@@ -263,12 +274,24 @@ class TreasureHunterPage(TableEditorPage):
         #: A drag of a mark in progress: the tiles under it, the one moving,
         #: where it started and where it is now.
         self._grab = None
-        #: `{item id: QImage or None}`, and the ids being decoded.
+        #: `{item id: QImage, or None where its files couldn't be read}`,
+        #: the files each was read from (`_sprite_files`), and the ids
+        #: being decoded, with their files.
         self._sprites = {}
+        self._sprite_keys = {}
         self._sprites_pending = set()
         self._sprite_job = None
+        self._sprite_job_keys = {}
         self._started = time.monotonic()
         return True
+
+    def view_toggles_used(self) -> tuple:
+        """
+        `(notes, unknown, comments)`: none of the three (Zodi, 6 October). A
+        tile's fields carry no notes, none is unknown, and the page has no
+        comment rows, so the toggles would change nothing here.
+        """
+        return (False, False, False)
 
     # -- the tile shown --------------------------------------------------------
 
@@ -312,18 +335,20 @@ class TreasureHunterPage(TableEditorPage):
         self._on_field_edited()
 
     def _say_place(self) -> None:
+        """
+        A word under the fields only when the map can't show the tile: one
+        off the map's grid isn't marked. Where it is shows on the map and in
+        X and Y, so that isn't said (Zodi, 6 October: "we do not need this
+        text").
+        """
         info = self.slots()[self.slot]
-        if self.view.scene is None:
-            self.place_note.setText("")
-            return
-        if self.view.tile((info["x"], info["y"], 0)) is None:
+        if self.view.scene is not None and self.view.tile((info["x"], info["y"], 0)) is None:
             self.place_note.setText(f"Tile {self.slot} is at {info['x']}, {info['y']}, off this map's "
                                     f"grid, so it isn't marked on the map.")
         else:
-            others = [s for s in self.at(info["x"], info["y"]) if s != self.slot]
-            shared = (f" Tile {', '.join(map(str, others))} {'is' if len(others) == 1 else 'are'} there "
-                      f"too.") if others else ""
-            self.place_note.setText(f"Tile {self.slot} is at {info['x']}, {info['y']}.{shared}")
+            self.place_note.setText("")
+        # No room kept for it when it says nothing.
+        self.place_note.setVisible(bool(self.place_note.text()))
 
     # -- the record --------------------------------------------------------------
 
@@ -551,42 +576,68 @@ class TreasureHunterPage(TableEditorPage):
             replacement = None
         return source, replacement
 
+    def _sprite_files(self, item_id: int) -> tuple:
+        """
+        `((game texture, replacement), files)`: an item's sprite textures,
+        and each one's `_stamp` (None for neither there), which is what a
+        decoded sprite is kept against.
+        """
+        found = self.sprite_paths(item_id)
+        stamps = tuple(_stamp(path) for path in found)
+        return found, (stamps if any(stamps) else None)
+
     def _want_sprites(self) -> None:
-        """Decodes the sprites the tiles' items need that aren't to hand yet."""
+        """
+        Decodes the sprites the tiles' items need that aren't to hand, or
+        whose files changed since they were.
+
+        Zodi, 6 October: in the first session after unpacking the game, some
+        items had no sprite (all eight of map 001's; on 002, the common
+        items of tiles 2 and 3, two of 001's), the Items page showed them,
+        and after a restart all were there. An item looked for while its
+        sprite texture wasn't there yet (before the unpack, or during it)
+        was remembered as having none, and not looked for again that
+        session. So nothing is remembered for an item with no file, and a
+        sprite is kept with the files it was read from: one whose files
+        arrived, changed or went is read again.
+        """
         wanted = {}
         for info in self.slots().values():
             for item_id in (info["rare"], info["common"]):
-                if item_id and item_id not in self._sprites and item_id not in self._sprites_pending:
-                    source, replacement = self.sprite_paths(item_id)
-                    if source is None and replacement is None:
-                        self._sprites[item_id] = None
-                        continue
-                    wanted[item_id] = (source, replacement)
+                if not item_id or item_id in wanted or item_id in self._sprites_pending:
+                    continue
+                found, key = self._sprite_files(item_id)
+                if key is None:
+                    self._sprites.pop(item_id, None)
+                    self._sprite_keys.pop(item_id, None)
+                elif self._sprite_keys.get(item_id) != key:
+                    wanted[item_id] = (found, key)
         if not wanted or self._sprite_job is not None:
             return
         self._sprites_pending |= set(wanted)
-        self._sprite_job = SpriteWorker(wanted, getattr(self.state, "ff16tools_cli_path", None),
+        self._sprite_job_keys = {item_id: key for item_id, (_found, key) in wanted.items()}
+        self._sprite_job = SpriteWorker({item_id: found for item_id, (found, _key) in wanted.items()},
+                                        getattr(self.state, "ff16tools_cli_path", None),
                                         paths.local_data_dir() / "texture_preview_cache")
         run_in_thread(self._sprite_job, on_finished=self._sprites_ready, on_failed=self._sprites_failed)
 
     def _sprites_ready(self, found: dict) -> None:
-        self._sprite_job = None
+        keys, self._sprite_job, self._sprite_job_keys = self._sprite_job_keys, None, {}
         for item_id, image in found.items():
+            # One that couldn't be read is kept too, against its files, so
+            # it isn't tried again until they change.
             self._sprites[item_id] = _qimage(image) if image is not None else None
+            self._sprite_keys[item_id] = keys.get(item_id)
             self._sprites_pending.discard(item_id)
         self.view.update()
         self._want_sprites()
 
     def _sprites_failed(self, _message: str) -> None:
+        keys, self._sprite_job, self._sprite_job_keys = self._sprite_job_keys, None, {}
         for item_id in list(self._sprites_pending):
             self._sprites[item_id] = None
+            self._sprite_keys[item_id] = keys.get(item_id)
         self._sprites_pending.clear()
-        self._sprite_job = None
-
-    def forget_sprites(self) -> None:
-        """The game folder or the mod's textures changed: the sprites are decoded again."""
-        self._sprites.clear()
-        self._want_sprites()
 
     # -- clicking and dragging the marks ------------------------------------------------
 

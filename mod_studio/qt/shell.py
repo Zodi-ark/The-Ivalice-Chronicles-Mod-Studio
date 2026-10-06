@@ -78,7 +78,12 @@ UTILITIES = ["Game Updates", "Settings"]
 EDIT_TABS = [
     "Jobs", "Job Commands", "Abilities", "Items", "Equip Bonus",
     "Inflict Status",
-    "Poaching", "Treasure Hunter", "Encounters", "Unit Names", "Textures",
+    "Poaching", "Encounters", "Unit Names",
+    # Below Unit Names, at Zodi's request (6 October): the last of the
+    # pages that edit the game's tables, beside the ones that draw its
+    # files, as it draws its maps.
+    "Treasure Hunter",
+    "Textures",
     # Straight after Textures, at Zodi's request: its pictures ARE the
     # textures Textures replaces, and a box's right-click menu jumps there.
     # Like Textures and Sounds, a tree of the game's files on the left and

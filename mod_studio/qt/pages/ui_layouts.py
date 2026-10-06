@@ -45,11 +45,11 @@ import dataclasses
 import struct
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QLocale, QPointF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout, QLabel,
-    QMenu, QLineEdit, QPushButton, QSpinBox, QSplitter, QTabWidget, QTreeWidget,
+    QCheckBox, QColorDialog, QComboBox, QGroupBox, QHBoxLayout, QLabel,
+    QMenu, QLineEdit, QPushButton, QSplitter, QTabWidget, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -61,6 +61,7 @@ from ..models.texture_tree import TextureTreeModel
 from ..widgets import actions
 from ..widgets.layout_canvas import LayoutCanvas
 from ..widgets.marked_tree import MarkedTreeView
+from ..widgets.number_boxes import FittedDoubleSpinBox, FittedSpinBox
 from ..widgets.status_line import StatusLine
 from ..workers import run_in_thread
 from .textures import TexturePathFilter, TreePaneSizer
@@ -144,7 +145,7 @@ class LayoutTreeModel(TextureTreeModel):
         return value
 
 
-class ScaleSpinBox(QDoubleSpinBox):
+class ScaleSpinBox(FittedDoubleSpinBox):
     """
     A scale exactly as the file holds it, shown as briefly as it can be.
 
@@ -154,11 +155,12 @@ class ScaleSpinBox(QDoubleSpinBox):
     game's own number and not a rounded neighbour of it (a rounded 1.21
     rewrote sixteen bytes of a file whose box nobody moved). Shown with the
     fewest digits that still mean the same float: 1 reads "1", 0.86875
-    reads "0.86875".
+    reads "0.86875". At least `at_least` pixels wide, and wider for a
+    number that needs it (`number_boxes.py`).
     """
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, at_least: int = 84, parent=None):
+        super().__init__(at_least, parent)
         self.setDecimals(8)
         # The text above is always written with a full stop, so it is read
         # back the same way whatever the computer's own decimal mark is.
@@ -166,6 +168,24 @@ class ScaleSpinBox(QDoubleSpinBox):
 
     def textFromValue(self, value: float) -> str:                  # noqa: N802
         return shortest_scale_text(value)
+
+
+class PanelHolder(QWidget):
+    """
+    The box's panel: never narrower than `floor`, the width it was built
+    for, nor than its rows need. A width set on a widget replaces what its
+    rows ask for rather than adding to it, so the panel was held at 360
+    with its rows squeezed into it once its number boxes fit their numbers
+    (Zodi, 6 October): a position's two boxes need more in some fonts.
+    """
+
+    def __init__(self, floor: int, parent=None):
+        super().__init__(parent)
+        self.floor = floor
+
+    def minimumSizeHint(self) -> QSize:                               # noqa: N802
+        hint = super().minimumSizeHint()
+        return QSize(max(self.floor, hint.width()), hint.height())
 
 
 class PairRow(QWidget):
@@ -196,11 +216,10 @@ class PairRow(QWidget):
         self.values = []
         for name in (first, second):
             row.addWidget(QLabel(name))
-            box = ScaleSpinBox() if decimals else QSpinBox()
+            box = ScaleSpinBox(84) if decimals else FittedSpinBox(84)
             if decimals:
                 box.setSingleStep(0.05)
             box.setRange(minimum, maximum)
-            box.setFixedWidth(84)
             box.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             box.valueChanged.connect(self._on_value_changed)
             row.addWidget(box)
@@ -269,9 +288,8 @@ class SingleRow(PairRow):
         self.include.setMinimumWidth(96)
         self.include.toggled.connect(self._on_include_toggled)
         row.addWidget(self.include)
-        box = QSpinBox()
+        box = FittedSpinBox(84)
         box.setRange(minimum, maximum)
-        box.setFixedWidth(84)
         box.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         box.valueChanged.connect(self._on_value_changed)
         row.addWidget(box)
@@ -329,14 +347,13 @@ class ColourRow(PairRow):
             label = QLabel(letter)
             label.setToolTip(word)
             numbers.addWidget(label)
-            box = QSpinBox()
+            box = FittedSpinBox(46)
             box.setRange(0, 255)
             # No arrows: four boxes with arrows do not fit beside the
             # picture, and a colour is typed or picked, not stepped.
-            box.setButtonSymbols(QSpinBox.NoButtons)
+            box.setButtonSymbols(FittedSpinBox.NoButtons)
             # ...and so none of the room the theme keeps for them.
             box.setStyleSheet("QSpinBox { padding: 2px 4px; }")
-            box.setFixedWidth(46)
             box.setToolTip(word)
             box.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             box.valueChanged.connect(self._on_value_changed)
@@ -379,8 +396,8 @@ class OpacitySpinBox(ScaleSpinBox):
     back as the same float (16 boxes rest at 0.000010000001).
     """
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, at_least: int = 84, parent=None):
+        super().__init__(at_least, parent)
         self.setDecimals(12)
         self.setRange(0.0, 1.0)
         self.setSingleStep(0.05)
@@ -402,8 +419,7 @@ class OpacityRow(SingleRow):
         self.include.setMinimumWidth(96)
         self.include.toggled.connect(self._on_include_toggled)
         row.addWidget(self.include)
-        box = OpacitySpinBox()
-        box.setFixedWidth(84)
+        box = OpacitySpinBox(84)
         box.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         box.valueChanged.connect(self._on_value_changed)
         row.addWidget(box)
@@ -454,9 +470,8 @@ class PartRow(PairRow):
             line.addWidget(label)
             for axis in ("X", "Y"):
                 line.addWidget(QLabel(axis))
-                box = QSpinBox()
+                box = FittedSpinBox(84)
                 box.setRange(0, 100000)
-                box.setFixedWidth(84)
                 box.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 box.valueChanged.connect(self._on_value_changed)
                 line.addWidget(box)
@@ -508,10 +523,13 @@ class KeyEditor(QWidget):
         timing = QHBoxLayout()
         timing.setSpacing(6)
         timing.addWidget(self._label("Start frame"))
-        self.frame = self._spin(0, 100000)
+        # Up to the key's animation's last frame (`load`), and none until a
+        # key is picked: sized for 100000 then, they held the panel wider
+        # than any key needs.
+        self.frame = self._spin(0, 0)
         timing.addWidget(self.frame)
         timing.addWidget(QLabel("Length"))
-        self.frames = self._spin(0, 100000)
+        self.frames = self._spin(0, 0)
         timing.addWidget(self.frames)
         timing.addStretch(1)
         rows.addLayout(timing)
@@ -531,26 +549,27 @@ class KeyEditor(QWidget):
         self.pair_int = [self._spin(-100000, 100000) for _ in range(2)]
         self.pair_float = []
         for _ in range(2):
-            box = ScaleSpinBox()
+            box = ScaleSpinBox(80)
             box.setRange(-50, 50)
             box.setSingleStep(0.05)
-            box.setFixedWidth(80)
             box.valueChanged.connect(self._on_value_changed)
             self.pair_float.append(box)
         self.rgba = []
         for _ in range(4):
-            box = self._spin(0, 255)
-            box.setButtonSymbols(QSpinBox.NoButtons)
+            box = self._spin(0, 255, at_least=46)
+            box.setButtonSymbols(FittedSpinBox.NoButtons)
             box.setStyleSheet("QSpinBox { padding: 2px 4px; }")
-            box.setFixedWidth(46)
             self.rgba.append(box)
-        self.fade = OpacitySpinBox()
-        self.fade.setFixedWidth(84)
+        self.fade = OpacitySpinBox(84)
         self.fade.valueChanged.connect(self._on_value_changed)
         self.plays = QLabel("")
         self.plays.setProperty("role", "muted")
         for widget in self.pair_int + self.pair_float + self.rgba + [self.fade, self.plays]:
             value.addWidget(widget)
+            # Until a key is picked, none: all nine at once were wider than
+            # the panel (`load` shows the ones its key uses).
+            widget.setVisible(False)
+        self.value_label.setVisible(False)
         value.addStretch(1)
         rows.addLayout(value)
 
@@ -560,10 +579,9 @@ class KeyEditor(QWidget):
         label.setFixedWidth(76)
         return label
 
-    def _spin(self, low, high):
-        box = QSpinBox()
+    def _spin(self, low, high, at_least: int = 72):
+        box = FittedSpinBox(at_least)
         box.setRange(low, high)
-        box.setFixedWidth(72)
         box.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         box.valueChanged.connect(self._on_value_changed)
         return box
@@ -820,11 +838,10 @@ class UiLayoutsPage(QWidget):
         self.side_tabs.addTab(self.fields, "Box")
         self.side_tabs.addTab(self.keys_panel, "Animation")
         side.addWidget(self.side_tabs)
-        side_holder = QWidget()
+        side_holder = PanelHolder(SIDE_WIDTH)
         side_holder.setLayout(side)
-        # Never narrower than it was built for (its rows need that much),
-        # and as much wider as the divider is dragged.
-        side_holder.setMinimumWidth(SIDE_WIDTH)
+        # Never narrower than it was built for, nor than its rows need (see
+        # `PanelHolder`), and as much wider as the divider is dragged.
         self.side_holder = side_holder
         body.addWidget(side_holder)
         # A wider window goes to the picture; the panel keeps its width.

@@ -70,6 +70,7 @@ from ..widgets.actions import (
     edit_counter_text, language_combo, page_intro)
 from ..widgets.field_rows import CollapsibleSection
 from ..widgets.marked_tree import MarkedTreeView
+from ..widgets.number_boxes import FittedSpinBox
 from ..workers import Worker, run_in_thread
 from ..pages.textures import TexturePathFilter, TreePaneSizer
 from ..audio_output import LoopPlayer
@@ -563,18 +564,16 @@ class SoundsPage(QWidget):
         loop_box = QGroupBox("Exact loop points (samples)")
         loop_row = QHBoxLayout(loop_box)
         loop_row.addWidget(QLabel("Start:"))
-        self.loop_start = QSpinBox()
+        self.loop_start = FittedSpinBox(120)
         self.loop_start.setRange(0, 2_000_000_000)
         self.loop_start.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.loop_start.setFixedWidth(120)
         self.loop_start.valueChanged.connect(self._on_loop_changed)
         loop_row.addWidget(self.loop_start)
         loop_row.addSpacing(12)
         loop_row.addWidget(QLabel("End:"))
-        self.loop_end = QSpinBox()
+        self.loop_end = FittedSpinBox(120)
         self.loop_end.setRange(0, 2_000_000_000)
         self.loop_end.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.loop_end.setFixedWidth(120)
         self.loop_end.valueChanged.connect(self._on_loop_changed)
         loop_row.addWidget(self.loop_end)
         self.reset_loop_button = QPushButton("Reset to vanilla")

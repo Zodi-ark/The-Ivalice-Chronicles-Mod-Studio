@@ -35,13 +35,14 @@ from PySide6.QtWidgets import (
     QPlainTextDocumentLayout,
     QApplication,
     QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox,
+    QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
 from .column_form import ColumnFormBody
 
 from .layout_settle import settle_layout
+from .number_boxes import FittedSpinBox
 from .field_widths import (
     is_comment_field,
     LONG_TEXT_ROWS, is_long_text, long_text_height, short_text_width,
@@ -516,11 +517,11 @@ class NumericFieldRow(_NoteDisplay, QWidget):
         self.label.setFixedWidth(200)
         row.addWidget(self.label)
 
-        self.value = QSpinBox()
+        # Compact, matching the Tkinter field: 84 pixels, and wider only
+        # where the range has numbers that wouldn't fit (Price's 16000 was
+        # cut to "1600", Zodi, 6 October). See `number_boxes.py`.
+        self.value = FittedSpinBox(at_least=84)
         self.value.setRange(minimum, maximum)
-        # Compact, matching the Tkinter field. The native spin buttons take
-        # about 16px off the right of this.
-        self.value.setFixedWidth(84)
         # Left, like the Tkinter field. This was AlignRight, which put the
         # digits hard against the up/down buttons - and with the buttons now
         # drawn properly, right-aligned numbers read as if they are touching
