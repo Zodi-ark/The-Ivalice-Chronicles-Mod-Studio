@@ -244,11 +244,11 @@ def _columns(con: sqlite3.Connection, table: str) -> list:
 def _key_columns(columns: list) -> list:
     """
     Which columns identify a row. Every nxd table converted by FF16Tools
-    leads with `Key`, and the sparse ones add `Key2`; anything else falls
-    back to the first column, which is what FF16Tools emits as the id.
+    leads with `Key`, the sparse ones add `Key2` and the triple keyed ones
+    `Key3`; anything else falls back to the first column, which is what
+    FF16Tools emits as the id. `nxd_data.key_columns`, the one rule.
     """
-    keys = [name for name in ("Key", "Key2") if name in columns]
-    return keys or columns[:1]
+    return nxd_data.key_columns(columns)
 
 
 def compare_databases(old_sqlite: Path, new_sqlite: Path,

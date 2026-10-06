@@ -182,6 +182,8 @@ class UnitNamesPage(RefreshesWhenVisible, QWidget):
         left.addWidget(self.chara_search)
         self.chara_list = QListWidget()
         self.chara_list.setFixedWidth(300)
+        # Rows alternate dark and light, as the Map Editor's map list does.
+        self.chara_list.setAlternatingRowColors(True)
         self.chara_list.currentItemChanged.connect(self._on_chara_selection)
         left.addWidget(self.chara_list, 1)
         split.addLayout(left)

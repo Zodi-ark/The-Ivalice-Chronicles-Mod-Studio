@@ -194,13 +194,20 @@ def _build_smpl_chunk_data(loop_start: int, loop_end: int, play_count: int = 0, 
     return header + loop_entry
 
 
-def read_wav_info(path: Path) -> WavInfo:
-    data = path.read_bytes()
+def _wav_chunks(data: bytes, name: str) -> list:
+    """A WAV's chunks, or ValueError naming the file in plain words."""
     try:
-        chunks = _parse_riff_chunks(data)
+        return _parse_riff_chunks(data)
     except ValueError as exc:
-        raise ValueError(f"{path.name} doesn't look like a WAV file: {exc}") from exc
+        raise ValueError(f"{name} doesn't look like a WAV file: {exc}") from exc
 
+
+def read_wav_info(path: Path) -> WavInfo:
+    path = Path(path)
+    return _wav_info_from_chunks(_wav_chunks(path.read_bytes(), path.name), path.name)
+
+
+def _wav_info_from_chunks(chunks: list, name: str) -> WavInfo:
     fmt_data = None
     data_chunk = None
     smpl_data = None
@@ -213,7 +220,7 @@ def read_wav_info(path: Path) -> WavInfo:
             smpl_data = cdata
 
     if fmt_data is None or data_chunk is None:
-        raise ValueError(f"{path.name}: missing fmt or data chunk.")
+        raise ValueError(f"{name}: missing fmt or data chunk.")
 
     audio_format, channels, sample_rate, _byte_rate, block_align, bits_per_sample = struct.unpack(
         "<HHIIHH", fmt_data[:16]
@@ -630,15 +637,20 @@ def check_replacement_wav(path: Path) -> WavInfo:
     not minutes later, at export, as an AudioMog stack trace.
     """
     path = Path(path)
-    info = read_wav_info(path)              # raises "doesn't look like a WAV file"
-    fmt = next(cdata for cid, cdata in _parse_riff_chunks(path.read_bytes()) if cid == b"fmt ")
+    return _checked_wav(_wav_chunks(path.read_bytes(), path.name), path.name)
+
+
+def _checked_wav(chunks: list, name: str) -> WavInfo:
+    """`check_replacement_wav` on chunks already read."""
+    info = _wav_info_from_chunks(chunks, name)      # raises "missing fmt or data chunk"
+    fmt = next(cdata for cid, cdata in chunks if cid == b"fmt ")
     tag, _channels, _rate, _align, bits = _wav_encoding(fmt)
     if (tag, bits) not in _CONVERTIBLE:
         kind = {_PCM: "PCM", _FLOAT: "floating-point"}.get(tag, f"compressed (format {tag})")
-        raise ValueError(f"{path.name} is a {bits}-bit {kind} WAV, which can't be put into "
+        raise ValueError(f"{name} is a {bits}-bit {kind} WAV, which can't be put into "
                          f"the game. Save it again as 16-bit PCM WAV.")
     if info.num_samples == 0:
-        raise ValueError(f"{path.name} has no audio in it.")
+        raise ValueError(f"{name} has no audio in it.")
     return info
 
 
@@ -668,8 +680,11 @@ def read_pcm16(path: Path) -> Pcm16:
     is. Raises ValueError, in plain words, for anything that can't be read.
     """
     path = Path(path)
-    check_replacement_wav(path)
-    chunks = _parse_riff_chunks(path.read_bytes())
+    # Read once: the selected track's waveform is drawn from this, on the
+    # page's own thread, and a music track runs to 19 MB. It was read three
+    # times (twice to check it, once to use it).
+    chunks = _wav_chunks(path.read_bytes(), path.name)
+    _checked_wav(chunks, path.name)
     fmt = next(cdata for cid, cdata in chunks if cid == b"fmt ")
     audio = next(cdata for cid, cdata in chunks if cid == b"data")
     fmt, audio = _as_pcm(fmt, audio)

@@ -33,7 +33,9 @@ map, whose polygons most of the enhanced ones are.
                  group, 20 zero bytes
     V x 28       the UV pool: u32 texture group, float32 u, v, 16 bytes;
                  the same pool in every block, and every entry used
-    32 x 16      two float64 per name slot (1.0, 1.0 on most)
+    32 x 16      two float64 per TEXTURE GROUP, by its number: how many
+                 times its colour picture repeats across the UVs, in u and
+                 v (`Block.repeat`; 1.0, 1.0 on most, more on water)
 
   A used name slot is the name, a zero and 0xFE to its end; an unused one
   is zeros. `write_mesh` writes all of it back: every one of the 108 files
@@ -58,7 +60,20 @@ from the grid: Zodi raised every tile two steps in the game and the units
 stood two steps up on highlights left on the ground. 11,516 of the 14,311
 panels have their corners on their tile's corners, 0.2 above it; the rest
 are split tiles. So a panel is moved with its tile: by how much the tile's
-surface rose or fell under each corner, from the game's own panel.
+surface rose or fell under each corner, from the game's own panel. Seen in
+the game (`Map_Grid_Test_2.zip`, every tile and its panels two steps up):
+the highlights stood on the raised tiles.
+
+**A picture's repeat.** The 32 pairs at a block's end were first read as
+one per name slot. They are one per texture group: how many times the
+group's colour picture repeats across its polygons' UVs. 99 groups on 27
+maps have them, 92 of them water (009's waterfalls 6 across and 6 down;
+its ripples 5, whose UVs are each a fifth of the picture, so a ripple is
+the whole of it), the rest grass, a tree, candles, 055's effect and
+096's "right"; every map, border, shadow and panel group has 1, and every
+block of a mesh the same pairs. Drawn without them, water showed a blown
+up corner of its picture. The lighting picture is not repeated: it
+covers the UVs once.
 
 **The two versions share their coordinates.** Every corner of the
 enhanced mesh is where the classic map's are - x and z on a 28-unit grid,
@@ -75,11 +90,53 @@ polygons' UVs; animated groups number their colour frames (`_color_0`
 database is to hand it is the authority, as a few groups borrow another
 group's lighting. On the page a colour is drawn as colour x lighting x 2.
 
+**Lightings** (`lightings_from_database`). Each of those rows names its
+pictures as a list, not one: `Unknown8` one entry per story or event
+lighting (20 maps have 2 to 4: 085's are `_lighting_a`, `_a`, `_b`, and on
+some maps the colour pictures change with them too), `Unknown18` the six
+the random battles use (`_ra` to `_rf`, on 19 maps from 071 to 090), with
+`Unknown10` the frame counts of the first. The game's tables don't say
+which battle uses which; the Map Editor offers each.
+
+**The anim files** (`read_anim`): `bg/anims/map_NNN_anim.bin` (FFTOANIM),
+63 of them, each 1,040,184 bytes:
+
+    0x00   "FFTOANIM", u32 map number, 20 zero bytes
+    0x20   32 name slots of 32 bytes, zero ended and 0xFE padded as the
+           mesh's: its tracks, named for the part they move ("l_GT_5_anim",
+           "l_GT_6_rot")
+    0x420  u32 tracks used, 20 zero bytes
+    0x438  32 tracks of 32,472 bytes: 9 channels of 900 float32 and a u32
+           count, then 36 zero bytes
+
+  Read back from that, 57 of the files are the game's byte for byte; the
+  other 6 also have numbers past a channel's count (in the second channel
+  of 001's gates and 012's doors, say), which nothing here reads.
+
+Only the third channel ever counts anything. On the 199 tracks of texture
+groups whose colour picture has frames (57 maps) it is the frame shown at
+each tick (`picture_tracks`): every value is one of the group's frames as
+`RefinedBgTexture` counts them, and 194 tracks show every one. So each
+animated picture has its own speed, starting frame and order: map 006's
+fires flicker 7 ticks a frame, the two quads crossing in each 5 frames
+apart; 009's water surface plays its 30 frames over 271 ticks, its
+waterfalls 6 ticks a frame; 004's candle goes 0 1 2 1 0 2 1. 22 other
+tracks step through numbers on groups of one picture, the moving parts'
+(windmills, gears) and light shafts': what they drive is not known, and
+nothing here uses them. 6 count nothing (001's gates, 012's doors, 064's
+water gate, 078's ripples). A track's group is the number after GT_ in
+its name (224 of the 227 are also in `RefinedBgAnim`'s order); 5 groups
+with frames have no track (047's four, 056's one). How many ticks a
+second is not in the files. 60 is chosen (`TICKS_A_SECOND`): on 013, 014,
+039 and 047 a frame lasts as many ticks as the classic map's (15, 5, 7 and
+8), whose unit GaneshaDx reads as 60ths of a second.
+
 Nothing here imports Qt.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -87,6 +144,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from .nxd_data import ADDED_ROW
 
 MAGIC = b"FFTOMESH"
 MESH_FOLDER = "bg/meshes"
@@ -141,7 +200,17 @@ class Block:
     groups: list            # texture group per textured corner
     pool: list              # (group, u, v) per pool entry
     pool_extra: list        # the 16 bytes after each pool entry's u, v
-    slot_values: list       # (float64, float64) per name slot
+    #: (u, v) per texture group, by its number: how many times its colour
+    #: picture repeats across the UVs (`repeat`). The name is the one this
+    #: had when it was thought to be one pair per name slot.
+    slot_values: list
+
+    def repeat(self, group: int) -> tuple:
+        """How many times a texture group's colour picture repeats across its UVs, (u, v)."""
+        if 0 <= group < len(self.slot_values):
+            u, v = self.slot_values[group]
+            return (float(u), float(v))
+        return (1.0, 1.0)
 
     def polygons(self, block_number: int = 0) -> list:
         qv, tv, uq, ut = self.counts
@@ -524,43 +593,162 @@ def texture_folder(game_dir: Path, number: int) -> Path:
     return Path(game_dir) / TEXTURE_FOLDER / f"{number:03d}"
 
 
-def pictures_from_database(sqlite_path: Path, number: int) -> dict:
+def _frame_names(name: str, count: int) -> list:
+    """A colour picture's frames: `..._color_0` with a count of 8 is `_0` to `_7`."""
+    if count > 1 and re.search(r"_0$", name):
+        stem = name[:-2]
+        return [f"{stem}_{i}.tga" for i in range(count)]
+    return [f"{name}.tga"]
+
+
+@dataclass
+class Lighting:
     """
-    `{group: GroupPictures}` from the game's `RefinedBgTexture` table (key
-    map, group, kind 0 colour / 1 lighting / 2 second lighting; the names,
-    and each name's frame count, as JSON lists). Empty when the table is
-    not there.
+    One of a map's lightings: the pictures each texture group is drawn with
+    under it. `kind` is "story" (`RefinedBgTexture`'s lists for story and
+    event battles, the first being the one the map is drawn with), "second"
+    (the groups with a second lighting drawn with it) or "random" (the
+    random battles' lists), `index` its place in that list, and `suffix`
+    what its first lighting picture's name says after "lighting" ("", "_a",
+    "_ra", "2" ...), which is how the game's files tell them apart.
     """
-    out = {}
-    try:
-        con = sqlite3.connect(f"file:{Path(sqlite_path).as_posix()}?mode=ro", uri=True)
+    kind: str
+    index: int
+    suffix: str
+    pictures: dict                      # {group: GroupPictures}
+
+
+#: The `RefinedBgTexture` columns a lighting is read from, in `_table_rows`' order.
+TEXTURE_COLUMNS = ("Unknown8", "Unknown10", "Unknown18")
+
+
+def _table_rows(sqlite_path: Path, number: int, rows: Optional[dict] = None) -> list:
+    """
+    Map `number`'s `RefinedBgTexture` rows, `(group, kind, Unknown8,
+    Unknown10, Unknown18)` in key order: the game's, with `rows` over them -
+    a mod's, as `state.unmodelled_table_edits` holds them (`{(map, group,
+    kind): {column: value}}`; its edits change a row's columns, and the rows
+    it adds are added). The Map Editor's new texture groups are such rows.
+    """
+    found = {}
+    if sqlite_path:
         try:
-            rows = con.execute("SELECT Key2, Key3, Unknown8, Unknown10 FROM RefinedBgTexture "
-                               "WHERE Key = ? ORDER BY Key2, Key3", (number,)).fetchall()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return {}
-    for group, kind, names, frames in rows:
+            con = sqlite3.connect(f"file:{Path(sqlite_path).as_posix()}?mode=ro", uri=True)
+            try:
+                for row in con.execute("SELECT Key2, Key3, Unknown8, Unknown10, Unknown18 FROM "
+                                       "RefinedBgTexture WHERE Key = ? ORDER BY Key2, Key3", (number,)):
+                    found[(row[0], row[1])] = list(row[2:])
+            finally:
+                con.close()
+        except sqlite3.Error:
+            found = {}
+    for key, fields in (rows or {}).items():
+        if not isinstance(key, tuple) or len(key) != 3 or key[0] != number:
+            continue
+        current = found.get(key[1:])
+        if current is None:
+            if not fields.get(ADDED_ROW):
+                continue
+            current = found[key[1:]] = [None, None, None]
+        for i, column in enumerate(TEXTURE_COLUMNS):
+            if column in fields:
+                current[i] = fields[column]
+    return [key + tuple(values) for key, values in sorted(found.items())]
+
+
+def _lighting_suffix(name: Optional[str]) -> str:
+    match = re.search(r"lighting(.*?)(?:\.tga)?$", name or "", re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def lightings_from_database(sqlite_path: Path, number: int, rows: Optional[dict] = None) -> list:
+    """
+    Every lighting the game's `RefinedBgTexture` table gives a map (key map,
+    group, kind 0 colour / 1 lighting / 2 second lighting; `Unknown8` the
+    pictures of each story or event lighting, `Unknown10` their frame
+    counts, `Unknown18` the random battles' pictures, all JSON lists): the
+    story ones in order, the first being the usual, then the second
+    lightings, then the random battles'. One whose pictures are another's
+    is left out. Empty when the table is not there. `rows` are a mod's,
+    over the game's (`_table_rows`).
+    """
+    table = {}
+    for group, kind, names, frames, random in _table_rows(sqlite_path, number, rows):
         try:
-            names = json.loads(names or "[]")
-            frames = json.loads(frames or "[]")
+            table[(group, kind)] = (json.loads(names or "[]"), json.loads(frames or "[]"),
+                                    json.loads(random or "[]"))
         except ValueError:
             continue
-        entry = out.setdefault(group, GroupPictures([], None))
-        if kind == 0 and names:
-            base = names[0]
-            count = frames[0] if frames else 1
-            if count > 1 and re.search(r"_0$", base):
-                stem = base[:-2]
-                entry.colour = [f"{stem}_{i}.tga" for i in range(count)]
-            else:
-                entry.colour = [f"{base}.tga"]
-        elif kind == 1 and names:
-            entry.lighting = f"{names[0]}.tga"
-        elif kind == 2 and names:
-            entry.lighting2 = f"{names[0]}.tga"
+    if not table:
+        return []
+    groups = sorted({group for group, _kind in table})
+
+    def pick(names: list, index: int):
+        return names[index] if index < len(names) else (names[0] if names else None)
+
+    def story(index: int, second: bool = False) -> dict:
+        out = {}
+        for group in groups:
+            colours, counts, _random = table.get((group, 0), ([], [], []))
+            name = pick(colours, index)
+            count = pick(counts, index) or 1
+            entry = GroupPictures(_frame_names(name, count) if name else [], None)
+            light = pick(table.get((group, 1), ([], [], []))[0], index)
+            light2 = pick(table.get((group, 2), ([], [], []))[0], index)
+            entry.lighting = f"{light}.tga" if light else None
+            entry.lighting2 = f"{light2}.tga" if light2 else None
+            if second and light2:
+                entry.lighting = entry.lighting2
+            out[group] = entry
+        return out
+
+    def random(index: int) -> dict:
+        out = story(0)
+        for group in groups:
+            colours, counts, randoms = table.get((group, 0), ([], [], []))
+            name = pick(randoms, index) if index < len(randoms) and randoms[index] else None
+            if name:
+                out[group].colour = _frame_names(name, pick(counts, 0) or 1)
+            lights = table.get((group, 1), ([], [], []))[2]
+            if index < len(lights) and lights[index]:
+                out[group].lighting = f"{lights[index]}.tga"
+        return out
+
+    def first_lighting(pictures: dict) -> Optional[str]:
+        return next((pictures[g].lighting for g in groups if pictures[g].lighting), None)
+
+    found = []
+    stories = max(len(table[key][0]) for key in table if key[1] in (0, 1)) if any(
+        key[1] in (0, 1) for key in table) else 0
+    for index in range(max(stories, 1)):
+        pictures = story(index)
+        found.append(Lighting("story", index, _lighting_suffix(first_lighting(pictures)), pictures))
+    seconds = max((len(table[key][0]) for key in table if key[1] == 2), default=0)
+    for index in range(seconds):
+        pictures = story(index, second=True)
+        second = next((pictures[g].lighting2 for g in groups if pictures[g].lighting2), None)
+        found.append(Lighting("second", index, _lighting_suffix(second), pictures))
+    randoms = max((len(value[2]) for value in table.values()), default=0)
+    for index in range(randoms):
+        pictures = random(index)
+        found.append(Lighting("random", index, _lighting_suffix(first_lighting(pictures)), pictures))
+    out, seen = [], set()
+    for lighting in found:
+        key = tuple((g, tuple(p.colour), p.lighting) for g, p in sorted(lighting.pictures.items()))
+        if key not in seen:
+            seen.add(key)
+            out.append(lighting)
     return out
+
+
+def pictures_from_database(sqlite_path: Path, number: int) -> dict:
+    """
+    `{group: GroupPictures}` from the game's `RefinedBgTexture` table: the
+    usual lighting's (`lightings_from_database`). Empty when the table is
+    not there.
+    """
+    found = lightings_from_database(sqlite_path, number)
+    return found[0].pictures if found else {}
 
 
 def pictures_from_files(folder: Path, number: int) -> dict:
@@ -587,12 +775,101 @@ def pictures_from_files(folder: Path, number: int) -> dict:
     return out
 
 
-def pictures(game_dir: Path, number: int, sqlite_path: Optional[Path] = None) -> dict:
+def lightings(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,
+              rows: Optional[dict] = None) -> list:
     """
-    The map's pictures by texture group: the game's table when a database
-    is given and names them, else the file names.
+    The map's lightings (`Lighting`), the usual first: the game's table when
+    a database is given and names them, else the file names' one. `rows`
+    are a mod's `RefinedBgTexture` rows over the game's (`_table_rows`):
+    with no database, the groups they add join the file names' ones.
     """
-    found = pictures_from_database(sqlite_path, number) if sqlite_path else {}
+    found = lightings_from_database(sqlite_path, number, rows) if sqlite_path else []
     if found:
         return found
-    return pictures_from_files(texture_folder(game_dir, number), number)
+    named = pictures_from_files(texture_folder(game_dir, number), number)
+    added = lightings_from_database(None, number, rows) if rows else []
+    for group, entry in (added[0].pictures.items() if added else ()):
+        named.setdefault(group, entry)
+    return [Lighting("story", 0, "", named)] if named else []
+
+
+def pictures(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,
+             rows: Optional[dict] = None) -> dict:
+    """
+    The map's pictures by texture group, under its usual lighting: the
+    game's table when a database is given and names them, else the file
+    names. `rows` as `lightings` takes them.
+    """
+    found = lightings(game_dir, number, sqlite_path, rows)
+    return found[0].pictures if found else {}
+
+
+# =============================================================================
+# The anim files
+# =============================================================================
+
+ANIM_MAGIC = b"FFTOANIM"
+ANIM_FOLDER = "bg/anims"
+#: Where an anim file keeps its track names and how many it uses, where its
+#: tracks start, and their shape: 32 tracks of 9 channels of 900 float32,
+#: each with a u32 count after it, and 36 zero bytes after each track.
+ANIM_NAMES, ANIM_USED, ANIM_TRACKS = 0x20, 0x420, 0x438
+ANIM_SLOTS, ANIM_CHANNELS, ANIM_CAPACITY = 32, 9, 900
+ANIM_CHANNEL_SIZE = ANIM_CAPACITY * 4 + 4
+ANIM_TRACK_SIZE = ANIM_CHANNELS * ANIM_CHANNEL_SIZE + 36
+ANIM_SIZE = ANIM_TRACKS + ANIM_SLOTS * ANIM_TRACK_SIZE
+#: The one channel the game's files use: the colour frame shown at each tick.
+FRAME_CHANNEL = 2
+#: Ticks a second. Chosen: no file or table found says. On four maps a
+#: frame lasts as many ticks as the classic map's, which GaneshaDx reads as
+#: 60ths of a second.
+TICKS_A_SECOND = 60
+
+_TRACK_GROUP = re.compile(r"GT_(\d+)_", re.IGNORECASE)
+
+
+def anim_path(game_dir: Path, number: int) -> Path:
+    return Path(game_dir) / ANIM_FOLDER / f"map_{number:03d}_anim.bin"
+
+
+def read_anim(data: bytes) -> dict:
+    """
+    An anim file's tracks: `{name: (channel, ...)}`, each channel the floats
+    it holds, one a tick. Raises `EnhancedMapError` for anything else.
+    """
+    if data[:8] != ANIM_MAGIC:
+        raise EnhancedMapError("not an FFTOANIM file")
+    if len(data) != ANIM_SIZE:
+        raise EnhancedMapError(f"an anim file is {ANIM_SIZE:,} bytes; this one is {len(data):,}")
+    used = struct.unpack_from("<I", data, ANIM_USED)[0]
+    if used > ANIM_SLOTS:
+        raise EnhancedMapError(f"{used} tracks is more than an anim file holds")
+    tracks = {}
+    for k in range(used):
+        name = data[ANIM_NAMES + 32 * k:ANIM_NAMES + 32 * (k + 1)].split(b"\0")[0].decode("ascii", "replace")
+        base = ANIM_TRACKS + k * ANIM_TRACK_SIZE
+        channels = []
+        for c in range(ANIM_CHANNELS):
+            start = base + c * ANIM_CHANNEL_SIZE
+            count = struct.unpack_from("<I", data, start + ANIM_CAPACITY * 4)[0]
+            if count > ANIM_CAPACITY:
+                raise EnhancedMapError(f"track {name} has {count} ticks, more than {ANIM_CAPACITY}")
+            channels.append(struct.unpack_from(f"<{count}f", data, start))
+        tracks[name] = tuple(channels)
+    return tracks
+
+
+def picture_tracks(data: bytes) -> dict:
+    """
+    `{texture group: (frame, ...)}`: the colour frame each animated group
+    shows at each tick (`TICKS_A_SECOND`), from an anim file's tracks. A
+    track's group is the number after GT_ in its name; a frame is the
+    nearest whole number to the file's (a few are a hair off, 4.955).
+    """
+    out = {}
+    for name, channels in read_anim(data).items():
+        match = _TRACK_GROUP.search(name)
+        frames = channels[FRAME_CHANNEL]
+        if match and frames:
+            out.setdefault(int(match.group(1)), tuple(int(math.floor(f + 0.5)) for f in frames))
+    return out

@@ -1,8 +1,8 @@
 """
 Edit Game Data / Map Editor.
 
-The game's battle maps, drawn from the unpacked game in either look with
-the battle grid over them, and the grid's tiles changed by clicking them.
+The game's maps, drawn from the unpacked game in either look with the
+battle grid over them, and the grid's tiles changed by clicking them.
 Asked for as a map viewer and made the Map Editor from Zodi's answers:
 
 - **Both looks, the enhanced one first**, "as that is what the overwhelming
@@ -16,8 +16,10 @@ Asked for as a map viewer and made the Map Editor from Zodi's answers:
 - **The tiles, with each tile's height and surface when the pointer is on
   it**, and a switch for the card that says them. Both switches are
   remembered between sessions (`ui_settings`).
-- **The variants**: a map's arrangements, and in the classic look its day
-  and night and its weathers (the enhanced files have no variants decoded).
+- **The variants**: a map's arrangements, in the classic look its day and
+  night and its weathers, and in the enhanced look its lightings
+  (`map_enhanced.lightings`: the story battles' own, the random battles'
+  six, a second lighting), asked for after the second in-game test.
 - **"Map Editor", with all a map editor can offer.** What can be edited is
   the battle grid, tile by tile and several tiles at once. The enhanced
   look's pictures are textures, which the Textures page replaces; a right
@@ -46,8 +48,10 @@ What the page does with an edit:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
 from PySide6.QtWidgets import (
@@ -71,7 +75,7 @@ from ..workers import Worker, run_in_thread
 
 INTRO = ("The game's maps, drawn from its own files. Pick a map, turn it with the mouse "
          "and point at a tile for its surface and height. Click tiles to change them, or right "
-         "click a picture to replace it.")
+         "click a texture to replace it.")
 
 #: The map list's width on first show: "048  Sal Ghidos Slumtown" and the
 #: longest names beside it.
@@ -96,6 +100,31 @@ NO_GAME = ("No game files yet.\n\nGo to General Setup and either unpack your gam
 
 def arrangement_word(index: int) -> str:
     return ARRANGEMENTS[index] if 0 <= index < len(ARRANGEMENTS) else f"Number {index + 1}"
+
+
+def lighting_word(lighting) -> str:
+    """
+    A lighting's name on the page (`map_enhanced.Lighting`), from what its
+    pictures' names end with: "Usual", "Story B", "Random battle C",
+    "Second lighting".
+    """
+    suffix = re.sub(r"_0$", "", lighting.suffix).lstrip("_")
+    if lighting.kind == "random":
+        letter = suffix[1:] if suffix.lower().startswith("r") else suffix
+        return f"Random battle {letter.upper()}" if letter else f"Random battle {lighting.index + 1}"
+    if lighting.kind == "second":
+        rest = suffix[1:].lstrip("_") if suffix.startswith("2") else suffix
+        return f"Second lighting {rest.upper()}".strip()
+    if not suffix:
+        return "Usual" if lighting.index == 0 else f"Story {lighting.index + 1}"
+    return f"Story {suffix.upper()}"
+
+
+def lighting_words(lightings) -> list:
+    """Every lighting's name, one each: a name two would share gets their place in the game's list."""
+    words = [lighting_word(lighting) for lighting in lightings]
+    return [f"{w} ({lighting.index + 1})" if words.count(w) > 1 else w
+            for w, lighting in zip(words, lightings)]
 
 
 def map_label(number: int, name: str) -> str:
@@ -190,26 +219,34 @@ def _value(tile: mc.Tile, name: str) -> int:
 
 
 class PackageSaveWorker(Worker):
-    """Writes a map's enhanced look as a package, off the GUI thread: its pictures take seconds."""
+    """Writes a map's enhanced look as a package, off the GUI thread: its textures take seconds."""
 
-    def __init__(self, game_dir, number, folder, sqlite_path, mesh_file, picture_files):
+    def __init__(self, game_dir, number, folder, sqlite_path, mesh_file, picture_files,
+                 rows=None, tiles=None, grid_file=None):
         super().__init__()
         self.args = (game_dir, number, folder, sqlite_path, mesh_file, picture_files)
+        self.rows = {table: dict(found) for table, found in (rows or {}).items()}
+        self.tiles, self.grid_file = (dict(tiles) if tiles else None), grid_file
 
     def run(self):
         game_dir, number, folder, sqlite_path, mesh_file, picture_files = self.args
         try:
-            return mpk.export_package(game_dir, number, folder, sqlite_path, mesh_file, picture_files)
+            return mpk.export_package(game_dir, number, folder, sqlite_path, mesh_file, picture_files,
+                                      rows=self.rows, tiles=self.tiles, grid_file=self.grid_file)
         except (OSError, ValueError) as exc:
             raise RuntimeError(str(exc)) from exc
 
 
 class PackageLoadWorker(Worker):
-    """Builds a package, off the GUI thread. Returns `(folder, Built, mesh file or None)`."""
+    """
+    Builds a package, off the GUI thread, and works out where the tiles
+    under its model's ground go (`map_package.ground_under_tiles`). Returns
+    `(folder, Built, mesh file or None, Ground or None)`.
+    """
 
-    def __init__(self, folder):
+    def __init__(self, folder, game_dir=None):
         super().__init__()
-        self.folder = folder
+        self.folder, self.game_dir = folder, game_dir
 
     def run(self):
         try:
@@ -217,7 +254,49 @@ class PackageLoadWorker(Worker):
         except mpk.PackageError as exc:
             raise RuntimeError(str(exc)) from exc
         mesh_file = mpk.write_built(self.folder, built) if built.changed else None
-        return (self.folder, built, mesh_file)
+        ground = None
+        if built.changed and self.game_dir is not None:
+            try:
+                ground = mpk.ground_under_tiles(self.folder, built, self.game_dir)
+            except (OSError, ValueError, mc.MapError):
+                ground = None               # the tiles are offered nothing, the model still goes in
+        return (self.folder, built, mesh_file, ground)
+
+
+def mod_look(state, number) -> tuple:
+    """
+    `(mesh file or None, {texture name: image file})`: what of map
+    `number`'s enhanced look a mod replaces - a mesh carried through
+    (`other_file_replacements`), and textures on the Textures page.
+    """
+    if number is None:
+        return None, {}
+    replaced = getattr(state, "other_file_replacements", {}) or {}
+    mesh = replaced.get(mpk.mesh_relative_path(number))
+    prefix = mpk.picture_relative_path(number, "")
+    pictures = {}
+    for rel, info in (getattr(state, "texture_edits", {}) or {}).items():
+        if rel.lower().startswith(prefix.lower()) and "/" not in rel[len(prefix):]:
+            source = info.get("source_path") if isinstance(info, dict) else info
+            if source:
+                pictures[rel[len(prefix):]] = Path(source)
+    return (Path(mesh) if mesh else None), pictures
+
+
+def mod_rows(state, number) -> dict:
+    """
+    `{table: {key: fields}}`: map `number`'s rows among a mod's table edits
+    (`unmodelled_table_edits`) in `RefinedBgTexture` and `RefinedBgMeshNode`:
+    the texture groups and parts it adds, and parts it draws another way.
+    """
+    store = getattr(state, "unmodelled_table_edits", None) or {}
+    out = {}
+    for table in (mpk.TEXTURE_TABLE, mpk.NODE_TABLE):
+        found = {key: fields for key, fields in (store.get(table) or {}).items()
+                 if isinstance(key, tuple) and len(key) == 3 and key[0] == number}
+        if found:
+            out[table] = found
+    return out
 
 
 def package_folder(parent: Path, number: int) -> Path:
@@ -460,6 +539,8 @@ class MapEditorPage(QWidget):
         #: that has them comes back enhanced.
         self.look = ms.ENHANCED
         self.shown_look = ms.ENHANCED
+        #: which of the map's lightings the enhanced look is drawn with
+        self.lighting = 0
         self.scene = None
         #: The grid edits are made on, `{(x, z, level): Tile}`: the game's,
         #: or the opened mod's own copy when it carries one (`read_only`).
@@ -483,6 +564,9 @@ class MapEditorPage(QWidget):
         self._game_dir = None
         #: The last folder Save for editing wrote.
         self.last_package = None
+        #: `(map, grid key, {(x, z, level): {field: value}})`: where the tiles
+        #: under the last model loaded go, while that is offered.
+        self.ground = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 20)
@@ -542,6 +626,13 @@ class MapEditorPage(QWidget):
         self.arrangement_box.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.arrangement_box.setToolTip("Some maps are laid out more than one way, for different "
                                         "battles.")
+        self.lighting_label = QLabel("Lighting")
+        self.lighting_box = QComboBox()
+        self.lighting_box.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.lighting_box.setToolTip("Some maps are lit more than one way: in different story "
+                                     "battles, or in random battles.")
+        self.lighting_group = _together(self.lighting_label, self.lighting_box)
+        self.lighting_group.setVisible(False)
         self.time_label = QLabel("Time")
         self.time_box = QComboBox()
         self.weather_label = QLabel("Weather")
@@ -550,9 +641,10 @@ class MapEditorPage(QWidget):
         self.arrangement_group = _together(self.arrangement_label, self.arrangement_box)
         self.time_group = _together(self.time_label, self.time_box)
         self.weather_group = _together(self.weather_label, self.weather_box)
-        for group in (self.arrangement_group, self.time_group, self.weather_group):
+        for group in (self.arrangement_group, self.lighting_group, self.time_group, self.weather_group):
             look_row.addWidget(group)
         self.arrangement_box.currentIndexChanged.connect(self._on_arrangement)
+        self.lighting_box.currentIndexChanged.connect(self._on_lighting)
         self.time_box.currentIndexChanged.connect(self._on_time)
         self.weather_box.currentIndexChanged.connect(self._on_variant)
         centre.addLayout(look_row)
@@ -591,7 +683,7 @@ class MapEditorPage(QWidget):
         model_row = FlowLayout(spacing=18)
         self.save_package_button = QPushButton("Save for editing")
         self.save_package_button.setToolTip(
-            "Writes the enhanced look's model and pictures to a folder, for Blender or any 3D "
+            "Writes the enhanced look's model and textures to a folder, for Blender or any 3D "
             "program: an OBJ, PNGs, and a README saying how to edit them.")
         self.save_package_button.clicked.connect(lambda: self.save_package())
         self.load_package_button = QPushButton("Load edited")
@@ -600,11 +692,20 @@ class MapEditorPage(QWidget):
             "here and goes into your mod.")
         self.load_package_button.clicked.connect(lambda: self.load_package())
         self.put_back_look_button = QPushButton("Put back the game's look")
-        self.put_back_look_button.setToolTip("Takes this map's model and pictures out of your mod.")
+        self.put_back_look_button.setToolTip("Takes this map's model and textures out of your mod.")
         self.put_back_look_button.clicked.connect(lambda: self.put_back_look())
-        model_row.addWidget(_together(QLabel("Model and pictures"), self.save_package_button,
+        model_row.addWidget(_together(QLabel("Model and textures"), self.save_package_button,
                                       self.load_package_button))
         model_row.addWidget(self.put_back_look_button)
+        #: Offered after Load edited when the model's ground moved: the tiles
+        #: under it follow, so units stand on it (`ground`).
+        self.follow_ground_button = QPushButton("Move the tiles to the model")
+        self.follow_ground_button.setToolTip(
+            "Raises or lowers each tile whose ground moved in the model you loaded, as far as "
+            "the ground did, so units stand on it. Put back undoes a tile.")
+        self.follow_ground_button.clicked.connect(lambda: self.follow_ground())
+        self.follow_ground_button.setVisible(False)
+        model_row.addWidget(self.follow_ground_button)
         centre.addLayout(model_row)
 
         self.view = MapView()
@@ -619,7 +720,7 @@ class MapEditorPage(QWidget):
         self.hint.setProperty("role", "muted")
         self.hint.setWordWrap(True)
         centre.addWidget(self.hint)
-        #: What the model and picture buttons did, or why they couldn't.
+        #: What the model and texture buttons did, or why they couldn't.
         self.look_note = QLabel("")
         self.look_note.setWordWrap(True)
         self.look_note.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -790,6 +891,11 @@ class MapEditorPage(QWidget):
         if new_map:
             self.picked = []
             self.view.camera = Camera()
+            # The new map's lightings come with its scene; until then, none.
+            self.lighting = 0
+            self.lighting_box.blockSignals(True)
+            self.lighting_box.clear()
+            self.lighting_box.blockSignals(False)
             self._fill_arrangements()
             self._say_look("")
         self.shown_look = self.look if has_enhanced else ms.CLASSIC
@@ -845,6 +951,24 @@ class MapEditorPage(QWidget):
         classic = self.shown_look == ms.CLASSIC
         for group in (self.time_group, self.weather_group):
             group.setVisible(classic)
+        self.lighting_group.setVisible(not classic and self.lighting_box.count() > 1)
+
+    def _fill_lightings(self) -> None:
+        """The lighting box: the shown map's lightings, when it has more than one."""
+        lightings = self.scene.lightings if self.scene is not None else []
+        self.lighting_box.blockSignals(True)
+        self.lighting_box.clear()
+        for i, word in enumerate(lighting_words(lightings)):
+            self.lighting_box.addItem(word, i)
+        if lightings:
+            self.lighting_box.setCurrentIndex(self.scene.lighting)
+        self.lighting_box.blockSignals(False)
+        self._show_variant_boxes()
+
+    def _on_lighting(self, index) -> None:
+        if index >= 0:
+            self.lighting = int(self.lighting_box.itemData(index) or 0)
+            self._load()
 
     def map_state(self) -> mc.State:
         """The variant shown: the enhanced look has its arrangement, by day and in no weather."""
@@ -896,7 +1020,7 @@ class MapEditorPage(QWidget):
         mesh_file, picture_files = self.mod_look(self.number)
         worker = ms.SceneWorker(self._token, self.game_dir(), self.number, self.shown_look,
                                 self.map_state(), getattr(self.state, "nxd_sqlite_path", None),
-                                mesh_file, picture_files)
+                                mesh_file, picture_files, self.lighting, self.mod_rows(self.number))
         run_in_thread(worker, on_finished=self._scene_ready, on_failed=self._reading_failed)
 
     def _reading_failed(self, message: str) -> None:
@@ -927,6 +1051,8 @@ class MapEditorPage(QWidget):
         self.view.set_message(" ".join(scene.notes))
         self.view.set_scene(scene, self.tiles(), self.edited_keys())
         self.view.set_picked(self.picked)
+        if scene.look == ms.ENHANCED:
+            self._fill_lightings()
         self._show_panel()
         self._update_look_buttons()
 
@@ -963,23 +1089,12 @@ class MapEditorPage(QWidget):
     # -- the enhanced look's model and pictures ------------------------------------------
 
     def mod_look(self, number) -> tuple:
-        """
-        `(mesh file or None, {picture name: image file})`: what of map
-        `number`'s enhanced look the mod replaces - a mesh carried through
-        (`other_file_replacements`), and pictures on the Textures page.
-        """
-        if number is None:
-            return None, {}
-        replaced = getattr(self.state, "other_file_replacements", {}) or {}
-        mesh = replaced.get(mpk.mesh_relative_path(number))
-        prefix = mpk.picture_relative_path(number, "")
-        pictures = {}
-        for rel, info in (getattr(self.state, "texture_edits", {}) or {}).items():
-            if rel.lower().startswith(prefix.lower()) and "/" not in rel[len(prefix):]:
-                source = info.get("source_path") if isinstance(info, dict) else info
-                if source:
-                    pictures[rel[len(prefix):]] = Path(source)
-        return (Path(mesh) if mesh else None), pictures
+        """`mod_look` for this page's state."""
+        return mod_look(self.state, number)
+
+    def mod_rows(self, number) -> dict:
+        """`mod_rows` for this page's state."""
+        return mod_rows(self.state, number)
 
     def _update_look_buttons(self) -> None:
         enhanced = (self.scene is not None and self.scene.look == ms.ENHANCED
@@ -987,8 +1102,11 @@ class MapEditorPage(QWidget):
         mesh, pictures = self.mod_look(self.number)
         for button in (self.save_package_button, self.load_package_button):
             button.setEnabled(enhanced and not self._package_busy)
-        self.put_back_look_button.setVisible(bool(mesh or pictures))
+        self.put_back_look_button.setVisible(bool(mesh or pictures or self.mod_rows(self.number)))
         self.put_back_look_button.setEnabled(not self._package_busy)
+        offered = self.ground is not None and self.ground[0] == self.number
+        self.follow_ground_button.setVisible(offered)
+        self.follow_ground_button.setEnabled(offered and not self._package_busy)
 
     def _say_look(self, text: str, role: str = "muted") -> None:
         self.look_note.setText(text)
@@ -1010,8 +1128,15 @@ class MapEditorPage(QWidget):
         self._package_busy = True
         self._update_look_buttons()
         self._say_look(f"Saving map {self.number:03d} for editing...")
+        # The grid it stands on as edited, when it is the one shown; the
+        # game's otherwise (`map_package.export_package`).
+        tiles = grid_file = None
+        if self.scene is not None and self.scene.grid_file and self.game_tiles:
+            tiles = {(t.x, t.z, t.level): t for t in self.tiles()}
+            grid_file = self.scene.grid_file
         worker = PackageSaveWorker(self.game_dir(), self.number, folder,
-                                   getattr(self.state, "nxd_sqlite_path", None), mesh_file, pictures)
+                                   getattr(self.state, "nxd_sqlite_path", None), mesh_file, pictures,
+                                   self.mod_rows(self.number), tiles, grid_file)
         run_in_thread(worker, on_finished=self._package_saved, on_failed=self._package_failed)
 
     def _package_saved(self, done) -> None:
@@ -1019,10 +1144,11 @@ class MapEditorPage(QWidget):
         self._update_look_buttons()
         missing = done.get("missing") or []
         text = (f"Saved for editing in {done['folder']}: {done['faces']:,} faces in "
-                f"{done['objects']} parts, and {done['pictures']} pictures. Change map.obj and the "
-                f"pictures (its README says how), then Load edited.")
+                f"{done['objects']} parts, and {done['pictures']} textures, with a guide to where "
+                f"each face is on its texture. Change map.obj and the textures (its README says "
+                f"how), then Load edited.")
         if missing:
-            text += f" {len(missing)} pictures aren't in the game folder and were left out."
+            text += f" {len(missing)} textures aren't in the game folder and were left out."
         self.last_package = Path(done["folder"])
         self._say_look(text, "ok")
 
@@ -1053,11 +1179,11 @@ class MapEditorPage(QWidget):
         self._package_busy = True
         self._update_look_buttons()
         self._say_look(f"Building map {number:03d} from {folder}...")
-        run_in_thread(PackageLoadWorker(folder), on_finished=self._package_loaded,
+        run_in_thread(PackageLoadWorker(folder, self.game_dir()), on_finished=self._package_loaded,
                       on_failed=self._package_load_failed)
 
     def _package_loaded(self, result) -> None:
-        folder, built, mesh_file = result
+        folder, built, mesh_file, ground = result
         self._package_busy = False
         number = built.number
         replaced = self.state.other_file_replacements
@@ -1066,23 +1192,156 @@ class MapEditorPage(QWidget):
             replaced[rel] = mesh_file
         else:
             replaced.pop(rel, None)
+        # The textures of groups the mod added before and the model no longer
+        # uses go, with their rows; the changed and new ones come in.
+        kept = {name.lower() for names in built.added_groups.values() for name in names}
+        for name in self._added_textures(number):
+            if name.lower() not in kept:
+                self.state.texture_edits.pop(mpk.picture_relative_path(number, name), None)
         for name, source in built.pictures.items():
             path = mpk.picture_relative_path(number, name)
             self.state.texture_edits[path] = {"source_path": Path(source), "is_face_texture": False}
+        self._put_rows(number, built.table_rows)
         what = []
         if mesh_file is not None:
             counts = built.counts
             what.append(f"its model ({counts.get('new', 0)} new faces, {counts.get('moved', 0)} "
                         f"changed, {counts.get('gone', 0)} gone)")
         if built.pictures:
-            what.append(f"{len(built.pictures)} picture{'s' if len(built.pictures) != 1 else ''}")
+            what.append(f"{len(built.pictures)} texture{'s' if len(built.pictures) != 1 else ''}")
+        rows = sum(len(found) for found in built.table_rows.values())
+        if rows:
+            what.append(f"{rows} table row{'s' if rows != 1 else ''} for its texture groups and parts")
         if what:
-            self._say_look(f"Map {number:03d} is drawn from {folder} now: " + " and ".join(what)
-                           + " go into your mod." + "".join(f" {n}." for n in built.notes[:3]), "ok")
+            text = (f"Map {number:03d} is drawn from {folder} now: " + ", ".join(what[:-1])
+                    + (" and " if len(what) > 1 else "") + what[-1] + " go into your mod."
+                    + "".join(f" {n}." for n in built.notes[:3]))
         else:
-            self._say_look(f"Nothing in {folder} differs from the map as it was.", "ok")
+            text = f"Nothing in {folder} differs from the map as it was."
+        self.ground = None
+        offer = self._ground_offer(number, ground)
+        if offer:
+            self.ground = (number, offer[0], offer[1])
+            moved = len(offer[1])
+            text += (f" Its ground moved under {moved} tile{'s' if moved != 1 else ''}: Move the tiles "
+                     f"to the model, and units stand on it.")
+        if ground is not None and ground.lost:
+            text += (f" {ground.lost} tile{'s have' if ground.lost != 1 else ' has'} no ground under "
+                     f"{'them' if ground.lost != 1 else 'it'} in the model now.")
+        self._say_look(text, "ok")
         self.edits_changed.emit()
         self._load()
+        self._update_look_buttons()
+
+    def _added_textures(self, number) -> list:
+        """The texture files of the groups map `number`'s rows in the mod add."""
+        names = []
+        for (_map, _group, kind), fields in self.mod_rows(number).get(mpk.TEXTURE_TABLE, {}).items():
+            if fields.get(mpk.ADDED_ROW) and kind in (0, 1, 2):
+                for listed in ("Unknown8", "Unknown18"):
+                    for stem in mpk._json_list(fields.get(listed)):
+                        if stem and f"{stem}.tga" not in names:
+                            names.append(f"{stem}.tga")
+        return names
+
+    def _put_rows(self, number, rows: dict) -> None:
+        """
+        A built package's table rows into the mod's: the rows it adds take the
+        place of those map `number` added before, and its changed rows go
+        over the mod's edits, less what is the game's own already.
+        """
+        store = self.state.unmodelled_table_edits
+        game = {table: mpk.map_rows(getattr(self.state, "nxd_sqlite_path", None), table, number)[0]
+                for table in (mpk.TEXTURE_TABLE, mpk.NODE_TABLE)}
+        for table in (mpk.TEXTURE_TABLE, mpk.NODE_TABLE):
+            found = store.setdefault(table, {})
+            for key in [k for k, f in found.items() if isinstance(k, tuple) and len(k) == 3
+                        and k[0] == number and f.get(mpk.ADDED_ROW)]:
+                found.pop(key)
+            for key, fields in (rows or {}).get(table, {}).items():
+                if fields.get(mpk.ADDED_ROW):
+                    found[key] = dict(fields)
+                    continue
+                changes = dict(found.get(key, {}))
+                changes.update(fields)
+                own = game[table].get(key[1:], {})
+                changes = {k: v for k, v in changes.items() if own.get(k) != v}
+                if changes:
+                    found[key] = changes
+                else:
+                    found.pop(key, None)
+            if not found:
+                store.pop(table, None)
+
+    def _ground_offer(self, number, ground) -> Optional[tuple]:
+        """
+        `(grid key, {(x, z, level): {field: value}})` for the tiles a loaded
+        model's ground moved under that aren't there yet, or None: nothing
+        moved, or the grid is one the mod carries whole (not edited here).
+        """
+        if ground is None or not ground.tiles or not ground.grid_file or self.game_dir() is None:
+            return None
+        folder = self.game_dir() / mc.MAP_FOLDER
+        key = mc.grid_key(folder, number, ground.grid_file)
+        carried = {rel.lower() for rel in (getattr(self.state, "other_file_replacements", {}) or {})}
+        if any(f"{mc.MAP_FOLDER}/{name}".lower() in carried
+               for name in mc.grid_files(folder, number, ground.grid_file)):
+            return None
+        try:
+            terrain = mc.read_mesh((folder / ground.grid_file).read_bytes()).terrain
+        except (OSError, mc.MapError):
+            return None
+        game = {(t.x, t.z, t.level): t for t in terrain.tiles} if terrain else {}
+        edits = self.state.map_edits.get(key, {})
+        moving = {}
+        for tile_key, fields in ground.tiles.items():
+            tile = game.get(tile_key)
+            if tile is None:
+                continue
+            now = as_edited(tile, edits.get(tile_key, {}))
+            if any(int(now.get(name)) != value for name, value in fields.items()):
+                moving[tile_key] = fields
+        return (key, moving) if moving else None
+
+    def follow_ground(self) -> None:
+        """The tiles under the loaded model's moved ground go where it did (`ground`)."""
+        if self.ground is None or self.ground[0] != self.number or self.game_dir() is None:
+            return
+        number, key, tiles = self.ground
+        folder = self.game_dir() / mc.MAP_FOLDER
+        try:
+            # A grid's key is the first of the files holding it (`grid_key`).
+            terrain = mc.read_mesh((folder / key).read_bytes()).terrain
+        except (OSError, mc.MapError):
+            terrain = None
+        game = {(t.x, t.z, t.level): t for t in terrain.tiles} if terrain else {}
+        store = self.state.map_edits.setdefault(key, {})
+        for tile_key, fields in tiles.items():
+            tile = game.get(tile_key)
+            if tile is None:
+                continue
+            changes = dict(store.get(tile_key, {}))
+            for name, value in fields.items():
+                if value == _value(tile, name):
+                    changes.pop(name, None)
+                else:
+                    changes[name] = int(value)
+            if changes:
+                store[tile_key] = changes
+            else:
+                store.pop(tile_key, None)
+        if not store:
+            self.state.map_edits.pop(key, None)
+        self.ground = None
+        moved = len(tiles)
+        self._say_look(f"{moved} tile{'s' if moved != 1 else ''} of map {number:03d} follow its model's "
+                       f"ground now. Check them: a tile is whole steps high.", "ok")
+        if self.scene is not None and self.scene.grid_key == key:
+            self._after_edit()
+        else:
+            self._mark_list()
+            self._update_counter()
+            self.edits_changed.emit()
         self._update_look_buttons()
 
     def _package_load_failed(self, message: str) -> None:
@@ -1093,14 +1352,21 @@ class MapEditorPage(QWidget):
         self._say_look("That folder can't be built: " + " ".join(lines[:4]) + more, "danger")
 
     def put_back_look(self) -> None:
-        """Takes this map's model and pictures out of the mod."""
+        """Takes this map's model and textures out of the mod."""
         if self.number is None:
             return
         self.state.other_file_replacements.pop(mpk.mesh_relative_path(self.number), None)
         prefix = mpk.picture_relative_path(self.number, "").lower()
         for rel in [r for r in self.state.texture_edits if r.lower().startswith(prefix)]:
             self.state.texture_edits.pop(rel, None)
-        self._say_look(f"Map {self.number:03d} has the game's model and pictures again.", "ok")
+        store = getattr(self.state, "unmodelled_table_edits", None) or {}
+        for table, found in self.mod_rows(self.number).items():
+            for key in found:
+                store.get(table, {}).pop(key, None)
+            if not store.get(table):
+                store.pop(table, None)
+        self.ground = None
+        self._say_look(f"Map {self.number:03d} has the game's model and textures again.", "ok")
         self.edits_changed.emit()
         self._load()
         self._update_look_buttons()
@@ -1315,10 +1581,14 @@ class MapEditorPage(QWidget):
         if entry is None:
             return []
         out = []
-        if entry.colour:
-            out.append(("Open its picture in Textures", f"{self.scene.picture_folder}/{entry.colour[0]}"))
-        if entry.lighting:
-            out.append(("Open its lighting in Textures", f"{self.scene.picture_folder}/{entry.lighting}"))
+        # A texture group the mod adds has textures the game hasn't, which
+        # the Textures page can't open.
+        game = self.game_dir()
+        for label, name in (("Open its texture in Textures", entry.colour[0] if entry.colour else None),
+                            ("Open its lighting in Textures", entry.lighting)):
+            path = f"{self.scene.picture_folder}/{name}" if name else None
+            if path and (game is None or (game / path).is_file()):
+                out.append((label, path))
         return out
 
     def _view_menu(self, point) -> None:

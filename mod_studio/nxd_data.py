@@ -1418,6 +1418,36 @@ def recover_edits_from_sqlite(vanilla_sqlite: Path, modded_sqlite: Path) -> Reco
     return result
 
 
+#: The columns that address a row, in order. Every table leads with `Key`;
+#: the double keyed ones add `Key2`, and the six triple keyed ones
+#: (`RefinedBgTexture`, `RefinedBgMeshNode`, `RefinedBgSystemTexture`,
+#: `EnhancedBattleEvent`, `EnhancedWorldEvent` and the empty
+#: `DebugRefinedBgTexture`) `Key3` as well. Addressed by `Key` and `Key2`
+#: alone, a triple keyed row was every row sharing them: in the 1.5.2 game,
+#: 656 of `RefinedBgTexture`'s pairs name two or three rows each (a texture
+#: group's colour, lighting and second lighting), and an edit to one of them
+#: was written into all of them.
+KEY_COLUMNS = ("Key", "Key2", "Key3")
+
+#: In `state.unmodelled_table_edits`, a row's fields carrying this (as True)
+#: are a row the mod ADDS: one the game's table may not have. Written with
+#: every field it carries when the table has no row at its key, where an
+#: edit to a row the game no longer has is left out. The Map Editor's new
+#: texture groups and parts are rows like these (`map_package`).
+ADDED_ROW = "(added row)"
+
+
+def key_columns(columns) -> list:
+    """
+    Which of a table's `columns` address a row: its `Key`, `Key2` and `Key3`
+    where it has them, else its first column (what FF16Tools writes as the
+    id). The one rule for every reader and writer here, and for
+    `migration`'s comparisons, so none of them can disagree about a row.
+    """
+    columns = list(columns)
+    return [name for name in KEY_COLUMNS if name in columns] or columns[:1]
+
+
 def list_all_tables(sqlite_path: Path) -> list:
     """
     Every real table in a converted database, in name order.
@@ -1450,12 +1480,10 @@ def table_shape(sqlite_path: Path, table: str) -> dict:
         columns = [row[1] for row in info]
         if not columns:
             return {"columns": [], "keys": [], "rows": 0}
-        keys = [name for name in ("Key", "Key2") if name in columns]
-        if not keys:
-            # Some tables key on their first column instead. Same rule
-            # `write_unmodelled_table_edits` uses, so reads and writes
-            # cannot disagree about what identifies a row.
-            keys = columns[:1]
+        # Some tables key on their first column instead. The rule
+        # `write_unmodelled_table_edits` uses (`key_columns`), so reads and
+        # writes cannot disagree about what identifies a row.
+        keys = key_columns(columns)
         count = con.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
         return {"columns": columns, "keys": keys, "rows": count}
     finally:
@@ -1543,7 +1571,7 @@ def _text_shape(con) -> dict:
             continue
         # The same key rule `table_shape` and `write_unmodelled_table_edits`
         # use, so a hit's key is the one an editor will look the row up by.
-        keys = [n for n in ("Key", "Key2") if n in names] or names[:1]
+        keys = key_columns(names)
         found[table] = (columns, keys)
     return found
 
@@ -1710,6 +1738,10 @@ def recover_unmodelled_edits(vanilla_sqlite: Path, mod_sqlite: Path) -> dict:
     Only tables present in BOTH databases are compared. A table the mod
     ships that vanilla does not have is not an edit, it is a new table, and
     this tool has no way to describe that.
+
+    A row only the mod has comes back as a row the mod adds: its fields
+    (bar its key), marked `ADDED_ROW`. It was skipped once, which dropped
+    the Map Editor's new texture groups and parts from a mod as it opened.
     """
     known = {spec.table(lang) for spec in ALL_NXD_SPECS.values()
              for lang in c.NXD_LANGUAGES}
@@ -1722,10 +1754,14 @@ def recover_unmodelled_edits(vanilla_sqlite: Path, mod_sqlite: Path) -> dict:
             continue
         base = dict(read_any_table(vanilla_sqlite, table))
         theirs = dict(read_any_table(mod_sqlite, table))
+        keys = table_shape(mod_sqlite, table)["keys"]
         changed = {}
         for key, values in theirs.items():
             original = base.get(key)
             if original is None:
+                added = {name: value for name, value in values.items() if name not in keys}
+                added[ADDED_ROW] = True
+                changed[key] = added
                 continue
             differing = {name: value for name, value in values.items()
                          if name in original and original[name] != value}
@@ -1747,8 +1783,13 @@ def write_unmodelled_table_edits(sqlite_path: Path, table: str, edits: dict) -> 
     works for any table the working database happens to hold.
 
     `edits` is {key tuple: {column: value}}. Returns the number of rows
-    actually updated - a caller can compare that against what it asked for
-    to notice rows the update removed.
+    actually updated or added - a caller can compare that against what it
+    asked for to notice rows the update removed.
+
+    A row marked `ADDED_ROW` is added when the table has no row at its key
+    (and updated like any other when it has), and the table is then put
+    back in key order: the game's tables come in that order, and
+    sqlite-to-nxd is handed them as they are.
     """
     if not edits:
         return 0
@@ -1757,27 +1798,52 @@ def write_unmodelled_table_edits(sqlite_path: Path, table: str, edits: dict) -> 
         columns = [row[1] for row in con.execute(f'PRAGMA table_info("{table}")')]
         if not columns:
             return 0
-        key_columns = [name for name in ("Key", "Key2") if name in columns] or columns[:1]
-        updated = 0
+        key_names = key_columns(columns)
+        updated = added = 0
         for key, fields in edits.items():
             values = [value for name, value in fields.items() if name in columns]
             names = [name for name in fields if name in columns]
-            if not names:
-                continue
-            assignments = ", ".join(f'"{name}" = ?' for name in names)
-            where = " AND ".join(f'"{name}" = ?' for name in key_columns)
             key_values = list(key) if isinstance(key, tuple) else [key]
-            if len(key_values) != len(key_columns):
+            if len(key_values) != len(key_names):
                 continue
-            cursor = con.execute(
-                f'UPDATE "{table}" SET {assignments} WHERE {where}',
-                values + key_values,
-            )
-            updated += cursor.rowcount
+            if names:
+                assignments = ", ".join(f'"{name}" = ?' for name in names)
+                where = " AND ".join(f'"{name}" = ?' for name in key_names)
+                cursor = con.execute(
+                    f'UPDATE "{table}" SET {assignments} WHERE {where}',
+                    values + key_values,
+                )
+                if cursor.rowcount:
+                    updated += cursor.rowcount
+                    continue
+            if not fields.get(ADDED_ROW):
+                continue
+            where = " AND ".join(f'"{name}" = ?' for name in key_names)
+            if con.execute(f'SELECT 1 FROM "{table}" WHERE {where} LIMIT 1',
+                           key_values).fetchone():
+                updated += 1                 # there, with nothing to change
+                continue
+            given = [name for name in names if name not in key_names]
+            listed = ", ".join(f'"{name}"' for name in key_names + given)
+            marks = ", ".join("?" for _ in key_names + given)
+            con.execute(f'INSERT INTO "{table}" ({listed}) VALUES ({marks})',
+                        key_values + [fields[name] for name in given])
+            added += 1
+        if added:
+            _resort_table(con, table, key_names)
         con.commit()
-        return updated
+        return updated + added
     finally:
         con.close()
+
+
+def _resort_table(con, table: str, keys: list) -> None:
+    """Rewrites a table in its keys' order, as the game's own tables are."""
+    order = ", ".join(f'"{name}"' for name in keys)
+    con.execute(f'CREATE TEMP TABLE "_resort" AS SELECT * FROM "{table}" ORDER BY {order}')
+    con.execute(f'DELETE FROM "{table}"')
+    con.execute(f'INSERT INTO "{table}" SELECT * FROM "_resort"')
+    con.execute('DROP TABLE "_resort"')
 
 
 def import_tables_from(target_sqlite: Path, source_sqlite: Path, tables: list) -> list:

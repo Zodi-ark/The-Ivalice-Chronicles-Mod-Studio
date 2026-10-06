@@ -672,11 +672,18 @@ class MainWindow(QMainWindow):
         # A list in the shell is a second place that has to be edited when
         # a page changes, and the twelve-entry version of exactly that has
         # already been wrong three times in this project. A page that says
-        # nothing gets all three, so adding a page needs no change here.
+        # nothing gets all three if it listens to them (it owns a
+        # `view_toggles` copy, which is how a click reaches it) and none
+        # if it doesn't: Textures, UI Layouts and Sounds showed all three,
+        # and a click on them changed nothing there.
         page = self.tab_stack.widget(index)
         relevant = getattr(page, "view_toggles_used", None)
-        self.view_toggles.show_only(*(relevant() if callable(relevant)
-                                      else (True, True, True)))
+        if callable(relevant):
+            used = relevant()
+        else:
+            listens = hasattr(page, "view_toggles")
+            used = (listens, listens, listens)
+        self.view_toggles.show_only(*used)
         edit_index = STEPS.index("Edit Game Data")
         if self.stack.currentIndex() != edit_index:
             self._select(edit_index)

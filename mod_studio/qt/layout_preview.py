@@ -24,6 +24,20 @@ What the preview cannot know, and does not pretend to:
 - **Masks** are not applied, and Bezier, ellipse and counter boxes are not
   drawn; they are still listed and selectable.
 
+**A piece placed at another size** (`fitted_sizes`). 868 of the 3,516
+references in the game's 252 layouts place a component at a size not its
+own: the common window, 600 by 600, at 800 by 584 on the BGM screen, its
+tab buttons, 280 wide, at 396. The game lays the piece out at the
+reference's size - Zodi's screenshot of that screen has the window 800 by
+584 and each tab's highlight and title across 396 - by stretching what
+spans the piece: a box from its left edge (or before) to its right (or
+past) grows with its width, one from its top to its bottom with its
+height, and a group that grows lays its own boxes out the same way. Boxes
+that don't span it keep their place and size. The files hold no anchoring
+for this, so what the game does with a box at one edge only is not known;
+it is drawn where the file puts it. Drawn at the component's own size, as
+before 5 October, the window behind the BGM list was too small for it.
+
 The screen is drawn in one of its states: each component's `HomePosition`
 keys, then the chosen timeline's (usually `Show`) at their last frame -
 position, scale, opacity and colour. That is close to how a screen looks
@@ -371,6 +385,35 @@ _TEXT_H = {1: Qt.AlignHCenter, 2: Qt.AlignRight}
 _TEXT_V = {1: Qt.AlignVCenter, 2: Qt.AlignBottom}
 
 
+def fitted_sizes(boxes, state: dict, frame: tuple, size: tuple, out: Optional[dict] = None) -> dict:
+    """
+    `{box key: (width, height)}` for the boxes of a piece laid out at `size`
+    rather than its own `frame` (see the module's notes): each box spanning
+    the frame across grows or shrinks with its width, each spanning it down
+    with its height, and a group that changes size lays its own boxes out
+    the same way, in its own frame. Sizes as `state` (the drawn state's
+    keys) leaves them.
+    """
+    out = {} if out is None else out
+    fw, fh = frame
+    dw, dh = size[0] - fw, size[1] - fh
+    if not (dw or dh) or fw <= 0 or fh <= 0:
+        return out
+    for box in boxes:
+        s = state.get(box.name, {})
+        x, y = s.get("origin", box.origin)
+        w, h = s.get("size", box.size)
+        grow_w = dw if x <= 0 and x + w >= fw else 0
+        grow_h = dh if y <= 0 and y + h >= fh else 0
+        if not (grow_w or grow_h):
+            continue
+        new = (max(0, w + grow_w), max(0, h + grow_h))
+        out[box.key] = new
+        if box.kind == "Layer":
+            fitted_sizes(box.children, state, (w, h), new, out)
+    return out
+
+
 class _Painter:
     """One drawing of one screen. See `draw_layout`."""
 
@@ -403,8 +446,10 @@ class _Painter:
     def component(self, p: QPainter, file_rel: str, lay: uib.Layout, c: uib.Component,
                   transform: QTransform, opacity: float, owner: Optional[str],
                   depth: int, record: bool = True, paint: bool = True,
-                  tint: tuple = _WHITE) -> None:
+                  tint: tuple = _WHITE, size: Optional[tuple] = None) -> None:
+        """A component drawn at `transform`; at `size`, the placing box's, laid out to it."""
         state = resting_state(c, self.timeline)
+        sizes = fitted_sizes(c.boxes, state, tuple(c.size), tuple(size)) if size else {}
         mode = _COMPOSITION.get(c.blend)
         self._effects += c.blend != 0
         try:
@@ -412,7 +457,7 @@ class _Painter:
                 layer, lp = self._layer()
                 try:
                     self.boxes(lp, file_rel, lay, c.boxes, state, transform, opacity, owner,
-                               depth, record, tint=tint)
+                               depth, record, tint=tint, sizes=sizes)
                 finally:
                     # Ended even when the drawing stops part-way: a layer
                     # thrown away while its painter is still open is freed
@@ -421,12 +466,12 @@ class _Painter:
                 self._composite(p, layer, mode)
             else:
                 self.boxes(p, file_rel, lay, c.boxes, state, transform, opacity, owner, depth,
-                           record, paint, tint)
+                           record, paint, tint, sizes=sizes)
         finally:
             self._effects -= c.blend != 0
 
     def boxes(self, p, file_rel, lay, boxes, state, parent, parent_opacity, owner, depth,
-              record, paint=True, tint=_WHITE):
+              record, paint=True, tint=_WHITE, sizes=None):
         """
         One list of sibling boxes. A Mask box hides the siblings listed after
         it (up to the next mask) outside its shape; that is how the file
@@ -446,13 +491,14 @@ class _Painter:
         runs.append((mask, current))
         # The first box in a list is drawn in front, so drawing starts at
         # the back. Measured on the tavern: its background is listed last.
+        sizes = sizes or {}
         for mask, run in reversed(runs):
             if mask is None:
                 for box in reversed(run):
                     self.box(p, file_rel, lay, box, state, parent, parent_opacity, owner, depth,
-                             record, paint, tint)
+                             record, paint, tint, sizes)
                 continue
-            m_transform, m_alpha, m_rect = self.geometry(mask, state, parent, parent_opacity)
+            m_transform, m_alpha, m_rect = self.geometry(mask, state, parent, parent_opacity, sizes)
             if record:
                 self.result.boxes.append(DrawnBox(mask.key, file_rel, mask.kind, m_rect,
                                                   False, owner or mask.key, parent=parent))
@@ -461,19 +507,19 @@ class _Painter:
             if not paint:
                 for box in reversed(run):
                     self.box(p, file_rel, lay, box, state, parent, parent_opacity, owner, depth,
-                             record, False)
+                             record, False, sizes=sizes)
                 continue
             layer, lp = self._layer()
             try:
                 for box in reversed(run):
                     self.box(lp, file_rel, lay, box, state, parent, parent_opacity, owner, depth,
-                             record, tint=tint)
+                             record, tint=tint, sizes=sizes)
             finally:
                 lp.end()
             shape, sp = self._layer()
             try:
                 self.mask_shape(sp, file_rel, lay, mask, m_transform, owner, depth,
-                                self.size_of(mask, state))
+                                self.size_of(mask, state, sizes))
             finally:
                 sp.end()
             cut = QPainter(layer)
@@ -497,7 +543,7 @@ class _Painter:
             p.restore()
         elif mask.mask_name in lay.components and depth < _DEPTH_LIMIT:
             self.component(p, file_rel, lay, lay.components[mask.mask_name], transform,
-                           1.0, owner, depth + 1, record=False)
+                           1.0, owner, depth + 1, record=False, size=size)
         else:
             p.save()
             p.setTransform(transform)
@@ -505,16 +551,26 @@ class _Painter:
             p.restore()
 
     @staticmethod
-    def size_of(box, state) -> tuple:
-        """The box's size in this state: a size key's, else the file's."""
-        return state.get(box.name, {}).get("size", box.size)
+    def size_of(box, state, sizes=None) -> tuple:
+        """
+        The box's size in this state: as the piece it is in is laid out
+        (`fitted_sizes`), else a size key's, else the file's.
+        """
+        fitted = (sizes or {}).get(box.key)
+        return fitted if fitted is not None else state.get(box.name, {}).get("size", box.size)
 
     @staticmethod
-    def geometry(box, state, parent: QTransform, parent_opacity: float) -> tuple:
+    def geometry(box, state, parent: QTransform, parent_opacity: float, sizes=None) -> tuple:
         s = state.get(box.name, {})
         ox, oy = s.get("origin", box.origin)
         sx, sy = s.get("scale", box.scale)
         ax, ay = box.anchor
+        fitted = (sizes or {}).get(box.key)
+        if fitted is not None:
+            # Its pivot keeps its place in it: half way stays half way.
+            w0, h0 = s.get("size", box.size)
+            ax = ax * fitted[0] / w0 if w0 else ax
+            ay = ay * fitted[1] / h0 if h0 else ay
         local = QTransform()
         local.translate(ox + ax, oy + ay)
         if box.rotation:
@@ -526,22 +582,22 @@ class _Painter:
         if own != own:                        # NaN in a file reads as hidden
             own = 0.0
         alpha = parent_opacity * max(0.0, min(1.0, own))
-        w, h = s.get("size", box.size)
+        w, h = fitted if fitted is not None else s.get("size", box.size)
         rect = transform.mapRect(QRectF(0, 0, w, h))
         return transform, alpha, rect
 
     def box(self, p, file_rel, lay, box, state, parent, parent_opacity, owner, depth, record,
-            paint=True, tint=_WHITE) -> None:
+            paint=True, tint=_WHITE, sizes=None) -> None:
         if self.pictures.cancelled():
             raise DrawCancelled()
         if _is_blur(box.name) or (box.kind == "Reference" and _is_blur(box.reference_name)):
             return
-        transform, alpha, rect = self.geometry(box, state, parent, parent_opacity)
+        transform, alpha, rect = self.geometry(box, state, parent, parent_opacity, sizes)
         s = state.get(box.name, {})
         # A colour key's four bytes and the box's own are in the same order
         # (red, green, blue, alpha), so either is used as it is.
         colour = _times(tint, s.get("colour", box.colour))
-        w, h = self.size_of(box, state)
+        w, h = self.size_of(box, state, sizes)
         this_owner = owner or box.key
         visible = paint and alpha > 0.01
         if record:
@@ -553,15 +609,15 @@ class _Painter:
             # can be outlined when picked from the list.
             if record and box.kind == "Layer":
                 self.boxes(p, file_rel, lay, box.children, state, transform, 0.0, owner,
-                           depth, record, False)
+                           depth, record, False, sizes=sizes)
             elif record and box.kind == "Reference" and not box.reference_file \
                     and box.reference_name in lay.components and depth < _DEPTH_LIMIT:
                 self.component(p, file_rel, lay, lay.components[box.reference_name],
-                               transform, 0.0, owner, depth + 1, record, False)
+                               transform, 0.0, owner, depth + 1, record, False, size=(w, h))
             return
         if box.kind == "Layer":
             self.boxes(p, file_rel, lay, box.children, state, transform, alpha, owner, depth, record,
-                       tint=colour)
+                       tint=colour, sizes=sizes)
         elif box.kind == "Reference":
             if depth >= _DEPTH_LIMIT:
                 return
@@ -577,10 +633,10 @@ class _Painter:
                         self.result.empty_slots.append(box.key)
                     return
                 self.component(p, other_rel, other, target, transform, alpha,
-                               this_owner, depth + 1, record, tint=colour)
+                               this_owner, depth + 1, record, tint=colour, size=(w, h))
             elif box.reference_name in lay.components:
                 self.component(p, file_rel, lay, lay.components[box.reference_name],
-                               transform, alpha, owner, depth + 1, record, tint=colour)
+                               transform, alpha, owner, depth + 1, record, tint=colour, size=(w, h))
             elif record:
                 self.result.empty_slots.append(box.key)
         elif box.kind in ("Image", "Ninegrid"):

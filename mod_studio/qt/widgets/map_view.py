@@ -15,6 +15,11 @@ and painted here, turned with the mouse, with the battle grid over it.
 - **What moves in the map plays on a loop**: the view looks for a new
   frame every `ANIMATION_TICK` milliseconds while it is on screen, and
   draws again only when there is one.
+- **A page can draw over it and take a drag** (Treasure Hunter): `overlay`
+  paints on the picture after the map, `overlay_moves` repaints it while
+  it moves (the picture underneath isn't drawn again), and `grabber` may
+  take a press for itself - to drag a treasure tile rather than turn the
+  map.
 
 A drawing takes a few milliseconds on a graphics card and tens on the
 software renderer, so they are asked for with `schedule()` and made once
@@ -48,6 +53,8 @@ ZOOM_STEP, ZOOM_MIN, ZOOM_MAX = 1.15, 0.35, 14.0
 CARD_RIGHT, CARD_ABOVE = 16, 4
 #: How often the view looks whether something in the map has a new frame, in milliseconds.
 ANIMATION_TICK = 16
+#: How often a moving overlay is painted again, in milliseconds.
+OVERLAY_TICK = 33
 
 
 def _colour(name: str, alpha: int = 255) -> QColor:
@@ -101,6 +108,18 @@ class MapView(QWidget):
         self._ticker = QTimer(self)
         self._ticker.setInterval(ANIMATION_TICK)
         self._ticker.timeout.connect(self._tick)
+        #: `overlay(painter)`: drawn over the map, in the widget's pixels.
+        self.overlay = None
+        #: Whether the overlay moves by itself (`overlay_ticker` repaints it).
+        self.overlay_moves = False
+        self.overlay_ticker = QTimer(self)
+        self.overlay_ticker.setInterval(OVERLAY_TICK)
+        self.overlay_ticker.timeout.connect(self._overlay_tick)
+        #: An object with `press(point) -> bool`, `move(point)` and
+        #: `release(point, moved)`: a left press it says True to is its drag,
+        #: not the map's turn.
+        self.grabber = None
+        self._grabbed = False
         self.setMouseTracking(True)
         self.setMinimumSize(320, 240)
         self.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -194,6 +213,7 @@ class MapView(QWidget):
     def release(self) -> None:
         """Frees what the graphics card holds for this picture."""
         self._ticker.stop()
+        self.overlay_ticker.stop()
         self.renderer.close()
 
     # -- what moves ---------------------------------------------------------------
@@ -213,6 +233,23 @@ class MapView(QWidget):
             self._ticker.start()
         elif not wanted and self._ticker.isActive():
             self._ticker.stop()
+        self.update_overlay_ticker()
+
+    def update_overlay_ticker(self) -> None:
+        """Repaints a moving overlay while it is on screen, and not otherwise."""
+        wanted = bool(self.overlay_moves and self.overlay is not None and self.isVisible()
+                      and self.scene is not None)
+        if wanted and not self.overlay_ticker.isActive():
+            self.overlay_ticker.start()
+        elif not wanted and self.overlay_ticker.isActive():
+            self.overlay_ticker.stop()
+
+    def _overlay_tick(self) -> None:
+        window = self.window()
+        if not self.isVisible() or (window is not None and window.isMinimized()):
+            self.update_overlay_ticker()
+            return
+        self.update()
 
     def _tick(self) -> None:
         if not self.isVisible():
@@ -251,6 +288,10 @@ class MapView(QWidget):
             # Instead of a map: in the middle.
             p.drawText(area, int(Qt.TextWordWrap) | int(Qt.AlignCenter), error or self.message)
         else:
+            if self.overlay is not None and self.image is not None and self.scene is not None:
+                p.save()
+                self.overlay(p)
+                p.restore()
             if self.message:
                 # Over a map: in its corner, out of the way.
                 p.drawText(area, int(Qt.TextWordWrap) | int(Qt.AlignLeft | Qt.AlignTop), self.message)
@@ -332,6 +373,9 @@ class MapView(QWidget):
     def mousePressEvent(self, event):                             # noqa: N802
         self._press = (event.position(), event.button(), event.modifiers(), self.camera.copy())
         self._dragging = False
+        self._grabbed = bool(self.grabber is not None and event.button() == Qt.LeftButton
+                             and not event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)
+                             and self.grabber.press(event.position()))
 
     def mouseMoveEvent(self, event):                              # noqa: N802
         point = event.position()
@@ -342,6 +386,11 @@ class MapView(QWidget):
         start, button, modifiers, camera = self._press
         dx, dy = point.x() - start.x(), point.y() - start.y()
         if not self._dragging and math.hypot(dx, dy) < DRAG_START:
+            return
+        if self._grabbed:
+            self._dragging = True
+            self._set_hover(self.tile_at(point))
+            self.grabber.move(point)
             return
         moving = button == Qt.MiddleButton or (button == Qt.LeftButton
                                                and modifiers & Qt.ShiftModifier)
@@ -363,6 +412,12 @@ class MapView(QWidget):
             return
         _start, button, modifiers, _camera = self._press
         self._press = None
+        if self._grabbed:
+            self._grabbed = False
+            moved, self._dragging = self._dragging, False
+            self.grabber.release(event.position(), moved)
+            self._set_hover(self.tile_at(event.position()))
+            return
         if self._dragging:
             self._dragging = False
             self._set_hover(self.tile_at(event.position()))

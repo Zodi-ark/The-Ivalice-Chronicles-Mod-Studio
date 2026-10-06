@@ -1,6 +1,6 @@
 """
 A map package's enhanced look drawn from the game's four camera corners, in
-one picture: for a person or an AI coworker checking an edit without Mod
+one image: for a person or an AI coworker checking an edit without Mod
 Studio's window. Here rather than in `map_package` because it draws with Qt
 and OpenGL, and the engine imports neither (`dev/test_engine_boundary.py`).
 
@@ -28,7 +28,7 @@ def preview(folder, game_dir, out, size=(640, 480)) -> Path:
     built = mpk.build(folder)
     mesh_file = mpk.write_built(folder, built)
     scene = ms.build_enhanced(Path(game_dir), built.number, mesh_file=mesh_file,
-                              picture_files=built.pictures)
+                              picture_files=built.pictures, rows=built.table_rows)
     renderer = mr.MapRenderer()
     if not renderer.ensure_context():
         raise mpk.PackageError(f"can't draw here: {renderer.error}")
@@ -50,7 +50,7 @@ def main(argv=None) -> int:
                                      description="Draw a map package's map from the four camera corners.")
     parser.add_argument("folder")
     parser.add_argument("--game", required=True, help="the unpacked game folder")
-    parser.add_argument("--out", required=True, help="the picture to write (.png)")
+    parser.add_argument("--out", required=True, help="the image to write (.png)")
     args = parser.parse_args(argv)
     try:
         print(f"Wrote {preview(args.folder, args.game, args.out)}")

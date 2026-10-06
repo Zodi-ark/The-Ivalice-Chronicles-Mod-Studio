@@ -25,6 +25,15 @@ drawing the next map in the enhanced look read through them. Mesa ignores
 an array the shader doesn't use; Zodi's Windows driver crashed on it
 ("access violation" in `glDrawArrays`, switching from Classic to Enhanced
 and between enhanced maps).
+
+**Back faces are not drawn** (`Scene.front`), and **see through pictures
+are drawn in two passes** (`render`): first every polygon where its
+picture is all but solid (90% or more), writing depth like any solid one,
+then the see through parts blended over the result, and the parts the
+game blends without hiding anything (shadows) - in the game's order. The first
+build blended a whole group if any pixel of its picture was see through,
+writing no depth, so on 009, whose map picture has a few such pixels,
+the water's ripples showed through the bridge over them.
 """
 from __future__ import annotations
 
@@ -51,6 +60,10 @@ UV_ANIMATIONS = 32
 #: The passes a scene is drawn in: its solid polygons where they show fully,
 #: its see-through ones, and its solid ones fading in or out.
 SOLID, SEE_THROUGH, FADING = 0, 1, 2
+#: How much of an enhanced picture a draw takes: where it is all but solid
+#: (90% or more, drawn solid), only its see through parts, or all of it.
+SOLID_PART, SOFT_EDGE, ALL = 0, 1, 2
+GL_CULL_FACE, GL_BACK, GL_CW, GL_CCW = 0x0B44, 0x0405, 0x0900, 0x0901
 
 # How much of a polygon shows from the camera's corner (`map_scene.shown`),
 # and whether this pass draws it: SOLID the whole, SEE_THROUGH anything
@@ -75,12 +88,17 @@ void main() { vuv = uv; vrender = render; gl_Position = mvp * vec4(pos, 1.0); }"
 ENHANCED_FS = """#version 330 core
 in vec2 vuv; flat in float vrender;
 uniform sampler2D colourMap; uniform sampler2D lightMap; uniform int hasLight;
-uniform float gain; out vec4 frag;""" + _SHOWN + """
+uniform float gain; uniform vec2 uvScale; uniform int alphaMode; out vec4 frag;""" + _SHOWN + """
 void main() {
   float s = shownBy(vrender);
   if (!drawnIn(s)) discard;
-  vec4 c = texture(colourMap, vuv);
-  if (c.a < 0.02) discard;
+  // The colour picture repeats across the UVs; the lighting covers them once.
+  vec4 c = texture(colourMap, vuv * uvScale);
+  // SOLID_PART: where the picture is all but solid, as solid; SOFT_EDGE:
+  // only where it is see through; ALL: wherever it shows.
+  if (alphaMode == 0) { if (c.a < 0.9) discard; c.a = 1.0; }
+  else if (alphaMode == 1) { if (c.a >= 0.9 || c.a < 0.02) discard; }
+  else if (c.a < 0.02) discard;
   vec3 l = hasLight == 1 ? texture(lightMap, vuv).rgb * gain : vec3(1.0);
   frag = vec4(min(c.rgb * l, vec3(1.0)), c.a * s);
 }"""
@@ -240,7 +258,8 @@ class MapRenderer:
             vbo = self._buffer(batch.floats)
             colours, light = [], None
             if batch.kind == ms.ENHANCED:
-                colours = [self._texture(image, mipmaps=True)
+                repeats = tuple(batch.repeat) != (1.0, 1.0)
+                colours = [self._texture(image, mipmaps=True, repeat=repeats)
                            for image in (batch.frames or [batch.colour])]
                 light = self._texture(batch.light, mipmaps=True) if batch.light else None
             self._uploaded.append(_Upload(batch, vbo, colours, light))
@@ -262,7 +281,7 @@ class MapRenderer:
         vbo.release()
         return vbo
 
-    def _texture(self, image, mipmaps=True, nearest=False):
+    def _texture(self, image, mipmaps=True, nearest=False, repeat=False):
         from PySide6.QtOpenGL import QOpenGLTexture
         rgba = image.convert("RGBA")
         q = QImage(rgba.tobytes(), rgba.width, rgba.height, 4 * rgba.width,
@@ -276,7 +295,7 @@ class MapRenderer:
             texture.setMinificationFilter(QOpenGLTexture.LinearMipMapLinear if mipmaps
                                           else QOpenGLTexture.Linear)
             texture.setMagnificationFilter(QOpenGLTexture.Linear)
-        texture.setWrapMode(QOpenGLTexture.ClampToEdge)
+        texture.setWrapMode(QOpenGLTexture.Repeat if repeat else QOpenGLTexture.ClampToEdge)
         return texture
 
     def _release(self) -> None:
@@ -330,7 +349,7 @@ class MapRenderer:
         """The frame each moving thing shows at `seconds`: a picture needs drawing again when it changes."""
         if self.scene is None:
             return ()
-        out = [ms.enhanced_frame(len(up.colours), seconds) for up in self._uploaded
+        out = [ms.batch_frame(up.batch, len(up.colours), seconds) for up in self._uploaded
                if len(up.colours) > 1]
         out += [ms.frame_at(len(a.frames), a.duration, seconds, a.back_and_forth)
                 for a in self.scene.uv_animations]
@@ -416,18 +435,28 @@ class MapRenderer:
             proj, view = self.matrices(camera, width, height)
             mvp = proj * view
             weights = ms.corner_weights(camera.yaw)
-            solid = [u for u in self._uploaded if not u.batch.see_through]
-            clear = [u for u in self._uploaded if u.batch.see_through]
-            for up in solid:
-                self._draw_batch(up, mvp, seconds, weights, SOLID)
-            # Blended, over what is behind them and under what is in front.
+            drawn = [u for u in self._uploaded if self.in_view(u.batch, camera)]
+            # Only the side of a polygon its corners go round the right way.
+            gl.glEnable(GL_CULL_FACE)
+            gl.glCullFace(GL_BACK)
+            gl.glFrontFace(GL_CW if self.scene.front == "cw" else GL_CCW)
+            # Every polygon where its picture is solid enough, writing depth...
+            for up in drawn:
+                if not up.batch.overlay:
+                    self._draw_batch(up, mvp, seconds, weights, SOLID, SOLID_PART)
+            # ...then, writing none, the soft edges of see through pictures
+            # and what the game blends over the map, in the game's order.
             gl.glDepthMask(False)
-            for up in clear:
-                self._draw_batch(up, mvp, seconds, weights, SEE_THROUGH)
+            for up in sorted(drawn, key=lambda u: -u.batch.order):
+                if up.batch.overlay:
+                    self._draw_batch(up, mvp, seconds, weights, SOLID, ALL)
+                elif up.batch.see_through:
+                    self._draw_batch(up, mvp, seconds, weights, SOLID, SOFT_EDGE)
             if any(0.0 < w < 1.0 for w in weights):
-                for up in solid:
-                    self._draw_batch(up, mvp, seconds, weights, FADING)
+                for up in drawn:
+                    self._draw_batch(up, mvp, seconds, weights, FADING, ALL)
             gl.glDepthMask(True)
+            gl.glDisable(GL_CULL_FACE)
             if show_grid and self._grid:
                 flat = self.programs["flat"]
                 flat.bind()
@@ -448,7 +477,18 @@ class MapRenderer:
         self.fbo.release()
         return self.fbo.toImage()
 
-    def _draw_batch(self, up: _Upload, mvp, seconds: float, weights: tuple, pass_: int) -> None:
+    @staticmethod
+    def in_view(batch, camera: Camera) -> bool:
+        """
+        Whether a batch is drawn from where the camera is: the parts for the
+        game's top down view only from high above ("From above"), the parts
+        for the side views only from anywhere else.
+        """
+        top = camera.pitch >= ms.TOP_VIEW_PITCH
+        return batch.view == "both" or (batch.view == "top") == top
+
+    def _draw_batch(self, up: _Upload, mvp, seconds: float, weights: tuple, pass_: int,
+                    alpha: int = SOLID_PART) -> None:
         batch = up.batch
         if batch.kind == ms.ENHANCED:
             p = self.programs["enhanced"]
@@ -457,7 +497,9 @@ class MapRenderer:
             p.setUniformValue1f("gain", 2.0)
             p.setUniformValue1i("colourMap", 0)
             p.setUniformValue1i("lightMap", 1)
-            up.colours[ms.enhanced_frame(len(up.colours), seconds)].bind(0)
+            p.setUniformValue("uvScale", QVector2D(*batch.repeat))
+            p.setUniformValue1i("alphaMode", alpha)
+            up.colours[ms.batch_frame(batch, len(up.colours), seconds)].bind(0)
             # Unit 1 always holds a picture of this map: without a lighting
             # picture, the colour one, which the shader then doesn't read.
             (up.light if up.light is not None else up.colours[0]).bind(1)
@@ -578,8 +620,13 @@ class MapRenderer:
             return None
         origin, direction = ray
         weights = ms.corner_weights(camera.yaw)
+        # The side a polygon is seen from: its corners go round anticlockwise
+        # on the picture for "ccw", so its normal points back along the ray.
+        facing = -1.0 if self.scene.front == "cw" else 1.0
         best = None
         for batch in self.scene.batches:
+            if not self.in_view(batch, camera):
+                continue
             stride = sum(batch.layout)
             f = batch.floats
             for start in range(0, len(f) - 3 * stride + 1, 3 * stride):
@@ -588,10 +635,20 @@ class MapRenderer:
                 a = (f[start], f[start + 1], f[start + 2])
                 b = (f[start + stride], f[start + stride + 1], f[start + stride + 2])
                 c = (f[start + 2 * stride], f[start + 2 * stride + 1], f[start + 2 * stride + 2])
+                if facing * _turn(a, b, c, direction) <= 0:
+                    continue
                 hit = ray_triangle(origin, direction, a, b, c)
                 if hit is not None and (best is None or hit < best[0]):
                     best = (hit, batch)
         return best[1] if best else None
+
+
+def _turn(a, b, c, d) -> float:
+    """Positive when triangle a b c faces back along direction `d`: its corners go anticlockwise as seen."""
+    e1 = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    e2 = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+    n = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+    return -(n[0] * d[0] + n[1] * d[1] + n[2] * d[2])
 
 
 def ray_triangle(o, d, a, b, c) -> Optional[float]:

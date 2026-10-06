@@ -38,10 +38,8 @@ from ..widgets.actions import (
     set_empty_state, edit_counter_text)
 from ..widgets.field_rows import (
     ChoiceFieldRow,
-    DropdownFieldRow,
     CollapsibleSection, FlagFieldPanel, NumericFieldRow, split_words,
 )
-from ..widgets.column_form import ColumnFormBody
 from ..widgets.form_scroll import FormScrollArea
 from ..widgets.visible_refresh import RefreshesWhenVisible
 
@@ -53,12 +51,6 @@ WIDE_RANGE = (0, 65535)
 WIDE_FIELDS = {"AdditionalDataId", "RareItemId", "CommonItemId", "Price",
                "ItemNameTextUIId", "DescriptionTextUIId"}
 
-
-# Where and what before the trap, which is the order somebody fills a
-# treasure tile in. `MAPTRAP_SLOT_FIELD_LABELS` has Trap third, between the
-# coordinates and the items - correct as a description of the columns,
-# wrong as a reading order.
-SLOT_FIELD_ORDER = ["X", "Y", "RareItemId", "CommonItemId", "TrapFlags"]
 
 
 def _range_for(field_name: str) -> tuple:
@@ -171,32 +163,6 @@ USAGE_LIST_LIMIT = 12
 # about what the row does: every item defaults to it, and what it means is
 # that the item grants no equip bonus at all.
 ROW_NAME_OVERRIDES = {"item_equip_bonus": {0: "No bonus"}}
-
-#: The narrowest a treasure-tile column may be before the layout drops to
-#: fewer columns.
-#:
-#: A tile holds an X and a Y spin box, two item dropdowns and a three-column
-#: flag grid, and the flag grid is what sets the floor - the trap names run
-#: to "Sleeping Gas" and "Steel Needle" across three columns. Measured
-#: against the tile body's own size hint rather than guessed; see
-#: `test_qt_table_editor`, which asserts the tiles actually reflow and that
-#: nothing is clipped at the 1100 minimum.
-TILE_COLUMN_WIDTH = 460
-
-#: The narrowest a tile's item dropdown may be.
-#:
-#: Inside a hugged tile column the combo fell back to `DropdownFieldRow`'s
-#: 160px floor while its widest entry - "000 - Featherweave Cloak" - needs
-#: 210px, so item names were clipped. Reported from real use.
-#:
-#: 210, which is that measurement. It was 240 first, copied from Job
-#: Commands' `SLOT_COMBO_WIDTH` on the "same job, same number" argument -
-#: and that put the whole row at 470px inside the 454px a tile gets at the
-#: 1100 minimum, trading a clipped name for a clipped row. Copying a
-#: sibling's number is not the same as measuring your own (rule 19); the
-#: sibling's combo holds ability names, which are longer.
-TILE_COMBO_WIDTH = 210
-
 
 #: How wide the row list is.
 #:
@@ -955,6 +921,8 @@ class TableEditorPage(RefreshesWhenVisible, QWidget):
         left.addWidget(self.search)
         self.list = QListWidget()
         self.list.setFixedWidth(LIST_WIDTH)
+        # Rows alternate dark and light, as the Map Editor's map list does.
+        self.list.setAlternatingRowColors(True)
         self.list.currentItemChanged.connect(self._on_selection)
         left.addWidget(self.list, 1)
         split.addLayout(left)
@@ -1055,111 +1023,9 @@ class TableEditorPage(RefreshesWhenVisible, QWidget):
             plain_column.addWidget(row)
 
         self.item_dropdowns = []
-        if self.table_key == "map_trap":
-            # Treasure Hunter is four treasure slots, not twenty loose
-            # fields.
-            #
-            # The generic builder lays out `field_order` flat and puts every
-            # flag field in its own section at the bottom, which for this
-            # table reads `X1 Y1 Rare Item Id1 Common Item Id1 X2 Y2 ...`
-            # followed by `Trap Flags1` .. `Trap Flags4` - so deciding what
-            # treasure sits on one tile means reading five fields scattered
-            # across two parts of the page. The Tkinter tab groups each slot
-            # and is much easier to follow.
-            #
-            # Driven by `MAPTRAP_SLOTS` and `MAPTRAP_SLOT_FIELD_LABELS`, so
-            # a fifth slot or a renamed field arrives from the engine
-            # without this file changing.
-            self.sections = []
-            self.tiles = []
-            self.tile_headings = []
-            for slot in c.MAPTRAP_SLOTS:
-                body = QWidget()
-                body_column = QVBoxLayout(body)
-                body_column.setContentsMargins(0, 0, 0, 0)
-                body_column.setSpacing(2)
-                # Where and what first, then the trap. The engine's dict
-                # order puts Trap third, between the coordinates and the
-                # items, which splits "what treasure is here" in half.
-                ordered = sorted(
-                    c.MAPTRAP_SLOT_FIELD_LABELS.items(),
-                    key=lambda pair: SLOT_FIELD_ORDER.index(pair[0])
-                    if pair[0] in SLOT_FIELD_ORDER else len(SLOT_FIELD_ORDER))
-                for base, label in ordered:
-                    field_name = f"{base}{slot}"
-                    choices = flag_choices(field_name, self.spec.entry_tag)
-                    if choices:
-                        widget = FlagFieldPanel(
-                            field_name, label,
-                            _groups_for(field_name, choices), columns=3)
-                    elif base in ("RareItemId", "CommonItemId"):
-                        # A dropdown of item NAMES.
-                        #
-                        # These were spin boxes, so choosing what a tile
-                        # gives you meant knowing that 47 is a Mythril Sword.
-                        # The Tkinter tab shows names and so does every other
-                        # id field in this interface.
-                        widget = DropdownFieldRow(field_name, label)
-                        # Wide enough for the names it holds. MEASURED: the
-                        # combo rendered at its 160px floor inside a hugged
-                        # tile column while its widest entry - "000 -
-                        # Featherweave Cloak" - needs 210px, so item names
-                        # were being cut off. Reported from real use.
-                        #
-                        # See TILE_COMBO_WIDTH: 210 is that measurement, and
-                        # 240 copied from Job Commands did not fit at 1100.
-                        widget.combo.setMinimumWidth(TILE_COMBO_WIDTH)
-                        widget.set_choices(self._item_choices())
-                        self.item_dropdowns.append(widget)
-                    else:
-                        low, high = _range_for(field_name)
-                        widget = NumericFieldRow(field_name, label, low, high)
-                    widget.edited.connect(self._on_field_edited)
-                    self.rows[field_name] = widget
-                    body_column.addWidget(widget)
-                # NO collapsible wrapper. The data is always exposed.
-                #
-                # Three of the four tiles used to start collapsed, on the
-                # reasoning that a map usually has treasure in one or two.
-                # That reasoning was about VERTICAL room and stopped being
-                # true when the tiles started sitting side by side - four
-                # of them now fit at once, so hiding three costs a click
-                # each and buys nothing. Reported from real use.
-                heading = QLabel(f"Tile {slot}")
-                heading.setStyleSheet("font-weight: 600;")
-                body.layout().insertWidget(0, heading)
-                self.tile_headings.append(heading)
-                self.tiles.append(body)
-            # The four tiles sit SIDE BY SIDE when the window can hold them.
-            #
-            # They ran down a single column with the rest of the width
-            # empty: measured at 1920 the form was 1296px wide and used 437,
-            # so 859px - two thirds of the page - was blank. At 2560 it was
-            # 1499 of 1936.
-            #
-            # Job Commands solved exactly this for its ability and R/S/M
-            # columns, so this reuses `ColumnFormBody` rather than growing a
-            # second answer to one question. `hug_contents=True` is the part
-            # that made that version work and matters here for the same
-            # reason: without it a vertical scrollbar appearing resizes the
-            # controls underneath it.
-            #
-            # `max_columns` is not capped. Four tiles are peers - there is
-            # no reading order across them the way there is between
-            # Abilities and R/S/M - so the layout takes as many as fit and
-            # falls back to one at the 1100 minimum.
-            self.slots_body = ColumnFormBody(
-                min_column_width=TILE_COLUMN_WIDTH, spacing=8,
-                hug_contents=True, row_major=True)
-            for tile in self.tiles:
-                self.slots_body.add_row(tile)
-            form.addWidget(self.slots_body)
-            form.addStretch(1)
-            scroll.setWidget(holder)
-            self.scroll = scroll
-            right.addWidget(scroll, 1)
-            split.addLayout(right, 1)
-            outer.addLayout(split, 1)
+        if self.build_own_form(form, scroll, holder, right, split, outer):
+            # A table with a page of its own lays its fields out itself
+            # (Treasure Hunter's are on its map: `treasure_hunter.py`).
             self._apply_view(*self.view_toggles.state())
             self.refresh_records()
             return
@@ -1198,6 +1064,15 @@ class TableEditorPage(RefreshesWhenVisible, QWidget):
         outer.addLayout(split, 1)
         self._apply_view(*self.view_toggles.state())
         self.refresh_records()
+
+    def build_own_form(self, form, scroll, holder, right, split, outer) -> bool:
+        """
+        Lays out the form itself, for a page with its own (True), instead of
+        the plain fields and a section per flag set. `form` is the column
+        inside `scroll`, `right` the column beside the list, `split` the row
+        holding both and `outer` the page's own column.
+        """
+        return False
 
     def _item_choices(self) -> dict:
         """

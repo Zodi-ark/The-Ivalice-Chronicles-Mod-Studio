@@ -30,6 +30,8 @@ from .pages.find_text import FindTextPage
 from .pages.job_commands import JobCommandsPage
 from .pages.jobs import JobsPage
 from .pages.table_editor import TableEditorPage
+from .pages import treasure_hunter
+from .pages.treasure_hunter import TreasureHunterPage
 from .pages.export import ExportPage
 from .pages.abilities import AbilitiesPage
 from .pages.items import ItemsPage
@@ -127,8 +129,7 @@ TABLE_TABS = [
     # warning outliving its reason.
     ("Inflict Status", "item_options", "ItemOptionsData.xml",
      "What an item or ability does to a target's status."),
-    ("Treasure Hunter", "map_trap", "MapTrapFormationData.xml",
-     "Traps and buried treasure on each map."),
+    ("Treasure Hunter", "map_trap", "MapTrapFormationData.xml", treasure_hunter.BLURB),
 ]
 
 
@@ -401,6 +402,10 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         # carries its own "reference data hasn't loaded" message, which is
         # what the Tkinter tab has always done (`step_equip_bonus.py`'s
         # `no_reference_var`).
+        if key == "map_trap":
+            # Its own page since 5 October: the treasure tiles on their map.
+            pages[title] = TreasureHunterPage(state, title=title, blurb=blurb)
+            continue
         pages[title] = TableEditorPage(state, key, title, blurb)
 
     setup = SetupPage(state)

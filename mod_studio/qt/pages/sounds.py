@@ -118,24 +118,48 @@ class UnpackArchiveWorker(Worker):
     """
 
     def __init__(self, exe_path: Path, sab_path: Path, relative_path: str,
-                 cache_root: Path, as_name: str | None = None):
+                 cache_root: Path, as_name: str | None = None, by_content: bool = False):
         super().__init__()
         self.exe_path = exe_path
         self.sab_path = sab_path
         self.relative_path = relative_path
         self.cache_root = cache_root
         self.as_name = as_name
+        #: A replacement is cached by its content (see `SoundsPage._cache_root_for`),
+        #: hashed here: a whole archive, read on the page's thread, was a pause.
+        self.by_content = by_content
 
     def run(self):
         self.log.emit(f"Opening {self.relative_path}...")
+        cache_root = self.cache_root
+        if self.by_content:
+            digest = hashlib.sha256(Path(self.sab_path).read_bytes()).hexdigest()[:16]
+            cache_root = cache_root / "replacements" / digest
         project = sd.unpack_sab_cached(
             self.exe_path, self.sab_path, self.relative_path,
-            self.cache_root, line_cb=self.log.emit, as_name=self.as_name)
+            cache_root, line_cb=self.log.emit, as_name=self.as_name)
         tracks = sd.list_tracks(project)
         if not tracks:
             raise RuntimeError(
                 "AudioMog finished but no tracks were found in there.")
         return tracks
+
+
+class VoiceIndexWorker(Worker):
+    """
+    Reads every subtitle file once, to find the line each voice archive
+    speaks (`pzd_data.build_voice_index`): 4,417 files in the game. Read
+    here rather than on the page's thread, where it froze the window for
+    seconds the first time a `.sab` was picked in a session.
+    """
+
+    def __init__(self, root, generation: int):
+        super().__init__()
+        self.root = root
+        self.generation = generation
+
+    def run(self):
+        return self.root, self.generation, pzd_data.build_voice_index(self.root)
 
 
 class AudioMogWarmUp(Worker):
@@ -850,21 +874,65 @@ class SoundsPage(QWidget):
         # any path. Assigning None would collide with the real "no folder
         # chosen" root and leave the empty index cached under it.
         self._voice_index_root = object()
+        self._voice_generation += 1
+        if getattr(self, "_shown_once", False):
+            self._read_voice_index()
 
-    def voice_index(self) -> dict:
+    #: Bumped by `forget_voice_index`: a reading started before it is stale.
+    _voice_generation = 0
+    #: `(root, generation)` of the reading under way, or None.
+    _voice_reading = None
+
+    def voice_index(self):
         """
-        `{voice path: (file, line id)}`, built once and kept.
+        `{voice path: (file, line id)}`, read once and kept; None while it
+        is still being read.
 
-        Rebuilt when the unpack folder changes, and when
+        Read again when the unpack folder changes, and when
         `forget_voice_index` says its contents have. Reading every `.pzd`
         costs about 0.4s for a text mod's 629 files and a few seconds for
-        the game's 4,417 - cheap once, wasteful per selection.
+        the game's 4,417, so it is read on a worker (`VoiceIndexWorker`),
+        started when the page is first shown, and the subtitle box fills
+        in when it arrives (`_voice_index_read`).
         """
+        if self.voice_index_ready():
+            return self._voice_index
+        self._read_voice_index()
+        return None
+
+    def voice_index_ready(self) -> bool:
+        return getattr(self, "_voice_index_root", None) == getattr(self.state, "nxd_unpack_dir", None)
+
+    def _read_voice_index(self) -> None:
+        """Starts reading the index for the unpack folder, unless that reading is under way."""
         root = getattr(self.state, "nxd_unpack_dir", None)
-        if getattr(self, "_voice_index_root", None) != root:
-            self._voice_index = pzd_data.build_voice_index(root)
-            self._voice_index_root = root
-        return self._voice_index
+        wanted = (root, self._voice_generation)
+        if self._voice_reading == wanted:
+            return
+        self._voice_reading = wanted
+        self._voice_thread = run_in_thread(VoiceIndexWorker(root, self._voice_generation),
+                                           on_finished=self._voice_index_read,
+                                           on_failed=self._voice_index_failed)
+
+    def _voice_index_read(self, result) -> None:
+        root, generation, index = result
+        if (root, generation) != self._voice_reading:
+            return                      # a newer reading was asked for since
+        self._voice_reading = None
+        current = getattr(self.state, "nxd_unpack_dir", None)
+        if root != current or generation != self._voice_generation:
+            self._read_voice_index()
+            return
+        self._voice_index = index
+        self._voice_index_root = root
+        node = self.current_node
+        if node is not None and str(node.relative_path or "").endswith(".sab"):
+            self._refresh_subtitle()
+
+    def _voice_index_failed(self, _message: str) -> None:
+        # Unreadable subtitle files mean no subtitles, not a broken page:
+        # `build_voice_index` already skips a file it can't read.
+        self._voice_reading = None
 
     def _subtitle_for(self, relative_path: str, language: str = ""):
         """
@@ -882,7 +950,7 @@ class SoundsPage(QWidget):
         # Japanese line.
         neutral, file_language = pzd_data.voice_key(relative_path)
         language = language or file_language
-        found = self.voice_index().get(neutral)
+        found = (self.voice_index() or {}).get(neutral)
         if not found:
             return None, "", 0
         text_path, line_id = found
@@ -1142,19 +1210,17 @@ class SoundsPage(QWidget):
             return None
         return Path(root) / self.current_node.relative_path
 
-    def _cache_root_for(self, source: Path) -> Path:
+    def _cache_root_for(self, source: Path) -> tuple:
         """
-        The game's archives are cached by path; a replacement by its
-        CONTENT, so a file changed and chosen again is unpacked again rather
-        than showing what it used to hold.
+        `(cache folder, by content)`: the game's archives are cached by
+        path; a replacement by its CONTENT, so a file changed and chosen
+        again is unpacked again rather than showing what it used to hold.
+        The content is hashed on the worker (`UnpackArchiveWorker`).
         """
         cache = paths.local_data_dir() / SAB_CACHE
         whole = (self.state.sound_file_replacements.get(
             self.current_node.relative_path) if self.current_node else None)
-        if whole and Path(whole) == Path(source):
-            digest = hashlib.sha256(Path(source).read_bytes()).hexdigest()[:16]
-            return cache / "replacements" / digest
-        return cache
+        return cache, bool(whole and Path(whole) == Path(source))
 
     def open_archive(self) -> None:
         source = self._source_path()
@@ -1169,9 +1235,10 @@ class SoundsPage(QWidget):
             return
 
         self._show_list_message("Opening the archive...")
+        cache, by_content = self._cache_root_for(source)
         worker = UnpackArchiveWorker(
             Path(exe), source, self.current_node.relative_path,
-            self._cache_root_for(source), as_name=self.current_node.name)
+            cache, as_name=self.current_node.name, by_content=by_content)
         self._thread = run_in_thread(
             worker, on_finished=self._archive_opened,
             on_failed=self._archive_failed)
@@ -1573,6 +1640,9 @@ class SoundsPage(QWidget):
 
     def showEvent(self, event):                                  # noqa: N802
         super().showEvent(event)
+        self._shown_once = True
+        if not self.voice_index_ready():
+            self._read_voice_index()
         self._warm_up()
 
     def _warm_up(self) -> None:

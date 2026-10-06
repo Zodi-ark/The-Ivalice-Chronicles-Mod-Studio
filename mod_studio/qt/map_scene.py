@@ -8,22 +8,42 @@ World space is the files' own, turned so it isn't mirrored: x is the
 file's -x, y its -y (up), z its z - GaneshaDx's axes. A tile is 28 units
 wide and a height step 12 tall.
 
-**Walls in the way.** The game leaves out the walls between its camera and
-the map - an inside map like 026 is a closed box without that - by the
-camera corner: each polygon's render properties say which corners it is
-left out from, the classic polygons' and the enhanced ones' own (see
-`map_enhanced`). The first build switched them at the half-way point
-between two corners, so parts of a map popped in and out as it turned; they
-now fade over the middle of the turn (`corner_weights`), and at a corner the
-map is as the game shows it.
+**Walls in the way.** Two things keep the walls between the camera and
+the map out of the way, as in the game:
+
+- **Back faces aren't drawn.** A polygon is seen from one side only, the
+  side its corners go round anticlockwise in the enhanced files and
+  clockwise in the classic ones (`Scene.front`; GaneshaDx culls the same).
+  So the walls round a room, facing in, vanish on the camera's side: drawn
+  from both sides, an inside map like 004 was a closed box, and 009's walls
+  showed their dark backs over its water.
+- **The camera corner**: each polygon's render properties say which
+  corners it is left out from, the classic polygons' and the enhanced
+  ones' own (see `map_enhanced`). Between two corners these fade over the
+  middle of the turn (`corner_weights`); at a corner the map is as the game
+  shows it.
+
+**What each part is** (`mesh_nodes`, the game's `RefinedBgMeshNode`): some
+parts are for the game's top down view only (the `icon_` trees, fires and
+candles, `TOP_VIEW`) and some for the side views only (the trees and
+flames they stand in for); on 006 both flames were drawn, one above the
+other. Some are blended over what is drawn without hiding what is behind
+(shadows, light shafts), and see through ones are drawn in the game's order.
+
+**Pictures** come from the map's lighting (`map_enhanced.lightings`: the
+usual one, or another the game uses in a story battle or a random one),
+and a group's colour picture repeats across its UVs as many times as the
+mesh says (`Batch.repeat`; 009's waterfalls 6 by 6).
 
 **What moves.** Water, fire and the like play on a loop, as in the game:
 
 - Enhanced, a picture with more than one frame (`gt_2_map048_watersurface_
-  color_0` ... `_29`), at `ENHANCED_FRAMES_A_SECOND`, except the ones the
-  game's `RefinedBgAnim` table plays when something happens in a battle
-  (its kind 2: 37 of those 42 rows are doors and levers), which show their
-  first frame.
+  color_0` ... `_29`), frame by frame as the map's anim file says
+  (`map_enhanced.picture_tracks`, `Batch.track`): each its own speed and
+  start. A picture with frames and no track plays at
+  `ENHANCED_FRAMES_A_SECOND`. The ones the game's `RefinedBgAnim` table
+  plays when something happens in a battle (its kind 2: 37 of those 42
+  rows are doors and levers) show their first frame.
 - Classic, the texture animations the game plays on a loop (GaneshaDx's
   reading of them, and the ones it plays): a rectangle of the texture shown
   from a row of frames, or one of the 16 palettes swapped for the animation
@@ -39,6 +59,7 @@ from typing import TYPE_CHECKING, Optional
 
 from .. import map_classic as mc
 from .. import map_enhanced as me
+from .. import map_package as mpk
 from .workers import Worker
 
 if TYPE_CHECKING:
@@ -61,10 +82,19 @@ FADE_SPAN = 0.4
 #: 2:1 of the game's pictures), and a higher one.
 LOW_PITCH, HIGH_PITCH, TOP_PITCH = 26.54, 45.0, 89.9
 
-#: How fast an enhanced picture's frames play. Chosen: the game's own rate
-#: is in no file or table found. At 15 the 30 frames of a water surface
-#: take two seconds, and the 8 of a splash half a second.
+#: How fast an enhanced picture's frames play when the map's anim file has
+#: no track for it. Chosen.
 ENHANCED_FRAMES_A_SECOND = 15.0
+#: From how high the camera is the game's top down view: "From above".
+TOP_VIEW_PITCH = 80.0
+#: `RefinedBgMeshNode.Unknown8`: a part drawn in the side views only (1, 30
+#: parts: 12 trees, 13 flames and candles drawn as crossed quads, a cactus,
+#: a fence, grass), and in the top down view only (2, 51 parts: 37
+#: `icon_tree`s and the icons of grass, cacti and fences, lying flat; 3:
+#: 19 `icon_fire`s and `icon_candle`s, standing). The `icon_tree`s are
+#: pictures of a treetop from above; the game has a top down view in
+#: battle, and these are what it shows there.
+SIDE_VIEW, TOP_VIEW = (1,), (2, 3)
 #: `RefinedBgAnim`'s kind for a picture the game plays when something
 #: happens in a battle rather than on a loop: 37 of its 42 rows are doors
 #: and levers, the others a few pieces of water and light in events.
@@ -84,6 +114,17 @@ class Batch:
     #: enhanced: the colour picture's frames when it plays on a loop, the
     #: first being `colour`; empty for a picture that stays still
     frames: list = field(default_factory=list)
+    #: enhanced: the frame shown at each tick (`map_enhanced.TICKS_A_SECOND`),
+    #: from the map's anim file; empty to play the frames in order
+    track: tuple = ()
+    #: enhanced: how many times the colour picture repeats across the UVs
+    repeat: tuple = (1.0, 1.0)
+    #: the game's order for drawing see through parts, higher first
+    order: int = 0
+    #: blended over what is drawn, hiding nothing behind it (shadows)
+    overlay: bool = False
+    #: "both", or the "side" views or the "top" down view only
+    view: str = "both"
 
     @property
     def count(self) -> int:
@@ -134,6 +175,13 @@ class Scene:
     #: enhanced look only: `{group: GroupPictures}`, and their folder in the game
     pictures: dict = field(default_factory=dict)
     picture_folder: str = ""
+    #: enhanced look only: the map's lightings (`map_enhanced.Lighting`) and
+    #: which of them `pictures` are
+    lightings: list = field(default_factory=list)
+    lighting: int = 0
+    #: which way round a polygon's corners go on the side it is seen from:
+    #: "ccw" in the enhanced files, "cw" in the classic ones
+    front: str = "ccw"
     notes: list = field(default_factory=list)
 
 
@@ -183,6 +231,48 @@ def _is_see_through(image: Image.Image) -> bool:
     return lo < 250
 
 
+@dataclass(frozen=True)
+class NodeLook:
+    """What the game's `RefinedBgMeshNode` says of a part, as far as drawing it goes."""
+    view: str = "both"                  # "both", "side" or "top" (Unknown8)
+    order: int = 0                      # the order see through parts are drawn in, higher first (UnknownC)
+    overlay: bool = False               # blended over what is drawn, writing no depth (Unknown18 0)
+
+
+def mesh_nodes(sqlite_path, number: int, rows: Optional[dict] = None) -> dict:
+    """
+    `{(block, name slot): NodeLook}` from the game's `RefinedBgMeshNode`
+    table (key map, block, name slot; 1,429 rows): Unknown8 which views draw
+    the part (`SIDE_VIEW`, `TOP_VIEW`), UnknownC the order see through
+    parts are drawn in (panels -100, `icon_` parts -1, water layers -2 to
+    -8 on map 064, higher first), Unknown18 0 for parts blended over the
+    map without hiding it (79 rows: 60 shadows, 9 light shafts, effects, a
+    floor light). A part with no row is drawn the usual way. Empty without
+    the table. `rows` are a mod's over the game's (`map_package.map_rows`):
+    the Map Editor's new parts, and parts drawn another way.
+    """
+    found, _added = mpk.map_rows(sqlite_path, mpk.NODE_TABLE, number, rows)
+    out = {}
+    for (block, slot), row in found.items():
+        kind, order, depth = row.get("Unknown8"), row.get("UnknownC"), row.get("Unknown18")
+        view = "side" if kind in SIDE_VIEW else "top" if kind in TOP_VIEW else "both"
+        out[(block, slot)] = NodeLook(view, int(order or 0), depth == 0)
+    return out
+
+
+def batch_frame(batch: Batch, count: int, seconds: float) -> int:
+    """
+    Which of a batch's `count` colour frames shows at `seconds`: its track's
+    frame at that tick, or, with no track, the frames in order at
+    `ENHANCED_FRAMES_A_SECOND`.
+    """
+    if count <= 1:
+        return 0
+    if batch.track:
+        return batch.track[int(seconds * me.TICKS_A_SECOND) % len(batch.track)] % count
+    return enhanced_frame(count, seconds)
+
+
 def played_on_a_trigger(sqlite_path, number: int) -> set:
     """
     The texture groups of a map the game's `RefinedBgAnim` table plays when
@@ -204,12 +294,18 @@ def played_on_a_trigger(sqlite_path, number: int) -> set:
 
 def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,
                    state: mc.State = mc.State(), mesh_file: Optional[Path] = None,
-                   picture_files: Optional[dict] = None) -> Scene:
+                   picture_files: Optional[dict] = None, lighting: int = 0,
+                   rows: Optional[dict] = None) -> Scene:
     """
-    The enhanced look of a map: its mesh, coloured by colour x lighting.
-    `mesh_file` and `picture_files` (`{picture name: image file}`) are a
-    mod's own, drawn in place of the game's.
+    The enhanced look of a map: its mesh, coloured by colour x lighting,
+    under the map's `lighting`th lighting (`map_enhanced.lightings`, the
+    usual one first). `mesh_file` and `picture_files` (`{picture name:
+    image file}`) are a mod's own, drawn in place of the game's, and `rows`
+    its `RefinedBgTexture` and `RefinedBgMeshNode` rows (`{table: {key:
+    fields}}`, `state.unmodelled_table_edits`' shape): its own texture groups
+    and parts, drawn as they say.
     """
+    rows = rows or {}
     from PIL import Image
 
     game_dir = Path(game_dir)
@@ -222,39 +318,50 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
         if "terrain" in sources:
             scene.grid_file = sources["terrain"].file_name
             scene.terrain = mc.read_mesh((folder / scene.grid_file).read_bytes()).terrain
-    pictures = me.pictures(game_dir, number, sqlite_path)
+    scene.lightings = me.lightings(game_dir, number, sqlite_path, rows.get(mpk.TEXTURE_TABLE))
+    scene.lighting = min(max(int(lighting), 0), max(len(scene.lightings) - 1, 0))
+    pictures = scene.lightings[scene.lighting].pictures if scene.lightings else {}
     textures = me.texture_folder(game_dir, number)
     scene.pictures = pictures
     scene.picture_folder = f"{me.TEXTURE_FOLDER}/{number:03d}"
+    nodes = mesh_nodes(sqlite_path, number, rows.get(mpk.NODE_TABLE))
+    # Each group's polygons by how they are drawn: a group is in one part
+    # (on all 108 maps), but its repeat is the block's.
     by_group, points, framed = {}, [], []
-    black = array.array("f")
+    black = {}
     for poly in mesh.polygons():
         if me.is_panel(poly.part):
             continue
         block = mesh.blocks[poly.block]
+        node = nodes.get((poly.block, block.parts[poly.corners[0]]), NodeLook())
         corners = [world(block.positions[c]) for c in poly.corners]
         points.extend(corners)
         if not surrounds(poly.part):
             framed.extend(corners)
         render = float(poly.render)
         if not poly.textured:
+            buf = black.setdefault(node, array.array("f"))
             for tri in _triangles(len(corners)):
                 for k in tri:
-                    black.extend(corners[k] + (0.0, 0.0, 0.0, 1.0, render))
+                    buf.extend(corners[k] + (0.0, 0.0, 0.0, 1.0, render))
             continue
-        buf = by_group.setdefault(poly.group, array.array("f"))
+        buf = by_group.setdefault((poly.group, block.repeat(poly.group), node), array.array("f"))
         for tri in _triangles(len(corners)):
             for k in tri:
                 buf.extend(corners[k] + block.uv(poly.corners[k]) + (render,))
     scene.bounds = _bounds(points)
     scene.frame = _bounds(framed or points)
     still = played_on_a_trigger(sqlite_path, number)
+    try:
+        tracks = me.picture_tracks(me.anim_path(game_dir, number).read_bytes())
+    except (OSError, me.EnhancedMapError):
+        tracks = {}
 
     def picture(name):
         return _open_rgba(replaced.get(name.lower(), textures / name))
 
     missing = []
-    for group, buf in sorted(by_group.items()):
+    for (group, repeat, node), buf in sorted(by_group.items(), key=lambda item: (item[0][0], item[0][1])):
         entry = pictures.get(group)
         colour = light = None
         frames = []
@@ -270,11 +377,13 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
             missing.append(group)
             colour = Image.new("RGBA", (4, 4), (128, 128, 128, 255))
         scene.batches.append(Batch(ENHANCED, buf, (3, 2, 1), colour, light,
-                                   see_through=_is_see_through(colour), group=group, frames=frames))
-    if len(black):
-        scene.batches.append(Batch("flat", black, (3, 4, 1)))
+                                   see_through=_is_see_through(colour), group=group, frames=frames,
+                                   track=tracks.get(group, ()) if frames else (), repeat=repeat,
+                                   order=node.order, overlay=node.overlay, view=node.view))
+    for node, buf in black.items():
+        scene.batches.append(Batch("flat", buf, (3, 4, 1), order=node.order, view=node.view))
     if missing:
-        scene.notes.append(f"{len(missing)} of this map's pictures are not in the game folder, so "
+        scene.notes.append(f"{len(missing)} of this map's textures are not in the game folder, so "
                            f"what they cover is drawn grey.")
     return scene
 
@@ -337,7 +446,7 @@ def build_classic(game_dir: Path, number: int, state: mc.State = mc.State()) -> 
     folder = Path(game_dir) / mc.MAP_FOLDER
     index = mc.read_gns(folder, number)
     sources = index.sources(state)
-    scene = Scene(number, CLASSIC)
+    scene = Scene(number, CLASSIC, front="cw")
     if "polygons" not in sources:
         raise mc.MapError("this variant of the map has no polygons")
     # Map 000 has polygons and a grid and no texture: drawn plain.
@@ -498,17 +607,18 @@ class SceneWorker(Worker):
     """
 
     def __init__(self, token, game_dir, number, look, state, sqlite_path=None, mesh_file=None,
-                 picture_files=None):
+                 picture_files=None, lighting=0, rows=None):
         super().__init__()
         self.token, self.game_dir, self.number, self.look = token, game_dir, number, look
-        self.state, self.sqlite_path = state, sqlite_path
+        self.state, self.sqlite_path, self.lighting = state, sqlite_path, lighting
         self.mesh_file, self.picture_files = mesh_file, dict(picture_files or {})
+        self.rows = {table: dict(found) for table, found in (rows or {}).items()}
 
     def run(self):
         try:
             if self.look == ENHANCED:
                 scene = build_enhanced(self.game_dir, self.number, self.sqlite_path, self.state,
-                                       self.mesh_file, self.picture_files)
+                                       self.mesh_file, self.picture_files, self.lighting, self.rows)
             else:
                 scene = build_classic(self.game_dir, self.number, self.state)
             if scene.grid_file:

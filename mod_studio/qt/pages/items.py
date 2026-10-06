@@ -254,6 +254,8 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         left.addWidget(self.search)
         self.list = QListWidget()
         self.list.setFixedWidth(280)
+        # Rows alternate dark and light, as the Map Editor's map list does.
+        self.list.setAlternatingRowColors(True)
         self.list.currentItemChanged.connect(self._on_selection)
         left.addWidget(self.list, 1)
         split.addLayout(left)
