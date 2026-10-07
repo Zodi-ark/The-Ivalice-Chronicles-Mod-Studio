@@ -38,7 +38,7 @@ import re
 
 from PySide6.QtCore import QRect, QSize
 from PySide6.QtWidgets import (
-    QDoubleSpinBox, QSizePolicy, QSpinBox, QStyle, QStyleOptionSpinBox,
+    QDoubleSpinBox, QSizePolicy, QSpinBox, QStyle, QStyleOptionFrame, QStyleOptionSpinBox,
 )
 
 #: The space a `QLineEdit` keeps on each side of its text (Qt's own
@@ -69,6 +69,29 @@ class _FitsItsNumbers:
                                            QStyle.SC_SpinBoxEditField, self)
         return 400 - edit.width()
 
+    def edit_insets(self) -> int:
+        """
+        What the style keeps inside the box's line edit, round its text.
+
+        Zodi, 6 October, after the first fix: Price still showed "1600(" on
+        his machine. Windows 11's style keeps 4 pixels each side inside a
+        line edit (`QWindows11Style::subElementRect`, `SE_LineEditContents`:
+        `option->rect.adjusted(4,0,-4,0)`); his screenshot's box was 85
+        pixels, fitted, with its number cut 8 pixels short. This machine's
+        style keeps none, so the boxes measured right here. Asked of the
+        style in use now, as Qt's line edit asks it when it draws.
+        """
+        edit = self.lineEdit()
+        option = QStyleOptionFrame()
+        option.initFrom(edit)
+        option.rect = QRect(0, 0, 400, max(1, edit.height()))
+        option.lineWidth = (edit.style().pixelMetric(QStyle.PM_DefaultFrameWidth, option, edit)
+                            if edit.hasFrame() else 0)
+        option.midLineWidth = 0
+        option.state = option.state | QStyle.StateFlag.State_Sunken
+        contents = edit.style().subElementRect(QStyle.SE_LineEditContents, option, edit)
+        return 400 - contents.width()
+
     def fitted_width(self) -> int:
         """The narrowest this box can be and show each of `fit_texts` whole."""
         self.ensurePolished()
@@ -77,8 +100,8 @@ class _FitsItsNumbers:
         metrics = edit.fontMetrics()
         margins = edit.textMargins()
         widest = max((metrics.horizontalAdvance(text) for text in self.fit_texts()), default=0)
-        needed = (self.chrome_width() + widest + 2 * LINE_EDIT_MARGIN + CURSOR_ROOM
-                  + margins.left() + margins.right())
+        needed = (self.chrome_width() + self.edit_insets() + widest + 2 * LINE_EDIT_MARGIN
+                  + CURSOR_ROOM + margins.left() + margins.right())
         return max(self.at_least, needed)
 
     def sizeHint(self) -> QSize:                                        # noqa: N802
@@ -86,7 +109,6 @@ class _FitsItsNumbers:
 
     def minimumSizeHint(self) -> QSize:                                 # noqa: N802
         return QSize(self.fitted_width(), super().minimumSizeHint().height())
-
 
     def setSpecialValueText(self, text: str) -> None:                  # noqa: N802
         super().setSpecialValueText(text)
