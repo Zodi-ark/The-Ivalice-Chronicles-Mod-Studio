@@ -116,10 +116,14 @@ class AssetExportWorker(Worker):
     def __init__(self, mod_root, mode, texture_edits, sound_edits,
                  cli_path, audiomog_path, game_dir, pzd_edits=None,
                  sound_file_replacements=None, other_file_replacements=None,
-                 uib_edits=None, utexpt_edits=None, map_edits=None):
+                 uib_edits=None, utexpt_edits=None, map_edits=None,
+                 own_files=None):
         super().__init__()
         self.mod_root = Path(mod_root)
         self.mode = mode
+        # The opened mod's files outside FFTIVC (its program code among
+        # them), copied into the new mod's own folder as they are.
+        self.own_files = {rel: Path(source) for rel, source in (own_files or {}).items()}
         # Two levels deep, for the reason given for the layouts below.
         self.map_edits = {name: {tile: dict(changes) for tile, changes in tiles.items() if changes}
                           for name, tiles in (map_edits or {}).items() if tiles}
@@ -164,7 +168,15 @@ class AssetExportWorker(Worker):
                   "maps": 0, "map_total": 0,
                   "carried": 0,
                   "carried_total": len(self.other_file_replacements),
+                  "own": 0, "own_total": len(self.own_files),
                   "skipped": [], "errors": []}
+        # A text file the mod carries whole AND has edits for is written
+        # once, from the mod's copy with the edits on it - not edited on the
+        # game's copy and then overwritten by the carried one, which lost
+        # the edits.
+        carried_by_name = {str(rel).replace("\\", "/").lower(): rel
+                           for rel in self.other_file_replacements}
+        texts_written = set()
 
         # Screen layouts: the game's own file with this mod's numbers
         # written where they sit. Needs nothing but the unpacked game - no
@@ -232,14 +244,20 @@ class AssetExportWorker(Worker):
                 result["errors"].append(
                     "FF16Tools isn't set up, so no text file could be "
                     "written. Set it under General Setup.")
-            elif self.game_dir is None:
-                result["errors"].append(
-                    "The unpacked game folder isn't set, and writing a text "
-                    "file needs the original to start from.")
             else:
                 staging = paths.local_data_dir() / "text_export_staging"
                 for relative_path, edits in sorted(self.pzd_edits.items()):
-                    original = self.game_dir / relative_path
+                    mine = carried_by_name.get(str(relative_path).replace("\\", "/").lower())
+                    if mine is not None:
+                        # The mod's own copy, which the Sounds page showed.
+                        original = self.other_file_replacements[mine]
+                    elif self.game_dir is None:
+                        result["errors"].append(
+                            f"{relative_path}: the unpacked game folder isn't set, and "
+                            f"writing a text file needs the original to start from.")
+                        continue
+                    else:
+                        original = self.game_dir / relative_path
                     if not original.exists():
                         result["errors"].append(
                             f"{relative_path}: the original file isn't at "
@@ -257,6 +275,8 @@ class AssetExportWorker(Worker):
                             relative_path, lines, staging, self.cli_path)
                         copy_into(staged, dest_root / relative_path)
                         result["texts"] += 1
+                        if mine is not None:
+                            texts_written.add(mine)
                     except Exception as exc:                  # noqa: BLE001
                         result["errors"].append(f"{relative_path}: {exc}")
 
@@ -344,6 +364,10 @@ class AssetExportWorker(Worker):
         # Files with no page of their own, carried through as they are.
         for relative_path, source in sorted(
                 self.other_file_replacements.items()):
+            if relative_path in texts_written:
+                # Already in the mod, written above with its edits.
+                result["carried"] += 1
+                continue
             try:
                 if not source.is_file():
                     result["errors"].append(
@@ -352,6 +376,20 @@ class AssetExportWorker(Worker):
                     continue
                 copy_into(source, dest_root / relative_path)
                 result["carried"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"{relative_path}: {exc}")
+
+        # The mod's own files, outside FFTIVC: copied into the mod's folder
+        # itself, beside ModConfig.json, where Reloaded-II looks for the
+        # code that file names.
+        for relative_path, source in sorted(self.own_files.items()):
+            try:
+                if not source.is_file():
+                    result["errors"].append(
+                        f"{relative_path}: the mod's own file isn't at {source}")
+                    continue
+                copy_into(source, self.mod_root / relative_path)
+                result["own"] += 1
             except Exception as exc:                          # noqa: BLE001
                 result["errors"].append(f"{relative_path}: {exc}")
 
@@ -477,6 +515,9 @@ class ExportPage(QWidget):
         self._loading_opened = False
         self._carried_tags = None
         self._carried_icon = None
+        # The opened mod's own dependencies, offered as ticked boxes even
+        # when they aren't installed on this computer (`refresh_dependencies`).
+        self._carried_dependencies = []
         # Carried between the export stages, which are now three deep:
         # tables, then assets, then .nxd.
         self._last_mode = None
@@ -825,6 +866,20 @@ class ExportPage(QWidget):
             app_ids = config.get("SupportedAppId") or []
             if app_ids:
                 self._apply_app_ids(app_ids)
+
+            # And the mods it needs, which the panel never ticked: a mod
+            # re-exported from here declared the mod loader alone. WotL
+            # Restoration's code needs two Reloaded-II libraries loaded
+            # before it (13 October), so they are kept, ticked, whether or
+            # not they are installed on this computer.
+            self._carried_dependencies = [
+                str(mod_id).strip() for mod_id in (config.get("ModDependencies") or [])
+                if str(mod_id).strip() and str(mod_id).strip() != c.MODLOADER_REPO]
+            self.refresh_dependencies()
+            for mod_id in self._carried_dependencies:
+                box = self._dependency_box(mod_id)
+                if box is not None:
+                    box.setChecked(True)
         finally:
             self._loading_opened = False
 
@@ -1024,16 +1079,29 @@ class ExportPage(QWidget):
         # The mod loader is added by the engine, so offering it here would
         # let somebody untick a dependency that is not optional.
         installed = [m for m in installed if m != c.MODLOADER_REPO]
-        if not installed:
+        # An opened mod's dependencies that aren't installed here are still
+        # its dependencies: Reloaded-II reads them from the mod, on whichever
+        # computer plays it.
+        here = {m.lower() for m in installed}
+        missing = [m for m in getattr(self, "_carried_dependencies", None) or []
+                   if m.lower() not in here]
+        if not installed and not missing:
             note = QLabel("No other mods installed, or Reloaded-II wasn't found.")
             note.setProperty("role", "muted")
             self.dependency_column.addWidget(note)
             return
-        for mod_id in installed:
-            check = QCheckBox(mod_id)
+        for mod_id in installed + missing:
+            check = QCheckBox(mod_id if mod_id.lower() in here
+                              else f"{mod_id} (not installed on this computer)")
             check.setChecked(previous.get(mod_id, False))
             self.dependency_boxes[mod_id] = check
             self.dependency_column.addWidget(check)
+
+    def _dependency_box(self, mod_id: str):
+        """The tick box for a mod id, matched without case, or None."""
+        wanted = str(mod_id).lower()
+        return next((box for key, box in self.dependency_boxes.items()
+                     if key.lower() == wanted), None)
 
     @staticmethod
     def _game_mode_for(app_ids: list) -> str:
@@ -1216,11 +1284,35 @@ class ExportPage(QWidget):
              + state.replaced_sound_file_count(), "replacement"),
             ("UI Layouts", state.edited_uib_file_count(), "screen"),
             ("Texture parts", state.edited_utexpt_file_count(), "part list"),
-            ("Map Editor", len(state.edited_map_numbers()), "map"),
+            ("Map Editor", len(set(state.edited_map_numbers()) | set(self._map_looks())), "map"),
             ("Subtitles", state.edited_pzd_line_count(), "line"),
-            ("Game data (no tab)", state.rebased_table_count(), "merged table"),
-            ("Carried through", state.carried_through_file_count(), "file"),
-        ]
+            ("Game data (no tab)", self._merged_table_count(), "merged table"),
+            ("Carried through", len(self._carried_files()), "file"),
+        ] + (
+            # Only for a mod that has any (an opened one with its own code,
+            # say): no page makes these, so "Nothing edited in" naming them
+            # under every new mod would only puzzle.
+            [("Mod's own files", len(state.mod_own_files), "file")]
+            if getattr(state, "mod_own_files", None) else [])
+
+    def _map_looks(self) -> dict:
+        """The maps' models, textures and rows from the Map Editor (`map_editor.map_looks`)."""
+        from .map_editor import map_looks
+        return map_looks(self.state)
+
+    def _merged_table_count(self) -> int:
+        """The tables with edits besides a map's look rows, which the Map Editor counts."""
+        from .map_editor import look_rows
+        theirs = look_rows(self.state)
+        return sum(1 for table, rows in (self.state.unmodelled_table_edits or {}).items()
+                   if any(fields and key not in theirs.get(table, {}) for key, fields in rows.items()))
+
+    def _carried_files(self) -> list:
+        """Files carried through whole, less the maps' models, which the Map Editor counts."""
+        models = {f"bg/meshes/map_{n:03d}_mesh.bin" for n, look in self._map_looks().items()
+                  if look["mesh"]}
+        return [rel for rel in (self.state.other_file_replacements or {})
+                if str(rel).replace("\\", "/").lower() not in models]
 
     def _summary_text(self) -> str:
         """
@@ -1260,7 +1352,8 @@ class ExportPage(QWidget):
                              or self.state.has_any_map_edits()
                              or self.state.sound_edits
                              or self.state.sound_file_replacements
-                             or self.state.other_file_replacements))
+                             or self.state.other_file_replacements
+                             or getattr(self.state, "mod_own_files", None)))
         if not touched:
             lines.append("Nothing has been edited yet, so this mod would "
                          "contain only its")
@@ -1291,6 +1384,16 @@ class ExportPage(QWidget):
             for name in files:
                 lines.append(f"  {name}")
             lines.append("")
+            # A mod with its own program code (WotL Restoration's DLL) gets
+            # it copied across whole, and the author should know that is
+            # all that happens to it.
+            code = modconfig.code_names(getattr(self.state, "loaded_mod_config", None),
+                                        getattr(self.state, "mod_own_files", None) or {})
+            if code and getattr(self.state, "mod_own_files", None):
+                lines.append(f"This mod runs its own code ({', '.join(code)}). Mod Studio "
+                             f"can't change it;")
+                lines.append("it goes into the export as it is.")
+                lines.append("")
 
         untouched = [label for label, count, _noun in rows if not count]
         if untouched:
@@ -1319,8 +1422,12 @@ class ExportPage(QWidget):
             names.append("Edited texture part lists (.utexpt)")
         if self.state.has_any_map_edits():
             names.append("Edited battle maps (fftpack/map, and bg/meshes where their highlights move)")
-        if self.state.other_file_replacements:
+        if any(look["mesh"] for look in self._map_looks().values()):
+            names.append("Map models (bg/meshes)")
+        if self._carried_files():
             names.append("Carried-through files")
+        if getattr(self.state, "mod_own_files", None):
+            names.append("The mod's own files, beside ModConfig.json")
         return names
 
     def _managed_table_filenames(self) -> set:
@@ -1559,6 +1666,7 @@ class ExportPage(QWidget):
         state = self.state
         return bool(state.texture_edits or state.sound_file_replacements
                     or state.other_file_replacements
+                    or getattr(state, "mod_own_files", None)
                     or state.edited_sound_track_count()
                     or state.has_any_pzd_edits()
                     or state.has_any_uib_edits()
@@ -1994,8 +2102,15 @@ class ExportPage(QWidget):
                 extras = dict(extras or {})
                 extras["MonsterJobCommandData.xml"] = (
                     self.monster_job_command_diff_xml_text())
+            # An opened mod's ModConfig.json is merged, as the preview has
+            # always shown it, not rebuilt. Rebuilt, every key the page has
+            # no field for was wiped, in place too: the DLL a code mod names
+            # (WotL Restoration's, 13 October), its packaging rules, and the
+            # GitHubDependencies block Reloaded-II installs dependencies from.
+            existing = getattr(self.state, "loaded_mod_config", None)
             root = modconfig.scaffold_mod_folder(
                 Path(destination), meta, job_xml,
+                config=(modconfig.merge_mod_config(existing, meta) if existing else None),
                 job_command_xml_text=command_xml,
                 extra_table_files=extras or None)
         except Exception as exc:                              # noqa: BLE001
@@ -2050,7 +2165,8 @@ class ExportPage(QWidget):
                 other_file_replacements=self.state.other_file_replacements,
                 uib_edits=self.state.uib_edits,
                 utexpt_edits=self.state.utexpt_edits,
-                map_edits=self.state.map_edits)
+                map_edits=self.state.map_edits,
+                own_files=getattr(self.state, "mod_own_files", None))
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -2150,6 +2266,9 @@ class ExportPage(QWidget):
         if result.get("carried_total"):
             parts.append(f"{result.get('carried', 0)} of "
                          f"{result['carried_total']} carried-through file(s)")
+        if result.get("own_total"):
+            parts.append(f"{result.get('own', 0)} of the mod's "
+                         f"{result['own_total']} own file(s)")
         detail = " and ".join(parts)
 
         for line in result["errors"]:
@@ -2157,21 +2276,15 @@ class ExportPage(QWidget):
         for line in result["skipped"]:
             self._log(f"   skipped (needs FF16Tools): {line}")
 
-        self._said_trouble = not (
-            not result["errors"] and not result["skipped"]
-            and result["textures"] == result["texture_total"]
-            and result["sounds"] == result["sound_total"]
-            and result.get("layouts", 0) == result.get("layout_total", 0)
-            and result.get("part_lists", 0) == result.get("part_list_total", 0)
-            and result.get("maps", 0) == result.get("map_total", 0)
-            and result.get("carried", 0) == result.get("carried_total", 0))
         clean = (not result["errors"] and not result["skipped"]
                  and result["textures"] == result["texture_total"]
                  and result["sounds"] == result["sound_total"]
                  and result.get("layouts", 0) == result.get("layout_total", 0)
                  and result.get("part_lists", 0) == result.get("part_list_total", 0)
                  and result.get("maps", 0) == result.get("map_total", 0)
-                 and result.get("carried", 0) == result.get("carried_total", 0))
+                 and result.get("carried", 0) == result.get("carried_total", 0)
+                 and result.get("own", 0) == result.get("own_total", 0))
+        self._said_trouble = not clean
         if clean:
             self._say(f"Built your mod at {self.last_built} - {detail}.", "ok")
         else:
@@ -2286,6 +2399,11 @@ class ExportPage(QWidget):
         self._adopted_mod_id = None
         self._carried_tags = None
         self._carried_icon = None
+        # The old mod's dependencies too, or the new one would declare them.
+        self._carried_dependencies = []
+        for box in self.dependency_boxes.values():
+            box.setChecked(False)
+        self.refresh_dependencies()
         self.category_box.setCurrentText("gameplay")
         self.opened_mod_banner.setVisible(False)
         self.name_field.setText("My FFT Mod")

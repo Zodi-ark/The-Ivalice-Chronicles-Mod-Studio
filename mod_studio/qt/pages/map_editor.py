@@ -254,9 +254,17 @@ class PackageLoadWorker(Worker):
             built = mpk.build(self.folder)
         except mpk.PackageError as exc:
             raise RuntimeError(str(exc)) from exc
-        mesh_file = mpk.write_built(self.folder, built) if built.changed else None
+        # A package saved from the mod's own look is built from the mod's
+        # model: built unchanged, that model is still the mod's, not the
+        # game's (it was taken out of the mod until 12 October).
+        try:
+            base = json.loads((Path(self.folder) / mpk.METADATA).read_text(encoding="utf-8")).get("base", {})
+        except (OSError, ValueError):
+            base = {}
+        from_mod = base.get("from") == mpk.FROM_MOD
+        mesh_file = mpk.write_built(self.folder, built) if built.changed or from_mod else None
         ground = None
-        if built.changed and self.game_dir is not None:
+        if (built.changed or from_mod) and self.game_dir is not None:
             try:
                 ground = mpk.ground_under_tiles(self.folder, built, self.game_dir)
             except (OSError, ValueError, mc.MapError):
@@ -284,6 +292,57 @@ def mod_look(state, number) -> tuple:
     return (Path(mesh) if mesh else None), pictures
 
 
+#: The tables a map's look is found by: rows of a map's there are the Map
+#: Editor's (Load edited and Put back the game's look add and take them).
+LOOK_TABLES = (mpk.TEXTURE_TABLE, mpk.NODE_TABLE, mpk.SYSTEM_TABLE)
+#: A texture Load edited put into the mod says so (`map_looks`).
+LOOK_MARK = "map_look"
+_MESH_FILE = re.compile(r"^bg/meshes/map_(\d{3})_mesh\.bin$", re.IGNORECASE)
+
+
+def map_looks(state) -> dict:
+    """
+    `{map number: {"mesh": file or None, "textures": {relative path: file},
+    "rows": {table: {key: fields}}}}`: the enhanced looks a mod has from the
+    Map Editor, for Mod Contents (Zodi, 12 October: name what the Map Editor
+    added). A map is in it with a model (`other_file_replacements`), rows in
+    `LOOK_TABLES`, or a texture Load edited put in (`LOOK_MARK`); its
+    textures are those under its folder, as Put back the game's look takes.
+    """
+    numbers = set()
+    for rel in (getattr(state, "other_file_replacements", {}) or {}):
+        found = _MESH_FILE.match(str(rel).replace("\\", "/"))
+        if found:
+            numbers.add(int(found.group(1)))
+    store = getattr(state, "unmodelled_table_edits", None) or {}
+    for table in LOOK_TABLES:
+        numbers.update(key[0] for key, fields in (store.get(table) or {}).items()
+                       if isinstance(key, tuple) and len(key) == 3 and fields)
+    for info in (getattr(state, "texture_edits", {}) or {}).values():
+        if isinstance(info, dict) and isinstance(info.get(LOOK_MARK), int):
+            numbers.add(info[LOOK_MARK])
+    out = {}
+    for number in sorted(numbers):
+        mesh, _pictures = mod_look(state, number)
+        prefix = mpk.picture_relative_path(number, "").lower()
+        textures = {rel: Path(info.get("source_path")) if isinstance(info, dict) and info.get("source_path")
+                    else info for rel, info in (getattr(state, "texture_edits", {}) or {}).items()
+                    if rel.lower().startswith(prefix)}
+        out[number] = {"mesh": mesh, "textures": textures,
+                       "rows": {t: {k: f for k, f in found.items() if f}
+                                for t, found in mod_rows(state, number).items()}}
+    return out
+
+
+def look_rows(state) -> dict:
+    """`{table: {key: fields}}`: the table edits that are maps' looks (`map_looks`), the Map Editor's."""
+    out = {}
+    for look in map_looks(state).values():
+        for table, found in look["rows"].items():
+            out.setdefault(table, {}).update(found)
+    return out
+
+
 def mod_rows(state, number) -> dict:
     """
     `{table: {key: fields}}`: map `number`'s rows among a mod's table edits
@@ -292,7 +351,7 @@ def mod_rows(state, number) -> dict:
     """
     store = getattr(state, "unmodelled_table_edits", None) or {}
     out = {}
-    for table in (mpk.TEXTURE_TABLE, mpk.NODE_TABLE):
+    for table in LOOK_TABLES:
         found = {key: fields for key, fields in (store.get(table) or {}).items()
                  if isinstance(key, tuple) and len(key) == 3 and key[0] == number}
         if found:
@@ -694,8 +753,19 @@ class MapEditorPage(QWidget):
         self.put_back_look_button = QPushButton("Put back the game's look")
         self.put_back_look_button.setToolTip("Takes this map's model and textures out of your mod.")
         self.put_back_look_button.clicked.connect(lambda: self.put_back_look())
+        #: Zodi, 12 October: the lighting textures, the border's and the
+        #: units' lighting made from a sun, the sky and lamps (`map_light`).
+        self.light_button = QPushButton("Light the map")
+        self.light_button.setToolTip(
+            "Makes the map's lighting textures, its border texture and its units' lighting from a "
+            "sun, the sky and lamps you set.")
+        self.light_button.clicked.connect(lambda: self.open_light())
+        self.light_dialog = None
+        #: `(map, {texture name: file}, {table: {key: fields}})` drawn in place
+        #: of the mod's own while Light the map shows a preview.
+        self.light_preview = None
         model_row.addWidget(_together(QLabel("Model and textures"), self.save_package_button,
-                                      self.load_package_button))
+                                      self.load_package_button, self.light_button))
         model_row.addWidget(self.put_back_look_button)
         #: Offered after Load edited when the model's ground moved: the tiles
         #: under it follow, so units stand on it (`ground`).
@@ -1018,9 +1088,16 @@ class MapEditorPage(QWidget):
         self._running = True
         self._token = self._wanted
         mesh_file, picture_files = self.mod_look(self.number)
+        rows = self.mod_rows(self.number)
+        if self.light_preview is not None and self.light_preview[0] == self.number:
+            picture_files = {**picture_files, **self.light_preview[1]}
+            rows = {table: {key: dict(fields) for key, fields in found.items()} for table, found in rows.items()}
+            for table, found in self.light_preview[2].items():
+                for key, fields in found.items():
+                    rows.setdefault(table, {}).setdefault(key, {}).update(fields)
         worker = ms.SceneWorker(self._token, self.game_dir(), self.number, self.shown_look,
                                 self.map_state(), getattr(self.state, "nxd_sqlite_path", None),
-                                mesh_file, picture_files, self.lighting, self.mod_rows(self.number))
+                                mesh_file, picture_files, self.lighting, rows)
         run_in_thread(worker, on_finished=self._scene_ready, on_failed=self._reading_failed)
 
     def _reading_failed(self, message: str) -> None:
@@ -1100,7 +1177,7 @@ class MapEditorPage(QWidget):
         enhanced = (self.scene is not None and self.scene.look == ms.ENHANCED
                     and self.number in self.enhanced_numbers)
         mesh, pictures = self.mod_look(self.number)
-        for button in (self.save_package_button, self.load_package_button):
+        for button in (self.save_package_button, self.load_package_button, self.light_button):
             button.setEnabled(enhanced and not self._package_busy)
         self.put_back_look_button.setVisible(bool(mesh or pictures or self.mod_rows(self.number)))
         self.put_back_look_button.setEnabled(not self._package_busy)
@@ -1200,7 +1277,8 @@ class MapEditorPage(QWidget):
                 self.state.texture_edits.pop(mpk.picture_relative_path(number, name), None)
         for name, source in built.pictures.items():
             path = mpk.picture_relative_path(number, name)
-            self.state.texture_edits[path] = {"source_path": Path(source), "is_face_texture": False}
+            self.state.texture_edits[path] = {"source_path": Path(source), "is_face_texture": False,
+                                              LOOK_MARK: number}
         self._put_rows(number, built.table_rows)
         what = []
         if mesh_file is not None:
@@ -1351,6 +1429,110 @@ class MapEditorPage(QWidget):
         more = f" And {len(lines) - 4} more." if len(lines) > 4 else ""
         self._say_look("That folder can't be built: " + " ".join(lines[:4]) + more, "danger")
 
+    # -- Light the map (map_light) -------------------------------------------------
+
+    def open_light(self):
+        """Opens Light the map for the map shown, and returns it."""
+        try:
+            from .map_light import LightDialog
+        except ImportError as exc:
+            self._say_look(f"Light the map needs numpy and Pillow, and one of them isn't installed ({exc}).",
+                           "danger")
+            return None
+        if self.number is None:
+            return None
+        if self.light_dialog is not None and self.light_dialog.number != self.number:
+            self.light_dialog.close()
+            self.light_dialog = None
+        if self.light_dialog is None:
+            self.light_dialog = LightDialog(self)
+        self.light_dialog.show()
+        self.light_dialog.raise_()
+        return self.light_dialog
+
+    def light_arguments(self, number) -> Optional[dict]:
+        """`map_lighting.light_map`'s arguments for map `number` as the mod has it, or None when not read."""
+        if self.game_dir() is None or number != self.number:
+            return None
+        mesh_file, pictures = self.mod_look(number)
+        tiles = {(t.x, t.z, t.level): t for t in self.tiles()} if self.game_tiles else None
+        return {"game_dir": self.game_dir(), "number": number,
+                "sqlite_path": getattr(self.state, "nxd_sqlite_path", None), "mesh_file": mesh_file,
+                "picture_files": pictures, "rows": self.mod_rows(number), "tiles": tiles}
+
+    def border_tint(self, number) -> tuple:
+        """A border's colour for map `number`: its ground texture's, darkened (`map_lighting.ground_colour`)."""
+        from PIL import Image
+        from ... import map_lighting as ml
+        _mesh, pictures = self.mod_look(number)
+        entry = me.pictures(self.game_dir(), number, getattr(self.state, "nxd_sqlite_path", None),
+                            self.mod_rows(number).get(mpk.TEXTURE_TABLE)).get(0)
+        if entry is None or not entry.colour:
+            return ml.ground_colour(None)
+        name = entry.colour[0]
+        try:
+            with Image.open(pictures.get(name, me.texture_folder(self.game_dir(), number) / name)) as image:
+                return ml.ground_colour(image)
+        except (OSError, ValueError):
+            return ml.ground_colour(None)
+
+    def set_light_preview(self, number, files: dict, rows: dict, which=None) -> None:
+        """Draws map `number` with Light the map's preview textures and rows, not in the mod."""
+        self.light_preview = (number, {name: Path(path) for name, path in files.items()}, rows or {})
+        if which is not None and number == self.number:
+            self.lighting = int(which)
+        self._load()
+
+    def clear_light_preview(self) -> None:
+        if self.light_preview is not None:
+            self.light_preview = None
+            if self.number is not None:
+                self._load()
+
+    def put_light(self, number, made, files: dict, which=None) -> None:
+        """Light the map's textures and rows into the mod (`map_lighting.light_map`)."""
+        for name, path in files.items():
+            self.state.texture_edits[mpk.picture_relative_path(number, name)] = {
+                "source_path": Path(path), "is_face_texture": False, LOOK_MARK: number}
+        self._merge_rows(number, made.rows)
+        self.light_preview = None
+        rows = sum(len(found) for found in made.rows.values())
+        self._say_look(f"Map {number:03d} is lit as you set: {len(files)} texture"
+                       f"{'s' if len(files) != 1 else ''}" + (f" and {rows} table row{'s' if rows != 1 else ''}"
+                                                            if rows else "")
+                       + " go into your mod.", "ok")
+        self.edits_changed.emit()
+        if number == self.number:
+            if which is not None:
+                self.lighting = int(which)
+            self._load()
+            self._update_look_buttons()
+
+    def _merge_rows(self, number, rows: dict) -> None:
+        """
+        Rows whose columns changed into the mod's: over its own edits, less
+        what is the game's already; a row the mod adds takes them as they are.
+        """
+        store = self.state.unmodelled_table_edits
+        for table, found in (rows or {}).items():
+            game = mpk.map_rows(getattr(self.state, "nxd_sqlite_path", None), table, number)[0]
+            target = store.setdefault(table, {})
+            for key, fields in found.items():
+                existing = target.get(key)
+                if existing and existing.get(mpk.ADDED_ROW):
+                    existing.update(fields)
+                    continue
+                changes = dict(existing or {})
+                changes.update(fields)
+                own = game.get(key[1:], {})
+                changes = {k: v for k, v in changes.items() if own.get(k) != v}
+                if changes:
+                    target[key] = changes
+                else:
+                    target.pop(key, None)
+            if not target:
+                store.pop(table, None)
+
     def put_back_look(self) -> None:
         """Takes this map's model and textures out of the mod."""
         if self.number is None:
@@ -1366,6 +1548,7 @@ class MapEditorPage(QWidget):
             if not store.get(table):
                 store.pop(table, None)
         self.ground = None
+        self.light_preview = None
         self._say_look(f"Map {self.number:03d} has the game's model and textures again.", "ok")
         self.edits_changed.emit()
         self._load()

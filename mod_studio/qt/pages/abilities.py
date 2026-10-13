@@ -24,7 +24,7 @@ zeroes.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from ... import ability_defaults
+from ... import ability_preview as ap
 from ... import constants as c
 from ... import nxd_data
 from ... import reference_names
@@ -52,7 +53,15 @@ from ..widgets.field_rows import (
 from ..widgets.form_scroll import FormScrollArea
 from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.texture_slot import InlineTextureSlot
+from .ability_map import AbilityMap, AbilityShow
 from .poaching import TextFieldRow
+
+#: The fields' column beside the map: the width the mock-up Zodi agreed to
+#: on 12 October gave it.
+FORM_WIDTH = 600
+#: How long the map waits after an edit before playing the ability again,
+#: so a number typed or spun is played once, not at every step.
+MAP_DELAY_MS = 150
 
 
 class JpCostRow(NumericFieldRow):
@@ -424,7 +433,21 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         left.addWidget(self.list, 1)
         split.addLayout(left)
 
-        right = QVBoxLayout()
+        # The ability played out on map 116, between the list and the
+        # fields. Zodi, 12 October: "Redesign the abilities page, so that
+        # the map viewer displays the unit animations for the ability on map
+        # 116 and after it completes then show the ability effect on the
+        # map". See `ability_map.py`.
+        self.map = AbilityMap(state)
+        split.addWidget(self.map, 1)
+        self._map_timer = QTimer(self)
+        self._map_timer.setSingleShot(True)
+        self._map_timer.setInterval(MAP_DELAY_MS)
+        self._map_timer.timeout.connect(self._show_on_map)
+
+        self.side = QWidget()
+        right = QVBoxLayout(self.side)
+        right.setContentsMargins(0, 0, 0, 0)
         self.editing_label = QLabel("Select an ability")
         self.editing_label.setStyleSheet("font-weight: 600; font-size: 12pt;")
         right.addWidget(self.editing_label)
@@ -712,7 +735,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         scroll.setWidget(holder)
         self.scroll = scroll
         right.addWidget(scroll, 1)
-        split.addLayout(right, 1)
+        split.addWidget(self.side)
 
                 # The counter goes on a line of its OWN, directly above the body.
         #
@@ -761,7 +784,14 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         set_empty_state(
             self.empty_note, has_data,
             self.scroll, self.search, self.list, self.editing_label,
-            self.language_controls, self.counter)
+            self.language_controls, self.counter, self.map)
+        # Beside the map the fields keep their column's width; with nothing
+        # loaded the note has the page.
+        if has_data:
+            self.side.setFixedWidth(FORM_WIDTH)
+        else:
+            self.side.setMinimumWidth(0)
+            self.side.setMaximumWidth(16777215)
         self._mark_edited()
         self._update_counter()
         if self.list.count():
@@ -858,6 +888,55 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         self._load_override(key)
         self._load_xml_tables(key)
         self._sync_icon_slot()
+        self._map_timer.stop()
+        self._show_on_map()
+
+    # -- the map -------------------------------------------------------------------
+
+    def ability_show(self, key: int) -> AbilityShow:
+        """
+        What the map plays for the ability on the page: its effect, charge,
+        animation, range, area and flags as the fields show them, pending
+        edits and inherited values included.
+        """
+        def number(row, default=0) -> int:
+            try:
+                return int(str(row.get_value_str()).strip())
+            except (AttributeError, TypeError, ValueError):
+                return default
+
+        rows = self.override_rows
+
+        def scalar(name: str) -> int:
+            row = rows.get(name)
+            return max(0, number(row, c.OVERRIDE_NOT_SET)) if row is not None else 0
+
+        flags = {flag_id for panel in self.flag_groups
+                 for flag_id, box in panel.boxes.items() if box.isChecked()}
+        formula = number(rows.get("Formula"), c.OVERRIDE_NOT_SET)
+        formula_name = reference_names.formula_names().get(formula, "")
+        reaction = (ap.RECEIVE_HEAL if "Heal" in formula_name
+                    else ap.TAKING_DAMAGE if "Dmg" in formula_name else None)
+        charge_type = number(self.animation_rows["ChargeEffectType"])
+        animation = number(self.animation_rows["AnimationId"])
+        name = nxd_data.effective_name(self.state, "ability", key, self.language)
+        return AbilityShow(
+            key=key, title=f"{key:03d} {name or '(unnamed)'}",
+            effect=number(self.effect_row, -1),
+            charge_time=scalar("CT"), charge_type=charge_type,
+            charge_name=reference_names.charge_effect_names().get(charge_type, ""),
+            animation=animation,
+            animation_name=reference_names.animation_names().get(animation, ""),
+            reach=ap.Reach(scalar("Range"), scalar("EffectArea"), scalar("Vertical"), flags),
+            reaction=reaction)
+
+    def _show_on_map(self) -> None:
+        if self.current_key is not None:
+            self.map.show(self.ability_show(self.current_key))
+
+    def _map_follows(self) -> None:
+        """An edit the map shows: played again once the typing stops."""
+        self._map_timer.start()
 
     def _sync_icon_slot(self) -> None:
         """
@@ -1152,6 +1231,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         # page for why. The icon preview follows IconId for the same reason.
         self._refresh_current_name()
         self._sync_icon_slot()
+        self._map_follows()
         self._after_edit()
 
     def _ability_label(self, key: int) -> str:
@@ -1292,6 +1372,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                 del edits[panel.field_name]
         if not edits:
             self.state.override_action_edits.pop(self.current_key, None)
+        self._map_follows()
         self._after_edit()
 
     def _commit_xml_table(self, table_key: str, rows: dict) -> None:
@@ -1313,9 +1394,11 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
 
     def _on_effect_edited(self) -> None:
         self._commit_xml_table("ability_effect", {"EffectId": self.effect_row})
+        self._map_follows()
 
     def _on_animation_edited(self) -> None:
         self._commit_xml_table("ability_animation", self.animation_rows)
+        self._map_follows()
 
     def _on_base_stat_edited(self) -> None:
         self._commit_xml_table("ability", self.base_stat_rows)

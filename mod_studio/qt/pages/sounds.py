@@ -972,12 +972,26 @@ class SoundsPage(QWidget):
                 text_path = text_path.replace(f".{current}.pzd",
                                               f".{language}.pzd")
         root = getattr(self.state, "nxd_unpack_dir", None)
+        # A text file the opened mod carries whole is what the mod's lines
+        # say: shown from its copy, and edits here are written on that copy
+        # at export (`AssetExportWorker`), so the mod's other lines survive.
+        carried = self._carried_text(text_path)
         try:
-            lines = pzd_data.read_pzd(Path(root) / text_path)
-        except (OSError, ValueError):
+            lines = pzd_data.read_pzd(carried if carried is not None else Path(root) / text_path)
+        except Exception:                                     # noqa: BLE001
+            # Unreadable (a mod's damaged copy can fail anywhere in the
+            # reader): no subtitle shown, rather than the page failing.
             return None, text_path, line_id
         entry = next((e for e in lines if e.line_id == line_id), None)
         return entry, text_path, line_id
+
+    def _carried_text(self, text_path: str):
+        """The opened mod's own copy of a text file, when it carries one whole, else None."""
+        wanted = str(text_path).replace("\\", "/").lower()
+        for rel, source in (getattr(self.state, "other_file_replacements", {}) or {}).items():
+            if str(rel).replace("\\", "/").lower() == wanted:
+                return Path(source)
+        return None
 
     def _refresh_subtitle(self) -> None:
         """Fills the subtitle panel for whichever archive is selected."""

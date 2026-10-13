@@ -122,12 +122,16 @@ def widest_digits(box, lowest, highest) -> str:
     The widest text a whole number from `lowest` to `highest` can be, in
     the box's font: as many of its widest digit as the end's number has, a
     minus before the low end's where it is below 0. (-1 to 9999 is at most
-    four digits wide, not a minus and four.)
+    four digits wide, not a minus and four.) Each digit is measured that
+    many times over: a font's digits can differ by a fraction of a pixel,
+    which one digit's width, a whole number, doesn't show (in Inter, 0 and
+    4 are both 8 wide, and ten of them 76 and 78).
     """
     metrics = box.lineEdit().fontMetrics()
-    digit = max("0123456789", key=metrics.horizontalAdvance)
-    texts = [digit * len(str(abs(int(end)))) for end in (lowest, highest) if end >= 0]
-    texts += ["-" + digit * len(str(abs(int(end)))) for end in (lowest, highest) if end < 0]
+    texts = []
+    for end in (lowest, highest):
+        count, sign = len(str(abs(int(end)))), "-" if end < 0 else ""
+        texts += [sign + digit * count for digit in "0123456789"]
     return max(texts, key=metrics.horizontalAdvance)
 
 

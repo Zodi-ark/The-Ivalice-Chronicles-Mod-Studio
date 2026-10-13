@@ -38,12 +38,15 @@ Each file holds 128 events, each event 16 unit slots, each slot 40 bytes:
 128 x 16 x 40 = 81,920, which is the exact size of all four files. Four
 files cover event ids 0x000-0x1FF, file *n* starting at (n-1) * 0x80.
 
-**There is no fifth file.** The PSP release has an ENTD5 with 80 more
-battles (FFTPatcher ships it as `PSP/bin/ENTD5.bin`, and reads it at event
-id 0x200 upward); Zodi confirms it was cut from The Ivalice Chronicles, and
-the database agrees - `EntryNo` holds exactly 512 rows and
-`OverrideEntryData.Key` tops out at 500, both inside 0x1FF. So an event id
-above 511 means something is wrong rather than that a file is missing.
+**A fifth file is in the game, and nothing reads it.** The PSP release has
+an ENTD5 with more battles (FFTPatcher ships it as `PSP/bin/ENTD5.bin`, and
+reads it at event id 0x200 upward). It was thought cut from The Ivalice
+Chronicles; measured 12 October, it is there:
+`fftpack/event_btlevt_bin_entrydata_add_ent.bin`, 49,280 bytes, 77 battles
+of 16 units (ids 0x200 to 0x24C), in both `fftpack.bin`s and the unpacked
+folder. The database still stops short of it - `EntryNo` holds exactly 512
+rows and `OverrideEntryData.Key` tops out at 500, both inside 0x1FF - so
+this module reads the four, and an event id above 511 is not one of them.
 
 ### The mapping into Mod Studio
 
@@ -271,8 +274,16 @@ def read_unit(block: bytes, event_id: int = -1, slot: int = -1) -> EventUnit:
     # than leaving callers to remember the mask.
     values["facing"] = block[27] & 0x7F
     values["upper_level"] = bool(block[27] & 0x80)
-    values["always_present"] = bool(block[24] & 0x01)
-    values["randomly_present"] = bool(block[24] & 0x02)
+    # Byte 24 from its top bit down (FFTPatcher's `EventUnit`, whose
+    # `CopyByteToBooleans` takes the top bit first): always present, randomly
+    # present, two bits of team colour, then control and immortal. Read as
+    # bits 0 and 1 until 12 October, which no unit sets: across the 7,829
+    # units, bits 0 and 1 are never set, and 2,504 of the random battles'
+    # 3,267 units are randomly present against 77 of the story battles' 470
+    # (`battle_maps` says which battles are which).
+    values["always_present"] = bool(block[24] & 0x80)
+    values["randomly_present"] = bool(block[24] & 0x40)
+    values["team"] = (block[24] >> 4) & 0x03
     return EventUnit(event_id=event_id, slot=slot, values=values)
 
 

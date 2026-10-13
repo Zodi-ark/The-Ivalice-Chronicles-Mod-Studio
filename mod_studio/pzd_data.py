@@ -446,6 +446,29 @@ def apply_line_edits(lines: list, edits: dict) -> list:
     return out
 
 
+def line_edits_between(game_lines: list, mod_lines: list) -> Optional[dict]:
+    """
+    A mod's copy of a text file as `{line_id: {field: value}}` edits on the
+    game's copy: `{}` when the two say the same, None when no edits can say
+    it.
+
+    Edits only change lines the game has (`apply_line_edits` above), so a
+    copy with a line added, taken out or moved is None: it can only travel
+    whole. Opening a mod uses this to give its text files back as edits,
+    which export writes on the game's current copy, so a later game update
+    to every other line still reaches the player.
+    """
+    if [line.line_id for line in game_lines] != [line.line_id for line in mod_lines]:
+        return None
+    edits = {}
+    for game, mod in zip(game_lines, mod_lines):
+        changed = {name: getattr(mod, name) for name in EDITABLE_FIELDS
+                   if getattr(mod, name) != getattr(game, name)}
+        if changed:
+            edits[game.line_id] = changed
+    return edits
+
+
 def voice_key(sab_path) -> tuple:
     """
     `(language-neutral voice path, language)` for a sound archive.

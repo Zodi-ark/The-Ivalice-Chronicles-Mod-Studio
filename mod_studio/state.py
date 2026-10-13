@@ -178,6 +178,7 @@ class WizardState:
         self.map_edits = {}
         self.sound_file_replacements = {}
         self.other_file_replacements = {}
+        self.mod_own_files = {}
         # Jobs, Job Commands and the XML tables, which this method's own
         # docstring has always promised and never delivered.
         #
@@ -744,6 +745,11 @@ class WizardState:
     # through untouched so opening and re-exporting can't quietly drop
     # parts of someone's mod.
     other_file_replacements: dict = field(default_factory=dict)
+    # The files an opened mod keeps outside its FFTIVC folder - its program
+    # code (a DLL and what it loads), a readme - as {path from the mod's
+    # folder: Path}. Export copies them into the mod as they are
+    # (`modconfig.recover_own_files`).
+    mod_own_files: dict = field(default_factory=dict)
     # {table name: {key tuple: {column: value}}} - changes to .nxd tables
     # that have no editor tab, carried over by the Game Updates page's
     # Rebase option and written back out at export. Distinct from

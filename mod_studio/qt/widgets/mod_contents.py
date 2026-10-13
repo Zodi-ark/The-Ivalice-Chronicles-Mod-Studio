@@ -206,7 +206,7 @@ class ModContentsPane(QWidget):
                 ("Game data tables (.nxd)", NXD_NOTE, True,
                  self._browser_nxd_summary,
                  lambda: any(fields
-                             for rows in (state.unmodelled_table_edits or {}).values()
+                             for rows in self._table_edits_off_maps().values()
                              for fields in rows.values())),
                 ("Table files (.xml)", None, False,
                  self._browser_xml_summary,
@@ -322,6 +322,14 @@ class ModContentsPane(QWidget):
                  "map that holds the same grid.",
                  True, self._map_summary,
                  lambda: state.has_any_map_edits()),
+                # Zodi, 12 October: what Load edited put in showed as a
+                # carried through file and rows edited on All Game Data.
+                ("Models, textures and rows",
+                 "A map's model from Load edited goes into the mod as it was "
+                 "built. Its textures are listed under Textures too, and its "
+                 "rows go into the tables' .nxd files with FF16Tools.",
+                 True, self._look_summary,
+                 lambda: bool(self._map_looks())),
             ]),
         ])
 
@@ -501,8 +509,53 @@ class ModContentsPane(QWidget):
         return (f"{spec.nxd_stem}.<lang>.nxd", NXD_NOTE, True, preview, shown)
 
     def _browser_nxd_summary(self) -> str:
-        return self._browser_summary(
-            self.state.unmodelled_table_edits or {}, "table")
+        return self._browser_summary(self._table_edits_off_maps(), "table")
+
+    def _map_looks(self) -> dict:
+        from ..pages.map_editor import map_looks
+        return map_looks(self.state)
+
+    def _table_edits_off_maps(self) -> dict:
+        """The mod's table edits less the rows that are a map's look (the Map Editor's)."""
+        from ..pages.map_editor import look_rows
+        theirs = look_rows(self.state)
+        out = {}
+        for table, rows in (self.state.unmodelled_table_edits or {}).items():
+            kept = {key: fields for key, fields in rows.items()
+                    if key not in theirs.get(table, {})}
+            if kept:
+                out[table] = kept
+        return out
+
+    def _look_summary(self) -> str:
+        """Each map's model, textures and table rows from the Map Editor."""
+        looks = self._map_looks()
+        if not looks:
+            return "No map's model, textures or rows from the Map Editor."
+        lines = []
+        for number, look in looks.items():
+            what = []
+            if look["mesh"]:
+                what.append("its model")
+            if look["textures"]:
+                count = len(look["textures"])
+                what.append(f"{count} texture{'s' if count != 1 else ''}")
+            rows = sum(len(found) for found in look["rows"].values())
+            if rows:
+                what.append(f"{rows} table row{'s' if rows != 1 else ''}")
+            lines.append(f"Map {number:03d}: " + ", ".join(what[:-1])
+                         + (" and " if len(what) > 1 else "") + what[-1] + ".")
+            if look["mesh"]:
+                lines.append(f"  bg/meshes/map_{number:03d}_mesh.bin")
+                lines.append(f"      from {look['mesh']}")
+            for rel, source in sorted(look["textures"].items()):
+                lines.append(f"  {rel}")
+                lines.append(f"      from {source}")
+            for table, found in sorted(look["rows"].items()):
+                keys = ", ".join("(" + ", ".join(str(k) for k in key) + ")" for key in sorted(found))
+                lines.append(f"  {table}: {keys}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     def _browser_xml_summary(self) -> str:
         return self._browser_summary(

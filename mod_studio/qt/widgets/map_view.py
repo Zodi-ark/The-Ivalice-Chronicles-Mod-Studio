@@ -110,6 +110,9 @@ class MapView(QWidget):
         self._ticker.timeout.connect(self._tick)
         #: `overlay(painter)`: drawn over the map, in the widget's pixels.
         self.overlay = None
+        #: Render the map with nothing behind it (alpha 0 there), for an
+        #: overlay that paints its own backdrop.
+        self.transparent = False
         #: Whether the overlay moves by itself (`overlay_ticker` repaints it).
         self.overlay_moves = False
         self.overlay_ticker = QTimer(self)
@@ -203,7 +206,7 @@ class MapView(QWidget):
         image = self.renderer.render(self.camera, round(self.width() * ratio),
                                      round(self.height() * ratio), show_grid=self.show_grid,
                                      background=(ground.redF(), ground.greenF(), ground.blueF()),
-                                     seconds=seconds)
+                                     seconds=seconds, transparent=self.transparent)
         if image is not None:
             image.setDevicePixelRatio(ratio)
             self.renders += 1

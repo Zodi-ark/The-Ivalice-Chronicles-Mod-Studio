@@ -589,6 +589,9 @@ def copy_nxd_files(source_dir: Path, filenames: list, mod_root: Path, mode: str)
 
 TEXTURE_EXTENSIONS = (".tga", ".tex")
 SOUND_EXTENSIONS = (".sab",)
+#: The files under a mod's `nxd/` that are the game's: its tables and its
+#: text. Anything else there (a converted `.sqlite`) is not a game file.
+CARRIED_NXD_EXTENSIONS = (".nxd", ".pzd")
 
 
 @dataclass
@@ -631,6 +634,13 @@ def recover_replaced_files(mod_root: Path) -> RecoveredFiles:
     offer to drop one when it turns out to be nothing but a stale copy of
     the game's own table.
 
+    So are the text files under `nxd/text/` (`.pzd`: scenes' dialogue,
+    voice lines, subtitles). They were skipped with the stray databases
+    until WotL Restoration was opened (13 October): its 15 scenes' text
+    vanished from any export to a new folder. Opening a mod then gives each
+    back as Sounds page edits when it is the game's copy with lines changed
+    (`pzd_data.line_edits_between`); any other stays carried whole.
+
     Files that are neither textures nor sounds are reported under `other`
     rather than silently ignored - the mod loader supports replacing any
     game file, and this tool shouldn't imply a mod contains less than it
@@ -653,7 +663,7 @@ def recover_replaced_files(mod_root: Path) -> RecoveredFiles:
             if relative.startswith("nxd/"):
                 if path.name.lower() in c.NXD_EDITABLE_FILENAMES:
                     continue          # regenerated on export; see the docstring
-                if path.suffix.lower() != ".nxd":
+                if path.suffix.lower() not in CARRIED_NXD_EXTENSIONS:
                     continue          # e.g. a stray converted .sqlite
                 result.other[relative] = path
                 continue
@@ -667,3 +677,70 @@ def recover_replaced_files(mod_root: Path) -> RecoveredFiles:
         break  # first mode present wins, same rule as the XML tables
 
     return result
+
+
+#: Files no mod means to ship, wherever they are: a file manager's
+#: thumbnails and folder settings.
+NOT_A_MODS_OWN_FILE = ("thumbs.db", "desktop.ini")
+
+
+def recover_own_files(mod_root: Path, config: Optional[dict] = None) -> dict:
+    """
+    Every file a mod keeps outside its `FFTIVC` folder, `{path from the
+    mod's folder: Path}`: its program code and what goes with it (a DLL,
+    its `.deps.json`, the Reloaded-II libraries it loads), a readme, a
+    licence. Export writes the mod's own `ModConfig.json` and icon itself,
+    so those two are left out (only beside each other, at the top: a
+    readme's picture that shares the icon's name is the mod's), and so is
+    anything hidden (a name starting with a dot, as `.git`).
+
+    Nothing read these before 13 October. An opened mod exported to a new
+    folder lost them, while the `ModConfig.json` it wrote (merged, so it
+    keeps every key Reloaded-II owns) still named the DLL: WotL Restoration
+    would have been looked for and not found. Export now copies them
+    across as they are; Mod Studio can't change code, and doesn't try.
+    """
+    mod_root = Path(mod_root)
+    written_by_export = {"modconfig.json"}
+    icon = str((config or {}).get("ModIcon") or "").strip().replace("\\", "/").lower()
+    if icon:
+        written_by_export.add(icon)
+    found = {}
+    if not mod_root.is_dir():
+        return found
+    for path in sorted(mod_root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(mod_root)
+        if relative.parts[0].lower() == "fftivc":
+            continue
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        if (relative.as_posix().lower() in written_by_export
+                or path.name.lower() in NOT_A_MODS_OWN_FILE):
+            continue
+        found[relative.as_posix()] = path
+    return found
+
+
+#: The `ModConfig.json` keys that name a mod's program code.
+CODE_KEYS = ("ModDll", "ModR2RManagedDll64", "ModR2RManagedDll32",
+             "ModNativeDll64", "ModNativeDll32")
+
+
+def code_names(config: Optional[dict], own_files: dict) -> list:
+    """
+    The program code a mod runs, by file name, for saying so on Export:
+    what its `ModConfig.json` names, else every `.dll` among its own files.
+    """
+    names = []
+    for key in CODE_KEYS:
+        value = str((config or {}).get(key) or "").strip()
+        if value:
+            name = Path(value.replace("\\", "/")).name
+            if name not in names:
+                names.append(name)
+    if not names:
+        names = sorted({Path(rel).name for rel in own_files
+                        if rel.lower().endswith(".dll")})
+    return names

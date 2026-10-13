@@ -51,6 +51,8 @@ not work.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFontMetrics, QPalette, QPen
 from PySide6.QtWidgets import (
@@ -67,6 +69,7 @@ from ... import entd
 from ... import nxd_data
 from ... import nxd_layouts
 from ... import reference_names
+from ... import unit_sprites
 from ..widgets.actions import (
     page_intro,
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, ViewToggles, apply_view_toggles,
@@ -76,6 +79,7 @@ from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow)
 from ..widgets.form_scroll import FormScrollArea
 from ..widgets.visible_refresh import RefreshesWhenVisible
+from .encounter_map import EncounterMap, MapUnit
 from .poaching import BoolFieldRow, TextFieldRow
 # The list pane's width, from the page Zodi asked this one to match.
 # Imported rather than repeated: two copies of 340 drift, and the reason
@@ -145,6 +149,19 @@ SLOT_SEPARATOR = "  ·  "
 #: Blank space kept between the longest sprite name and the dot column, so
 #: the two never touch on the row that sets the width.
 SLOT_COLUMN_GAP = 10
+
+#: The unit's fields, beside the map (Zodi, 12 October: the map "similar to
+#: the treasure Hunter page"). As wide as the form asks, and no less than
+#: this: a dropdown's longest entries ("462 - Halve MP") show whole.
+SIDE_MIN_WIDTH = 450
+#: How wide a dropdown beside the map is meant to be: "232 - Elven Cloak"
+#: and its arrow, with room to spare.
+SIDE_COMBO_WIDTH = 270
+#: The collapsible sections' own inset, each side.
+SECTION_INSET = 6
+
+#: Where an encounter row keeps its battle, for showing it on the map.
+BATTLE_ROLE = Qt.UserRole + 1
 
 
 class SlotColumnDelegate(QStyledItemDelegate):
@@ -873,8 +890,17 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         left.addWidget(self.list, 1)
         split.addLayout(left)
 
-        right = QVBoxLayout()
+        # The battle on its map, between the list and the fields.
+        self.map = EncounterMap(state, self.map_units, lambda key: self._name_for(None, key))
+        self.map.unit_picked.connect(self.select_slot)
+        self.map.unit_moved.connect(self.move_unit)
+        split.addWidget(self.map, 1)
+
+        self.side = QWidget()
+        right = QVBoxLayout(self.side)
+        right.setContentsMargins(0, 0, 0, 0)
         self.editing_label = QLabel(self.NOTHING_SELECTED)
+        self.editing_label.setWordWrap(True)
         self.editing_label.setStyleSheet("font-weight: 600; font-size: 12pt;")
         right.addWidget(self.editing_label)
 
@@ -1017,11 +1043,166 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
                                         QSizePolicy.Expanding)
         self._form_spacer.setVisible(False)
         right.addWidget(self._form_spacer, 1)
-        split.addLayout(right, 1)
+        split.addWidget(self.side)
         entries_column.addLayout(split, 1)
+        self._fit_side()
 
         self._apply_view(*self.view_toggles.state())
         self.refresh_records()
+
+    # -- the map ------------------------------------------------------------------
+
+    def _fit_side(self) -> None:
+        """
+        The fields' column beside the map. Its labels are as wide as the
+        longest of them needs (the rows' usual 200 left the dropdowns 160
+        wide beside a map, their entries cut: "255 - Job's Commar"), and the
+        column as wide as a row of label and `SIDE_COMBO_WIDTH` of dropdown
+        asks, never under `SIDE_MIN_WIDTH`. The map takes the rest. Fitted
+        again when the page shows, because the stylesheet goes on after the
+        pages are built and changes the text's width.
+        """
+        labelled = [row for row in self.rows.values() if isinstance(getattr(row, "label", None), QLabel)]
+        if labelled:
+            metrics = QFontMetrics(labelled[0].label.font())
+            width = max(metrics.horizontalAdvance(row.label.text()) for row in labelled) + 8
+            for row in labelled:
+                row.label.setFixedWidth(width)
+                # A dropdown takes the column's room: the note and stretch
+                # after it shared the leftover with it and left it at 160.
+                if isinstance(getattr(row, "combo", None), QComboBox):
+                    row.combo.setMinimumWidth(SIDE_COMBO_WIDTH)
+            include = max((row.include.sizeHint().width() for row in labelled
+                           if hasattr(row, "include")), default=20)
+            want = include + width + SIDE_COMBO_WIDTH + 3 * 8
+        else:
+            want = 0
+        holder = self.scroll.widget()
+        if holder is not None and holder.layout() is not None:
+            margins = holder.layout().contentsMargins()
+            want += margins.left() + margins.right()
+        extent = self.scroll.style().pixelMetric(QStyle.PM_ScrollBarExtent)
+        want += extent + 2 * self.scroll.frameWidth() + 2 * SECTION_INSET
+        self.side.setFixedWidth(max(SIDE_MIN_WIDTH, want))
+
+    def showEvent(self, event):                                   # noqa: N802
+        super().showEvent(event)
+        self._fit_side()
+
+    def _unit_values(self, address) -> Optional[dict]:
+        """
+        What the map needs of the unit at `address` (where it sits in the
+        list): the ENTD unit's values with its override row's effective
+        values over them, pending edits included. None for no unit there.
+        """
+        if self._entd is None:
+            return None
+        unit = self._entd.unit_at(address[0], address[1])
+        if unit is None:
+            return None
+        values = dict(unit.values)
+        origin = self._origin_at.get(tuple(address))
+        if origin is None:
+            return values
+        record = {self.address_of(r): r for r in self.records()}.get(origin)
+        stored = dict(getattr(record, "values", {}) or {})
+        stored.update(self.state.entry_edits.get(origin, {}))
+        inherited = self.inherited_values(origin)
+        for column, field in (("PositionX", "x"), ("PositionY", "y"), ("InitialDirection", "facing"),
+                              ("Spriteset", "sprite_set"), ("MainJob", "main_job")):
+            effective = self.effective_entry_value(origin, column, stored.get(column), inherited)
+            if effective is not None:
+                values[field] = int(effective)
+        try:
+            higher = int(stored.get("HigherElevation", 255))
+        except (TypeError, ValueError):
+            higher = 255
+        if higher in (0, 1):
+            values["upper_level"] = bool(higher)
+        try:
+            values["disabled"] = int(stored.get("Disable", 0) or 0) != 0
+        except (TypeError, ValueError):
+            values["disabled"] = False
+        return values
+
+    def _monster_look(self, job: int) -> tuple:
+        """A monster job's `(MonsterGraphic, MonsterPalette)`, the Jobs page's edits included."""
+        record = self.state.records_by_id().get(job) if self.state.job_records else None
+        values = dict(getattr(record, "values", {}) or {})
+        values.update(self.state.edits.get(job, {}))
+        out = []
+        for field in ("MonsterGraphic", "MonsterPalette"):
+            try:
+                out.append(int(values.get(field) or 0))
+            except (TypeError, ValueError):
+                out.append(0)
+        return tuple(out)
+
+    def map_units(self, battle) -> list:
+        """Every unit of `battle` in the list, as the map draws it (`MapUnit`)."""
+        units = []
+        records = {self.address_of(r): r for r in self.records()}
+        for address in sorted(a for a in self._slot_items if a[0] == battle):
+            values = self._unit_values(address)
+            if values is None:
+                continue
+            sprite_set, job = values.get("sprite_set", 0), values.get("main_job", 0)
+            graphic, monster_palette = self._monster_look(job)
+            palette = (monster_palette if sprite_set == unit_sprites.GENERIC_MONSTER
+                       else values.get("palette", 0))
+            origin = self._origin_at.get(address)
+            units.append(MapUnit(
+                address=tuple(address), editable=origin is not None,
+                x=int(values.get("x", 0)), y=int(values.get("y", 0)),
+                upper=bool(values.get("upper_level")), facing=int(values.get("facing", 0)),
+                sprite=unit_sprites.sprite_number(sprite_set, job, graphic), palette=palette,
+                team=int(values.get("team", 0)), randomly_present=bool(values.get("randomly_present")),
+                disabled=bool(values.get("disabled")),
+                label=self.slot_label(address, records.get(origin) if origin else None),
+                empty=not sprite_set))
+        return units
+
+    def select_slot(self, address) -> bool:
+        """Selects the slot at `address` - where it sits in the list - and loads it."""
+        item = self._slot_items.get(tuple(address))
+        if item is None:
+            return False
+        already = self.list.currentItem() is item
+        self.list.setCurrentItem(item)
+        if already:
+            self.load_record(tuple(address))
+        return True
+
+    def move_unit(self, address, x: int, y: int, level: int) -> None:
+        """
+        A unit dropped on another tile: its Position X and Y, and Higher
+        Elevation onto or off an upper level, set as typing them would. Each
+        field is ticked for the mod unless it ends up where the game has it.
+        """
+        if self._origin_at.get(tuple(address)) is None:
+            return
+        self.select_slot(address)
+        if self.current_address is None:
+            return
+        record = {self.address_of(r): r for r in self.records()}.get(self.current_address)
+        game = dict(getattr(record, "values", {}) or {})
+        inherited = self.inherited_values(self.current_address)
+        values = self._unit_values(tuple(address)) or {}
+        wanted = {"PositionX": x, "PositionY": y}
+        if bool(level) != bool(values.get("upper_level")):
+            wanted["HigherElevation"] = int(bool(level))
+        for column, value in wanted.items():
+            row = self.rows.get(column)
+            if row is None:
+                continue
+            as_game = self.effective_entry_value(self.current_address, column, game.get(column),
+                                                 inherited)
+            if column == "HigherElevation":
+                as_game = (int(game.get(column, 255)) if str(game.get(column, 255)) in ("0", "1")
+                           else int(bool(self._entd.unit_at(*self.display_address(
+                               self.current_address)).values["upper_level"])))
+            row.load(value, as_game is None or int(as_game) != int(value))
+        self._on_field_edited()
 
     # -- Unit Names (CharaName-xx) ----------------------------------------
 
@@ -1387,6 +1568,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
                 # container rather than something that can be edited, and
                 # `_on_selection` reads exactly this.
                 parent.setData(0, Qt.UserRole, None)
+                parent.setData(0, BATTLE_ROLE, address[0])
                 self.list.addTopLevelItem(parent)
                 self._encounter_items[address[0]] = parent
             slot = QTreeWidgetItem([self.slot_label(address, record)])
@@ -1443,7 +1625,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         set_empty_state(
             self.empty_note, has_data,
             self.scroll, self.search, self.list, self.editing_label,
-            self.move_controls)
+            self.move_controls, self.map)
         self._mark_edited()
         self._update_counter()
         # Back to whatever was selected, if it still exists - otherwise the
@@ -1486,6 +1668,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             else:
                 self.open_at_start(scroll=self._first_fill)
             self._first_fill = False
+        self.map.refresh()
 
     def open_at_start(self, scroll: bool = True) -> None:
         """
@@ -1511,6 +1694,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         self.move_controls.setVisible(False)
         self.editing_label.setText(self.NOTHING_SELECTED)
         self.move_note.setText("")
+        self.map.show_battle(None)
         if not scroll:
             return
         item = self._encounter_items.get(FIRST_STORY_ENCOUNTER)
@@ -1598,6 +1782,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
     #: The header before anything is chosen, and again after
     #: `open_at_start`. One string, because those are the same state.
     NOTHING_SELECTED = "Select an encounter row"
+    PICK_A_UNIT = "Click a unit on the map, or its row in the list, to edit it"
 
     def slot_label(self, address, record=None) -> str:
         """
@@ -1800,6 +1985,20 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         address = current.data(0, Qt.UserRole)
         if address is not None:
             self.load_record(tuple(address))
+            return
+        # An encounter row: its battle on the map, no unit picked, and no
+        # unit in the form either. It used to leave the last unit loaded,
+        # which with the map beside it read as editing a unit of the battle
+        # shown when it was another battle's.
+        battle = current.data(0, BATTLE_ROLE)
+        if battle is not None:
+            self.current_address = None
+            self.form_visible(False)
+            self.move_controls.setVisible(False)
+            self.editing_label.setText(self.PICK_A_UNIT)
+            self.move_note.setText("")
+            self.map.show_battle(int(battle))
+            self.map.show_unit(None)
 
     def load_record(self, address: tuple) -> None:
         """
@@ -1836,9 +2035,10 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         self.move_controls.setVisible(traded)
         # The address it will be WRITTEN to, which is the battle these
         # values now affect. `_refresh_move_state` says where it came from.
+        # The battle's name is over the map now; the header names the unit.
         self.editing_label.setText(
-            f"Editing: {address[0]}/{address[1]} - "
-            f"{self._name_for(None, address[0])}")
+            f"Editing: {address[0]}/{address[1]}{SLOT_SEPARATOR}"
+            f"{self.slot_label(address, record)}")
         self._refresh_move_state()
 
         # Before the rows are filled, not after. Each row's Inherit entry
@@ -1864,6 +2064,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
                 if effective is not None:
                     stored = effective
             row.load(stored, False)
+        self.map.show_unit(address)
 
     def _load_entd_only(self, address: tuple) -> None:
         """
@@ -1880,12 +2081,12 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         self.trade_button.setVisible(True)
         self.undo_move_button.setVisible(False)
         self.editing_label.setText(
-            f"{address[0]}/{address[1]} - {self._name_for(None, address[0])}"
-            f"  \u00b7  {self.slot_label(address)}")
+            f"{address[0]}/{address[1]}{SLOT_SEPARATOR}{self.slot_label(address)}")
         self.trade_button.setEnabled(True)
         self.undo_move_button.setEnabled(False)
         self._pending_target = address
         self.move_note.setText(ENTD_ONLY_MESSAGE)
+        self.map.show_unit(address)
 
     def form_visible(self, on: bool) -> None:
         """Shows or hides the editing form, leaving the list alone."""
@@ -1983,6 +2184,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         self._refresh_choices()
         self._mark_edited()
         self._update_counter()
+        self.map.refresh()
         if self.current_address is None:
             return
         self.load_record(self.current_address)
@@ -2008,6 +2210,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         self._relabel_slot(self.current_address)
         self._mark_edited()
         self._update_counter()
+        self.map.refresh_units()
         self.edits_changed.emit()
 
     def _relabel_slot(self, address) -> None:

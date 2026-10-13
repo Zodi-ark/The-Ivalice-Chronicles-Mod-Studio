@@ -34,10 +34,22 @@ the battle grid (`map_enhanced.panels_following`), which the Map Editor edits.
   drawn for, the classic polygon it came from, its render properties, its
   markers. A value within a hair of the old one (a 3D program writes six
   decimals) keeps the old one exactly.
-- **A part whose faces changed**: each face with the corners of one of the
-  part's old polygons is that polygon again; any other face is new, drawn
-  from every camera corner, bound to no tile, with the markers the game's
-  own polygons of its kind have.
+- **A part whose faces changed**: a face on the corners of one of the
+  game's polygons, anywhere in its block, is that polygon again, given
+  another texture group or moved to another part as well (Zodi, 12
+  October: a face only repainted keeps the tile it is drawn for, its
+  classic polygon and its UV pool's extra bytes). Any other face is new,
+  drawn from every camera corner, bound to no tile, with the markers the
+  game's own polygons of its kind have.
+- **The game's order kept** (Zodi, 12 October). `RefinedBgMeshPolygon`'s
+  rows most likely find a polygon by its place among its block's polygons
+  of its kind (the map research notes). So every game polygon stays in its
+  place, new ones come after, and one no longer in the model stays as an
+  `empty_face` (every corner at one point: nothing drawn, bound to no
+  tile), so those after it keep theirs. A package made from a mod's look
+  leaves its empty faces out of the model (`map.json` lists them) and
+  keeps them as they are; a mod's own polygon taken out goes, as it comes
+  after the game's (`game_polygon_counts`).
 - **Textures**: a PNG whose bytes changed since it was written, or a
   material pointed at another file, replaces that texture in the mod.
 - **A texture's repeat** (`map_enhanced.Block.repeat`: water's colour
@@ -62,6 +74,15 @@ name slot) says (`map_enhanced`'s notes). So:
   two `RefinedBgTexture` rows shaped as the map's first group's are: as
   many entries for its story lightings and random battles, so the group
   is there under every lighting (`Built.table_rows`).
+- **No group number skipped** (`gap_rows`). The game's maps number their
+  groups without a gap: in the 1.5.2 game, every map's rows run 0 to its
+  last, a number no face uses (010's 2, 012's 7 ...) and the highlight
+  panels' when a group comes after them (16 maps) having two rows with
+  every list empty. In the game (085, 7 to 12 October), a new group 7
+  past the panels' 3 drew black, even named for the ground's own
+  textures; groups 4 and 5, with group 3's two empty rows, drew their
+  textures. So a number between the map's groups and a new one gets the
+  two empty rows too.
 - **A new part** drawn other than solid gets a `RefinedBgMeshNode` row, as
   `parts.txt` says (`PART_KINDS`, measured on the game's 1,429 rows); a
   solid one needs none, as 87 of the game's own parts on 19 maps have none
@@ -81,10 +102,11 @@ texture, drawn on it, darkened, in `guides/` - Zodi asked how a person is
 to know where on which texture a part of the model is.
 
 Still out of reach, and said so: new moving parts (the anim file and
-`RefinedBgAnim`), a new group with frames, the classic look, and what the
-game does with a face bound to no tile. Not tried in the game yet: a
-package's new texture groups and parts (the rows are the game's shape;
-whether the game picks up rows a mod adds to these tables is not known).
+`RefinedBgAnim`), a new group with frames, the classic look. Tried in the
+game (085, 7 to 12 October): new texture groups, through rows a mod adds
+to `RefinedBgTexture`, numbered without a gap; new faces, bound to no
+tile, drawn as the game's. Not tried yet: a part drawn other than solid,
+through a row a mod adds to `RefinedBgMeshNode`.
 
 `python -m mod_studio.map_package` does all of it from a command line:
 `export`, `check`, `build` and `preview`; `preview` runs
@@ -123,6 +145,8 @@ POSITION_SLACK, UV_SLACK = 1e-3, 2e-6
 #: What a new polygon's render properties start from, and the four bits
 #: that leave it out from a camera corner, which a new polygon doesn't have.
 NEW_RENDER, HIDE_BITS = 0x8001, 0x3C00
+#: map.json's "base" "from" for a package saved from a mod's own model.
+FROM_MOD = "the mod's own mesh"
 #: The markers of the game's own polygons, by kind (measured on all 108
 #: files: the same on every polygon of a kind in a block). `T` is the tile,
 #: `S` the source, `R` the render properties; `F` is FF FF in block 0 and
@@ -132,6 +156,8 @@ MARKERS = {"tq": ("TF", "0S", "bF", "RF"), "tt": ("TF", "0S", "RF"),
 
 #: The tables a map's look is found by (`map_enhanced`'s notes).
 TEXTURE_TABLE, NODE_TABLE = "RefinedBgTexture", "RefinedBgMeshNode"
+#: The units' lighting per camera corner (`map_lighting`).
+SYSTEM_TABLE = "RefinedBgSystemTexture"
 #: Texture groups a map has room for: the mesh holds a repeat for 32.
 GROUPS = 32
 #: A part's `RefinedBgMeshNode` columns, bar its key, DLCFlags and Comment.
@@ -324,10 +350,13 @@ def export_package(game_dir, number: int, folder, sqlite_path=None, mesh_file=No
               f"# Read {README} before editing. 28 units to a tile, 12 to a height step, y up.",
               f"mtllib {MATERIALS}"]
     v_count = vt_count = vn_count = 0
-    by_object = {}
+    by_object, empty = {}, []
     for b, block in enumerate(mesh.blocks):
         for poly in block.polygons(b):
             if me.is_panel(poly.part):
+                continue
+            if is_empty_face(block, poly):
+                empty.append([b, poly.number])
                 continue
             by_object.setdefault((b, block.parts[poly.corners[0]]), []).append(poly)
     for (b, slot), polys in sorted(by_object.items()):
@@ -437,11 +466,13 @@ def export_package(game_dir, number: int, folder, sqlite_path=None, mesh_file=No
     metadata = {
         "kind": KIND_NAME, "version": VERSION, "map": number,
         "base": {"file": f"{BASE}/{base_name}", "sha256": hashlib.sha256(data).hexdigest(),
-                 "from": "the mod's own mesh" if mesh_file else f"{me.MESH_FOLDER}/{base_name}"},
+                 "from": FROM_MOD if mesh_file else f"{me.MESH_FOLDER}/{base_name}"},
         "groups": groups,
         "pictures": written,
         "missing_pictures": missing,
         "objects": objects,
+        "empty_faces": empty,
+        "game_polygons": game_polygon_counts(game_dir, number, mesh),
         "parts": parts,
         "new_group": template,
         "grid": grid,
@@ -641,7 +672,9 @@ The model
   * A new object name is a new part (31 letters at most, 32 parts to a
     moving part). New moving parts (NAME@N with a new N) can't be added.
   * Faces that are the same as before keep everything the game knows about
-    them. New faces are drawn from every camera corner and belong to no tile.
+    them, given another material too. New faces are drawn from every camera
+    corner and belong to no tile. A face you delete stays in the file, empty
+    and drawn nowhere, so the game's faces after it keep their places.
   * The tiles' move and target highlights are not in the model: they follow
     the battle grid (seen in the game: raised tiles carry their highlights
     up with them).
@@ -688,7 +721,8 @@ Textures, and where a face is on one
     whole, only line it up in Blender: leave them.
   * Some maps have more than one lighting (a story battle's, the random
     battles'): those textures are in the game folder, and change on the
-    Textures page. This folder has the usual one.
+    Textures page, or all at once with the Map Editor's Light the map
+    (below). This folder has the usual one.
 
 What changing the model does to the textures
 
@@ -702,6 +736,25 @@ What changing the model does to the textures
   * Moving a face's UVs onto another part of the texture also moves it
     onto another part of the lighting, which was painted for something
     else there. Paint the lighting there too, or give the face a new group.
+
+Lighting, made for you or baked in Blender
+
+  * The Map Editor's Light the map makes every group's lighting texture for
+    the map as your mod has it, from a sun, the sky and lamps you set, with
+    the border's colour texture and the units' lighting (lut_chara), for
+    every lighting the map has or for one. Load edited first: it lights the
+    model you loaded.
+  * To bake your own in Blender instead: import map.obj, add a Sun, and set
+    the World's colour for the sky. In Render Properties pick Cycles, and
+    under Bake pick Diffuse, with Direct and Indirect on and Color off. For
+    each group, add an Image Texture node to its material with a new image
+    the size of its lighting PNG, leave the node unconnected and selected,
+    select the group's faces, and Bake. Save the image over the group's
+    lighting PNG here (textures/NAME_lighting.png), and Load edited puts it
+    in, for the usual lighting.
+  * The game draws colour times lighting times 2, so baked white is twice a
+    texture's own brightness: aim for lit ground about three quarters
+    white, and shade about half.
 
 A new texture group (for a new map, or a new texture)
 
@@ -721,6 +774,9 @@ A new texture group (for a new map, or a new texture)
     table: the Map Editor adds them to your mod when you Load edited, and
     puts them in when you export it. One texture, still (no frames), the
     same under every lighting the map has.
+  * The game needs a map's groups numbered without a gap. A number between
+    the map's groups and yours (the highlight panels' often is) gets two
+    empty rows in the table, as the game's own maps have.
 
 Parts, and how the game draws them
 
@@ -747,12 +803,16 @@ Parts, and how the game draws them
     it then gets a row. Change an existing part's word to draw it another
     way too. The Map Editor adds the rows when you Load edited.
 
+Tried in the game
+
+  New texture groups (map 085): their textures drawn in a battle, and new
+  faces drawn as the game's own.
+
 Not tried in the game yet
 
-  New texture groups, and parts drawn other than solid: their rows are
-  made as the game's own are, but whether the game picks up rows a mod
-  adds to these tables hasn't been tried. A first test: one new group on
-  one map, in a battle.
+  Parts drawn other than solid: their rows are made as the game's own
+  are, but whether the game picks up a RefinedBgMeshNode row a mod adds
+  hasn't been tried.
 
 The classic look
 
@@ -1069,6 +1129,76 @@ def _int16_normal(world_normal) -> tuple:
     return tuple(int(round(max(-1.0, min(1.0, c / length)) * 4096)) for c in (-x, -y, z))
 
 
+def _game_places(base, counts: Optional[dict]) -> set:
+    """
+    `{(block, number)}`: the base's polygons in the game's places, the first
+    of each kind in each block, as many as the game's mesh has
+    (`game_polygon_counts`, in map.json); every one without the counts.
+    """
+    out = set()
+    for b, block in enumerate(base.blocks):
+        limit = (counts or {}).get(str(b))
+        seen = Counter()
+        for poly in block.polygons(b):
+            seen[poly.kind] += 1
+            if limit is None or seen[poly.kind] <= int(limit.get(poly.kind, 0)):
+                out.add((b, poly.number))
+    return out
+
+
+def _corner_key(points) -> tuple:
+    """A polygon's corners, rounded and in no order: how a face is found among the game's."""
+    return tuple(sorted(tuple(round(v, 2) for v in point) for point in points))
+
+
+def _same_turn(old, new) -> bool:
+    """Whether `new` goes round the same corners as `old` in the same order (from any corner)."""
+    old = [tuple(round(v, 2) for v in point) for point in old]
+    new = [tuple(round(v, 2) for v in point) for point in new]
+    return any(old[k:] + old[:k] == new for k in range(len(old)))
+
+
+def is_empty_face(block, poly) -> bool:
+    """Whether a polygon is an `empty_face`: every corner at one point (none of the game's is)."""
+    return len({tuple(block.positions[c]) for c in poly.corners}) == 1
+
+
+def game_polygon_counts(game_dir, number: int, fallback=None) -> dict:
+    """
+    `{"block": {"kind": count}}`: how many polygons of each kind each block
+    of the game's own mesh has, the places a mod's mesh keeps for them
+    (`build`). From `fallback`, a mesh, when the game's can't be read.
+    """
+    try:
+        mesh = me.read_mesh(me.mesh_path(game_dir, number).read_bytes())
+    except (OSError, me.EnhancedMapError, TypeError):
+        mesh = fallback
+    if mesh is None:
+        return {}
+    out = {}
+    for b, block in enumerate(mesh.blocks):
+        kinds = Counter(p.kind for p in block.polygons(b))
+        out[str(b)] = {kind: kinds.get(kind, 0) for kind in me.KINDS}
+    return out
+
+
+def empty_face(poly: me.PolygonData) -> me.PolygonData:
+    """
+    A game polygon no longer in the model, kept at its place in the file:
+    every corner where its first is, so it has no area and nothing is drawn,
+    bound to no tile; its part, group, words, UVs and normals as they were.
+    """
+    first = tuple(poly.corners[0].position)
+    corners = []
+    for k, corner in enumerate(poly.corners):
+        word = bytearray(corner.word)
+        if k == 0:
+            word[0:2] = me.UNBOUND
+        corners.append(me.CornerData(first, bytes(word), tuple(corner.normal), tuple(corner.uv),
+                                     bytes(corner.extra)))
+    return me.PolygonData(poly.kind, poly.part, corners, poly.group)
+
+
 def _new_words(kind: str, block: int, render: int, template: Optional[list]) -> list:
     """A new polygon's corner words: the game's markers for its kind, no tile, no source."""
     if template is not None:
@@ -1174,15 +1304,16 @@ def build(folder, game_dir=None) -> Built:
             for b in range(len(slots)):
                 slots[b][group] = tuple(repeat)
             notes.append(f"{material}'s texture repeats {repeat[0]:g} by {repeat[1]:g} times now")
-    new_polys = [[p for p, poly in zip(base_blocks[b].polygons, block.polygons(b)) if me.is_panel(poly.part)]
-                 for b, block in enumerate(base.blocks)]
     templates = {}
     for b, block in enumerate(base.blocks):
         for poly in block.polygons(b):
             if not me.is_panel(poly.part):
                 templates.setdefault((b, poly.kind), [block.words[c] for c in poly.corners])
     exact = True
-    seen_ids = set()
+    # The objects first: their parts, and which are as the package left them
+    # (their faces the polygons map.json lists, one for one). Those polygons
+    # are theirs before any other face can be taken for one of them.
+    plans, seen_ids = [], set()
     for name in package.object_order:
         faces = package.objects[name]
         if not faces:
@@ -1215,20 +1346,33 @@ def build(folder, game_dir=None) -> Built:
             o is not None and len(f.corners) == len(o.corners)
             and m == (o.group if o.textured else None)
             for f, o, m in zip(faces, originals, materials)))
-        if not same:
+        if same:
+            seen_ids.update((b, o.number) for o in originals)
+        else:
             exact = False
-        # The part's old polygons, by where their corners are, for faces
-        # that are old polygons in a changed part.
-        by_corners = {}
-        if not same:
-            for poly in by_part.get((b, base.blocks[b].names.index(part)), []) \
-                    if part in base.blocks[b].names else []:
-                if me.is_panel(poly.part):
-                    continue
-                key = (poly.group if poly.textured else None,
-                       tuple(sorted(tuple(round(v, 2) for v in base.blocks[b].positions[c])
-                                    for c in poly.corners)))
-                by_corners.setdefault(key, []).append(poly)
+        plans.append((name, faces, part, b, slot, originals, materials, same))
+    placed = [{} for _ in base.blocks]          # {polygon number: PolygonData}, the game's own
+    fresh = [[] for _ in base.blocks]           # new polygons, in the model's order
+    # Empty faces a build left (below) stay as they are; the package's model
+    # leaves them out.
+    empty_ids = set()
+    for b, block in enumerate(base.blocks):
+        for poly in block.polygons(b):
+            if not me.is_panel(poly.part) and is_empty_face(block, poly):
+                empty_ids.add((b, poly.number))
+                placed[b][poly.number] = base_blocks[b].polygons[poly.number]
+    # The game's polygons by where their corners are, anywhere in their
+    # block, for the faces of the parts that changed: a face on a game
+    # polygon's corners is that polygon, repainted or moved to another part
+    # as well, and keeps its tile, its classic polygon and its UV pool's
+    # extra bytes.
+    by_corners = [{} for _ in base.blocks]
+    if any(not plan[-1] for plan in plans):
+        for b, block in enumerate(base.blocks):
+            for poly in block.polygons(b):
+                if not me.is_panel(poly.part) and (b, poly.number) not in empty_ids:
+                    by_corners[b].setdefault(_corner_key(block.positions[c] for c in poly.corners), []).append(poly)
+    for name, faces, part, b, slot, originals, materials, same in plans:
         renders = Counter(p.render & ~HIDE_BITS for p in by_part.get(
             (b, base.blocks[b].names.index(part)), []) if not me.is_panel(p.part)) \
             if part in base.blocks[b].names else Counter()
@@ -1243,11 +1387,16 @@ def build(folder, game_dir=None) -> Built:
                                 f"(group_{group}) needs a UV at every corner")
                 continue
             original = originals[index] if same else None
-            if original is None and not same:
-                key = (group, tuple(sorted(tuple(round(v, 2) for v in _file(p)) for p, _t, _n in face.corners)))
-                candidates = [p for p in by_corners.get(key, []) if (b, p.number) not in seen_ids]
-                if candidates and len(candidates[0].corners) == len(face.corners):
-                    original = candidates[0]
+            if original is None and not same and len(face.corners) <= 4:
+                points = [_file(p) for p, _t, _n in face.corners]
+                block = base.blocks[b]
+                candidates = [q for q in by_corners[b].get(_corner_key(points), [])
+                              if (b, q.number) not in seen_ids and len(q.corners) == len(points)
+                              and q.textured == (group is not None)]
+                if candidates:
+                    original = max(candidates, key=lambda q: (
+                        (q.group if q.textured else None) == group, q.part == part,
+                        _same_turn([block.positions[c] for c in q.corners], points)))
             pieces = ([face.corners] if len(face.corners) <= 4 else
                       [[face.corners[0], face.corners[i], face.corners[i + 1]]
                        for i in range(1, len(face.corners) - 1)])
@@ -1262,7 +1411,7 @@ def build(folder, game_dir=None) -> Built:
                 if original is not None:
                     seen_ids.add((b, original.number))
                     corners = []
-                    moved = False
+                    moved = original.textured and group != original.group
                     for (p, t, n), c in zip(piece, original.corners):
                         old = me.CornerData(tuple(block.positions[c]), bytes(block.words[c]))
                         new_position = _snap(_file(p), old.position, POSITION_SLACK)
@@ -1279,10 +1428,11 @@ def build(folder, game_dir=None) -> Built:
                                 moved = True
                             old.normal = normal
                         corners.append(old)
+                    moved |= slot != block.parts[original.corners[0]]
                     counts["moved" if moved else "kept"] += 1
                     exact &= not moved
-                    new_polys[b].append(me.PolygonData(original.kind, slot, corners,
-                                                       original.group if original.textured else 0))
+                    placed[b][original.number] = me.PolygonData(original.kind, slot, corners,
+                                                                group if original.textured else 0)
                     continue
                 exact = False
                 counts["new"] += 1
@@ -1298,26 +1448,43 @@ def build(folder, game_dir=None) -> Built:
                         given = _int16_normal(n) if n is not None else (0, 0, 0)
                         corner.normal = given if any(given) else face_normal
                     corners.append(corner)
-                new_polys[b].append(me.PolygonData(kind, slot, corners, group or 0))
+                fresh[b].append(me.PolygonData(kind, slot, corners, group or 0))
     kept_ids = {(b, p.number) for b, block in enumerate(base.blocks) for p in block.polygons(b)
                 if me.is_panel(p.part)}
-    gone = [key for key, poly in base_polys.items()
-            if key not in seen_ids and key not in kept_ids]
+    gone = [key for key in base_polys if key not in kept_ids and key[1] not in placed[key[0]]]
+    game_places = _game_places(base, meta.get("game_polygons"))
     if gone:
         counts["gone"] = len(gone)
         exact = False
         notes.append(f"{len(gone)} of the map's faces are no longer in the model")
     if problems:
         raise PackageError("\n".join(problems))
+    # Every game polygon where it was among its block's polygons of its kind,
+    # which is how RefinedBgMeshPolygon's rows likely find them (the map
+    # research notes); one no longer in the model stays as an empty face,
+    # so those after it keep their places. New ones come after.
+    new_polys = []
+    for b, block in enumerate(base.blocks):
+        polys = []
+        for poly in block.polygons(b):
+            if me.is_panel(poly.part):
+                polys.append(base_blocks[b].polygons[poly.number])
+            elif poly.number in placed[b]:
+                polys.append(placed[b][poly.number])
+            elif (b, poly.number) in game_places:
+                polys.append(empty_face(base_blocks[b].polygons[poly.number]))
+            # else a mod's own polygon, after the game's: nothing to keep a place for
+        new_polys.append(polys + fresh[b])
     repeats_kept = all(tuple(slots[b][g]) == tuple(block.slot_values[g])
                        for b, block in enumerate(base.blocks) for g in range(len(block.slot_values)))
-    if exact and repeats_kept and len(seen_ids) == len(base_polys) - len(kept_ids):
+    if exact and repeats_kept and not gone and not any(fresh):
         mesh_bytes, changed = package.base_data, False
     else:
         blocks = [me.BlockData(names[b], slots[b], new_polys[b]) for b in range(len(base.blocks))]
         mesh_bytes, changed = me.write_mesh(me.assemble(number, blocks)), True
     pictures = changed_pictures(package, notes, problems)
-    used = {p.group for polys in new_polys for p in polys if p.kind in ("tq", "tt")}
+    used = {p.group for polys in new_polys for p in polys if p.kind in ("tq", "tt")
+            and len({tuple(c.position) for c in p.corners}) > 1}
     table_rows, added_groups = group_rows(package, new_groups, used, pictures, notes)
     node_rows = part_rows(package, names, problems, notes)
     if problems:
@@ -1413,7 +1580,44 @@ def group_rows(package: Package, new_groups: dict, used: set, pictures: dict, no
         rows[(number, group, 1)] = _texture_row(Path(light).stem, template.get("lighting") or {})
         added[group] = [colour, light]
         notes.append(f"group_{group} is a new texture group: {colour}, with {said}")
+    gaps = gap_rows(meta, {key[1] for key in rows})
+    if gaps:
+        names = [f"group_{g}" for g in gaps]
+        said = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+        notes.append(f"{said} {'gets' if len(names) == 1 else 'get'} two empty rows, so the map's "
+                     f"texture groups are numbered without a gap, as the game needs")
+        for group in gaps:
+            for kind in (0, 1):
+                rows[(number, group, kind)] = dict(GAP_ROW)
     return ({TEXTURE_TABLE: rows} if rows else {}), added
+
+
+#: The two rows a group number no texture uses has, Key3 0 and 1: every list
+#: empty, as the game's own are (010's group 2, 085's group 2's lighting).
+GAP_ROW = {"DLCFlags": 0, "Unknown8": "[]", "Unknown10": "[]", "Unknown18": "[]", "Unknown20": "[]",
+           ADDED_ROW: True}
+
+
+def gap_rows(meta: dict, made: set) -> list:
+    """
+    The group numbers below the highest of `made` (the groups a mod adds
+    rows for) with none of the game's rows, and not one of `made`. In the
+    game a group past a skipped number drew black: each of these gets two
+    empty rows (`GAP_ROW`), as the game's own maps have for a number no
+    texture uses.
+
+    The game's rows are `map.json`'s groups the mod doesn't add: saved with
+    the database, as the Map Editor saves, they are every group the game's
+    table has rows for, empty ones too (all 108 maps). Saved without it,
+    from the texture files, a number whose game rows are empty is missed,
+    and gets the same empty rows, which change nothing. A mod's own gap
+    rows, which a package saved from its look lists as groups it adds, are
+    made again here: nothing else keeps them.
+    """
+    if not made:
+        return []
+    have = {int(g) for g, entry in (meta.get("groups") or {}).items() if not entry.get("added")}
+    return [g for g in range(max(made)) if g not in have and g not in made]
 
 
 def part_rows(package: Package, names: list, problems: list, notes: list) -> dict:

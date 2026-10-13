@@ -109,6 +109,10 @@ class FlowLayout(QLayout):
 
         for item in self._items:
             hint = item.sizeHint()
+            # Never wider than the row, down to the item's own minimum: a
+            # dropdown wider than a narrow row is narrowed, not cut off.
+            hint = QSize(min(hint.width(), max(item.minimumSize().width(), area.width())),
+                         hint.height())
             next_x = x + hint.width() + self.spacing()
             if next_x - self.spacing() > area.right() and line_height > 0:
                 # Does not fit on this line, and this line has something on

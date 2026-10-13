@@ -175,6 +175,9 @@ class Scene:
     #: enhanced look only: `{group: GroupPictures}`, and their folder in the game
     pictures: dict = field(default_factory=dict)
     picture_folder: str = ""
+    #: enhanced look only: the file each group's lighting texture was read
+    #: from (the game's, a mod's, or Light the map's preview)
+    light_files: dict = field(default_factory=dict)
     #: enhanced look only: the map's lightings (`map_enhanced.Lighting`) and
     #: which of them `pictures` are
     lightings: list = field(default_factory=list)
@@ -369,6 +372,7 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
             colour = picture(entry.colour[0])
             if entry.lighting:
                 light = picture(entry.lighting)
+                scene.light_files[group] = replaced.get(entry.lighting.lower(), textures / entry.lighting)
             if colour is not None and len(entry.colour) > 1 and group not in still:
                 frames = [colour] + [picture(name) for name in entry.colour[1:]]
                 # A frame that isn't there shows the first in its place.

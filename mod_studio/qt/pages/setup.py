@@ -33,8 +33,8 @@ from PySide6.QtWidgets import (
 )
 
 from ... import (
-    audiomog, ff16tools, game_install, modconfig, nxd_data, paths, reloaded,
-    ui_settings)
+    audiomog, ff16tools, game_install, modconfig, nxd_data, paths, pzd_data,
+    reloaded, ui_settings)
 from ... import sound_data as sd, texture_data as td
 from ... import map_classic as mc
 from ... import uib
@@ -1942,6 +1942,26 @@ class SetupPage(QWidget):
             self._take_over_layouts()
             self._take_over_part_lists()
             self._take_over_maps()
+            self._take_over_texts()
+
+        # The mod's own files outside FFTIVC: its program code and what goes
+        # with it. Nothing here can change them; export copies them across,
+        # so a mod exported to a new folder still has the DLL its
+        # ModConfig.json names.
+        try:
+            self.state.mod_own_files = modconfig.recover_own_files(
+                existing.mod_root, existing.config)
+        except OSError as exc:
+            self._log(f"Couldn't read this mod's own files: {exc}")
+            self.state.mod_own_files = {}
+        if self.state.mod_own_files:
+            code = modconfig.code_names(existing.config, self.state.mod_own_files)
+            count = len(self.state.mod_own_files)
+            self._log(f"Carrying {count} of this mod's own file{'s' if count != 1 else ''} "
+                      f"(outside its FFTIVC folder) through as {'they are' if count != 1 else 'it is'}.")
+            if code:
+                self._log(f"This mod runs its own code ({', '.join(code)}). Mod Studio "
+                          f"can't change it; it goes into the export as it is.")
 
         # The mod's own game data, converted from the `.nxd` files it ships.
         #
@@ -1969,6 +1989,56 @@ class SetupPage(QWidget):
             self._log(f"   {line}")
         self._refresh_readiness()
         self.setup_changed.emit()
+
+    def _take_over_texts(self) -> None:
+        """
+        Turns the text files this mod ships back into Sounds page edits.
+
+        A `.pzd` arrives among the carried-through files (`modconfig.
+        recover_replaced_files`). Each one at a path the unpacked game has a
+        copy at is compared with it, as screen layouts are: when it is the
+        game's file with some lines' words, speaker or voice changed - the
+        kind of change the Sounds page makes - those become its edits, and
+        export writes them on the game's current copy. One the same as the
+        game's is let go. Any other - a line added or taken out, or a file
+        the game hasn't, as a new scene's text - stays carried whole; the
+        Sounds page then reads its lines from the mod's copy, and export
+        writes edits made there on that copy.
+        """
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        carried = self.state.other_file_replacements
+        texts = [rel for rel in carried if rel.lower().endswith(".pzd")]
+        if not texts or not game:
+            return
+        taken, same, kept = 0, 0, 0
+        for rel in sorted(texts):
+            original = Path(game) / rel
+            edits = None
+            if original.is_file():
+                try:
+                    edits = pzd_data.line_edits_between(pzd_data.read_pzd(original),
+                                                        pzd_data.read_pzd(Path(carried[rel])))
+                except Exception:                          # noqa: BLE001
+                    # A copy that can't be read (damaged, or a layout
+                    # this reader doesn't know) is carried as it is.
+                    edits = None
+            if edits:
+                self.state.pzd_edits[rel] = edits
+                carried.pop(rel)
+                taken += 1
+            elif edits == {}:
+                carried.pop(rel)
+                same += 1
+            else:
+                kept += 1
+        if taken:
+            self._log(f"Opened {taken} of this mod's text file(s) as Sounds page edits.")
+        if same:
+            self._log(f"{same} of this mod's text file(s) {'is' if same == 1 else 'are'} the same "
+                      f"as the game's own, so {'it' if same == 1 else 'they'} won't be exported again.")
+        if kept:
+            self._log(f"Carrying {kept} text file(s) through as they are: new to the game, or "
+                      f"with lines added or taken out.")
 
     def _take_over_layouts(self) -> None:
         """

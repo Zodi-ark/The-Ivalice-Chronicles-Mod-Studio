@@ -410,8 +410,13 @@ class MapRenderer:
 
     # -- drawing ----------------------------------------------------------------
     def render(self, camera: Camera, width: int, height: int, show_grid=True,
-               background=(0.10, 0.105, 0.12), seconds: float = 0.0) -> Optional[QImage]:
-        """The map from `camera`, `seconds` into its animations."""
+               background=(0.10, 0.105, 0.12), seconds: float = 0.0,
+               transparent: bool = False) -> Optional[QImage]:
+        """
+        The map from `camera`, `seconds` into its animations. `transparent`:
+        nothing behind the map (alpha 0), the map's own alpha kept, for a
+        page that paints its own backdrop (the Abilities page's screen colour).
+        """
         if not self.make_current():
             return None
         from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
@@ -425,12 +430,23 @@ class MapRenderer:
         gl = self.gl
         self.fbo.bind()
         gl.glViewport(0, 0, width, height)
-        gl.glClearColor(background[0], background[1], background[2], 1.0)
+        if transparent:
+            # Nothing at all, colour included: the picture is premultiplied,
+            # and a colour behind alpha 0 bleeds into the map's edges when
+            # their samples are averaged (yellow fringes on the backdrop).
+            gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+        else:
+            gl.glClearColor(background[0], background[1], background[2], 1.0)
         gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         gl.glEnable(GL_DEPTH_TEST)
         gl.glDepthFunc(GL_LEQUAL)
         gl.glEnable(GL_BLEND)
-        gl.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE)
+        if transparent:
+            # Alpha builds up as the map is drawn, so the picture says where it is.
+            gl.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                                   GL_ONE_MINUS_SRC_ALPHA)
+        else:
+            gl.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE)
         if self.scene is not None:
             proj, view = self.matrices(camera, width, height)
             mvp = proj * view

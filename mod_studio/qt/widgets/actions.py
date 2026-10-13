@@ -573,15 +573,19 @@ class _IntroHeightCap(QObject):
 
     def __init__(self, label):
         super().__init__(label)
-        self._label = label
         label.installEventFilter(self)
 
     def eventFilter(self, watched, event):                    # noqa: N802
-        if watched is self._label and event.type() in (
+        # The label is this filter's parent, asked of Qt rather than kept in
+        # a Python attribute: a page torn down by the garbage collector can
+        # clear the filter's attributes while its label still gets events,
+        # and `self._label` then raised inside Qt's event loop (seen when
+        # the Encounters page gained its map, 12 October).
+        if watched is self.parent() and event.type() in (
                 QEvent.Polish, QEvent.Show, QEvent.Resize):
-            floor = self._label.minimumHeight()
-            if floor > 0 and self._label.maximumHeight() != floor:
-                self._label.setMaximumHeight(floor)
+            floor = watched.minimumHeight()
+            if floor > 0 and watched.maximumHeight() != floor:
+                watched.setMaximumHeight(floor)
         return False
 
 
