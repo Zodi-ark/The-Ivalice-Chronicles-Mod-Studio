@@ -43,8 +43,29 @@ DEFAULTS = {
     "compare_show_full_rows": False,
     # Map Editor: the battle grid over the map, and the card saying the
     # surface and height of the tile under the pointer. Both on at first.
+    # Show battles, the tiles the map's battles use (Zodi's stress test of
+    # 20 October), off at first.
     "map_show_tiles": True,
     "map_show_tile_info": True,
+    "map_show_battles": False,
+    # Abilities: the map's Sound and Effect camera switches. Sound starts
+    # off (Zodi, 18 October: "have the sound toggle disabled by default"),
+    # Effect camera on.
+    "ability_map_sound": False,
+    "ability_map_effect_camera": True,
+    # Event Editor: the map's Voices and Music ticks (Zodi, 19 October: "you
+    # have my ok"; 20 October, of Music: "yes"), and the nodes in the node
+    # list's Favourites, by their keys, in their order: the four the mock-up
+    # has until he changes them. Voices and Music are False here, but for
+    # somebody who has never ticked or unticked them (`chosen`) the page
+    # ticks them when the game's voices or music are unpacked and AudioMog
+    # can open them (Zodi, 20 October: "Voices and Music should be enabled
+    # by default for first time users if they have the necessary files
+    # unpacked"); the Abilities map's Sound stays off ("Sound should not be
+    # enabled by default for first time users on the Abilities page").
+    "event_voices": False,
+    "event_music": False,
+    "event_favourites": ["speak", "walk", "wait", "camera"],
     # Appearance, for the Qt interface. "system" follows the OS light/dark
     # setting live; "light" and "dark" pin it regardless of the OS.
     "appearance": "dark",
@@ -88,6 +109,21 @@ def load() -> dict:
         if key in raw and isinstance(raw[key], type(default)):
             values[key] = raw[key]
     return values
+
+
+def chosen(key: str) -> bool:
+    """
+    Whether the person's file holds `key` (they set it, at least once), as
+    against its default standing in for it: a page can then pick a better
+    first value for somebody new without overriding a choice.
+    """
+    try:
+        raw = json.loads(settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(raw, dict) or key not in raw:
+        return False
+    return key not in DEFAULTS or isinstance(raw[key], type(DEFAULTS[key]))
 
 
 def save(**changes) -> None:

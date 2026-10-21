@@ -79,7 +79,7 @@ REDRAW_DELAY_MS = 120
 
 INTRO = ("Where every box, picture and line of text sits on the game's menu "
          "screens. Pick a screen, click a box, then drag it or change its "
-         "numbers, colour, opacity, animation or the part of the texture it "
+         "numbers, color, opacity, animation or the part of the texture it "
          "shows.")
 
 #: The most characters a note under a box's numbers, or a key's, may have.
@@ -104,7 +104,7 @@ def fit_note(sentences, limit: int = NOTE_LIMIT) -> str:
 #: Words for the kinds of box, in the list beside the picture.
 KIND_WORDS = {
     "Layer": "Group", "Reference": "Piece", "Image": "Picture", "Text": "Text",
-    "Ninegrid": "Frame", "Rect": "Colour box", "Collision": "Click area",
+    "Ninegrid": "Frame", "Rect": "Color box", "Collision": "Click area",
     "Mask": "Mask", "Bezier": "Line", "Ellipse": "Ellipse", "Counter": "Counter",
     "Effect": "Effect", "Model": "Model",
 }
@@ -324,7 +324,7 @@ class ColourRow(PairRow):
         rows.setSpacing(2)
         top = QHBoxLayout()
         top.setSpacing(6)
-        self.include = QCheckBox("Colour")
+        self.include = QCheckBox("Color")
         self.include.setToolTip(
             "Tick to write this into your mod. Unticked, the game's own "
             "value is left alone.")
@@ -333,7 +333,7 @@ class ColourRow(PairRow):
         top.addWidget(self.include)
         self.swatch = QPushButton("")
         self.swatch.setFixedSize(84, 22)
-        self.swatch.setToolTip("Choose a colour")
+        self.swatch.setToolTip("Choose a color")
         self.swatch.clicked.connect(self.choose)
         top.addWidget(self.swatch)
         top.addStretch(1)
@@ -378,7 +378,7 @@ class ColourRow(PairRow):
 
     def choose(self) -> None:
         red, green, blue, alpha = self.value()
-        picked = QColorDialog.getColor(QColor(red, green, blue, alpha), self, "Colour",
+        picked = QColorDialog.getColor(QColor(red, green, blue, alpha), self, "Color",
                                        QColorDialog.ShowAlphaChannel)
         if picked.isValid():
             self.pick((picked.red(), picked.green(), picked.blue(), picked.alpha()))
@@ -482,7 +482,7 @@ class PartRow(PairRow):
 
 #: What each kind of animation key sets, in the list's words.
 KEY_WORDS = {uib.KEY_POSITION: "Position", uib.KEY_SIZE: "Size", uib.KEY_SCALE: "Scale",
-             uib.KEY_COLOUR: "Colour", uib.KEY_OPACITY: "Opacity",
+             uib.KEY_COLOUR: "Color", uib.KEY_OPACITY: "Opacity",
              uib.KEY_CHILD_TIMELINE: "Plays a piece's animation"}
 
 _KEY_ID_ROLE = Qt.UserRole + 12
@@ -1243,7 +1243,7 @@ class UiLayoutsPage(QWidget):
         if uib.FIELD_FONT_SIZE in edits:
             values.append(f"text size {game_box.font_size}")
         if uib.FIELD_COLOUR in edits:
-            values.append("colour " + ", ".join(str(v) for v in game_box.colour))
+            values.append("color " + ", ".join(str(v) for v in game_box.colour))
         if uib.FIELD_OPACITY in edits:
             values.append(f"opacity {shortest_scale_text(game_box.opacity)}")
         listed = (", ".join(values[:-1]) + " and " + values[-1]) if len(values) > 1 else \
@@ -1277,11 +1277,11 @@ class UiLayoutsPage(QWidget):
         tints = [tuple(k.values) for k in layout.keys_for(game_box, uib.KEY_COLOUR)]
         same = tints.count(game_box.colour)
         if same:
-            following.append(f"{same} colour")
+            following.append(f"{same} color")
         if len(tints) > same:
             others = len(tints) - same
-            staying.append(f"{others} colour key{'s' if others != 1 else ''} for "
-                           f"another colour {'stay' if others != 1 else 'stays'}.")
+            staying.append(f"{others} color key{'s' if others != 1 else ''} for "
+                           f"another color {'stay' if others != 1 else 'stays'}.")
         fades = len(layout.keys_for(game_box, uib.KEY_OPACITY))
         if fades and game_box.opacity > 0:
             following.append(f"{fades} opacity")
@@ -1323,12 +1323,12 @@ class UiLayoutsPage(QWidget):
         sentences = []
         if box.kind == "Reference" and box.reference_file:
             source = uib.layout_path_for(box.reference_file).rsplit("/", 1)[-1]
-            sentences.append((7, f"Its colour and opacity also apply to what is inside "
+            sentences.append((7, f"Its color and opacity also apply to what is inside "
                                  f"it, which is edited on {source}."))
         elif box.kind in ("Layer", "Reference"):
-            sentences.append((7, "Its colour and opacity also apply to what is inside it."))
+            sentences.append((7, "Its color and opacity also apply to what is inside it."))
         elif box.kind == "Collision":
-            sentences.append((7, "A click area is never drawn, so its colour and opacity "
+            sentences.append((7, "A click area is never drawn, so its color and opacity "
                                  "show nothing."))
         if box.kind == "Reference" and not box.reference_file and not box.reference_name:
             sentences.append((7, "The game fills this in while it runs, so the picture "

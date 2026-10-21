@@ -281,6 +281,8 @@ TILE_FIELDS = {
     "camera": (7, 0, 8),
 }
 BOOL_FIELDS = ("no_cursor", "no_walk", "pass_through")
+#: An upper level place with no tile: only "no cursor" set (`Tile.is_placeholder`).
+PLACEHOLDER_TILE = bytes([0, 0, 0, 0, 0, 0, 1, 0])
 
 #: Slope types: the corners each raises by the slope's height, in the order
 #: (x0,z0), (x1,z0), (x1,z1), (x0,z1); north is +z, east is +x. The names
@@ -328,6 +330,17 @@ class Tile:
     def is_blank(self) -> bool:
         """All eight bytes zero: a place on the grid with no tile."""
         return not any(self.raw)
+
+    @property
+    def is_placeholder(self) -> bool:
+        """
+        A place of the upper level with no tile: every field 0 but "no
+        cursor" (the cursor can't go there). The game's grids fill their
+        upper level with these where there is none (all 169 of 085's, 13,642
+        of the 14,546 upper level places on the 120 grids an enhanced look
+        stands on; one has a face drawn for it, none a panel).
+        """
+        return self.level == 1 and self.raw == PLACEHOLDER_TILE
 
     def corner_heights(self) -> tuple:
         """Heights of (x0,z0), (x1,z0), (x1,z1), (x0,z1), in height steps."""

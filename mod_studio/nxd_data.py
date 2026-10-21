@@ -361,8 +361,11 @@ class DerivedNxdRecord:
     the columns out of the database and never consulted the class about
     what they should be. That is why deriving a spec costs no new class:
     there was never anything table-specific in them to derive.
+
+    `key` is the row's `Key`, or `(Key, Key2)` for a double keyed table
+    (`read_nxd_table`).
     """
-    key: int
+    key: object
     values: dict = field(default_factory=dict)
 
     @property
@@ -467,7 +470,7 @@ CURATED_NXD_SPECS = {
 }
 
 
-def effective_values(state, key: str, row_key: int, language: str) -> dict:
+def effective_values(state, key: str, row_key, language: str) -> dict:
     """
     A row as it stands RIGHT NOW: the game's values with any pending edit
     laid over the top.
@@ -496,7 +499,7 @@ def effective_values(state, key: str, row_key: int, language: str) -> dict:
     return base
 
 
-def effective_name(state, key: str, row_key: int, language: str) -> str:
+def effective_name(state, key: str, row_key, language: str) -> str:
     """
     This row's name as it stands now, pending edits included.
 
@@ -553,6 +556,16 @@ def read_nxd_table(sqlite_path: Path, key: str, language: str) -> list:
 
     Replaces `read_ability_table`/`read_item_table`/`read_charaname_table`/
     `read_poach_table`, which were the same function four times over.
+
+    **A record's key is every key column the table has** (`key_columns`):
+    the row's `Key` for the 45 single keyed tables, and `(Key, Key2)` for
+    the eight double keyed ones (`ZodiacStone`, `GuidePage`,
+    `LauncherGuide`, `LoreDictionary`, `UIClassicSubtitles`,
+    `UISituationSubtitles`, `UISubtitles`, `WorldMapProgressInfo`), the
+    same keys `read_any_table` gives All Game Data. Keyed by `Key` alone,
+    a stone's two descriptions were one record, and a mod's change to
+    (0, 1) came back from it as row 0, which an export then wrote into
+    both rows (a user's report, 20 October).
     """
     spec = spec_for(key)
     table = spec.table(language)
@@ -563,19 +576,22 @@ def read_nxd_table(sqlite_path: Path, key: str, language: str) -> list:
                 f"No '{table}' table in this database - was {spec.filename(language)} "
                 f"included when it was converted?"
             )
+        keys = key_columns(row[1] for row in con.execute(f'PRAGMA table_info("{table}")'))
         con.row_factory = sqlite3.Row
-        cur = con.execute(f'SELECT * FROM "{table}" ORDER BY Key')
+        order = ", ".join(f'"{name}"' for name in keys)
+        cur = con.execute(f'SELECT * FROM "{table}" ORDER BY {order}')
         records = []
         for row in cur.fetchall():
             values = {}
             for column in row.keys():
-                if column == "Key":
+                if column in keys:
                     continue
                 value = row[column]
                 if column in spec.array_fields and value:
                     value = json.loads(value)
                 values[spec.friendly_names.get(column, column)] = value
-            records.append(spec.record_class(key=row["Key"], values=values))
+            row_key = row[keys[0]] if len(keys) == 1 else tuple(row[name] for name in keys)
+            records.append(spec.record_class(key=row_key, values=values))
         return records
     finally:
         con.close()
@@ -585,6 +601,13 @@ def write_nxd_edits(sqlite_path: Path, key: str, language: str, edits: dict) -> 
     """
     Applies {key: {field: value}} to one language of one registered table,
     leaving every other row and column exactly as FF16Tools produced it.
+
+    A row is found by every key column the table has, as `read_nxd_table`
+    keys it: a double keyed table's edit is keyed `(Key, Key2)`. Binding
+    that pair as one value is what stopped a user's export ("Error binding
+    parameter 2: type 'tuple' is not supported", `zodiacstone.nxd`'s
+    names, 20 October). An edit whose key doesn't fit the table is refused
+    rather than written to every row sharing part of it.
     """
     if not edits:
         return
@@ -592,9 +615,16 @@ def write_nxd_edits(sqlite_path: Path, key: str, language: str, edits: dict) -> 
     table = spec.table(language)
     con = sqlite3.connect(str(sqlite_path))
     try:
+        keys = key_columns(row[1] for row in con.execute(f'PRAGMA table_info("{table}")'))
+        where = " AND ".join(f'"{name}" = ?' for name in keys)
         for row_key, fields in edits.items():
             if not fields:
                 continue
+            key_values = list(row_key) if isinstance(row_key, (tuple, list)) else [row_key]
+            if len(key_values) != len(keys):
+                raise ValueError(
+                    f"{table}: a change is kept for row {row_key}, but this table finds a row "
+                    f"by {', '.join(keys)}")
             columns, params = [], []
             for name, value in fields.items():
                 columns.append(spec.raw_names.get(name, name))
@@ -602,8 +632,7 @@ def write_nxd_edits(sqlite_path: Path, key: str, language: str, edits: dict) -> 
                     value = json.dumps(value, separators=(",", ":"))
                 params.append(value)
             set_clause = ", ".join(f'"{name}" = ?' for name in columns)
-            params.append(row_key)
-            con.execute(f'UPDATE "{table}" SET {set_clause} WHERE Key = ?', params)
+            con.execute(f'UPDATE "{table}" SET {set_clause} WHERE {where}', params + key_values)
         con.commit()
     finally:
         con.close()
@@ -1770,6 +1799,32 @@ def recover_unmodelled_edits(vanilla_sqlite: Path, mod_sqlite: Path) -> dict:
         if changed:
             found[table] = changed
     return found
+
+
+def tables_described_by_edits(vanilla_sqlite: Path, mod_sqlite: Path, tables) -> set:
+    """
+    Which of `tables` a mod's copy of is the game's with the mod's
+    `recover_unmodelled_edits` made over it: the same columns, and every
+    row of the game's still there (a row the mod took away is no edit, so
+    such a copy is not described). Opening a mod carries a table no tab
+    reads through whole and reads its rows back as edits too; for these
+    the rows alone make the mod's table again, so its copy needn't be
+    carried, and a page that takes rows out (the Map Editor's Put back the
+    game's look) then takes them out of the mod as well. Before 20 October
+    the carried copy stayed, and an export put the mod's old table back.
+    """
+    out = set()
+    vanilla_tables = set(list_all_tables(vanilla_sqlite))
+    mod_tables = set(list_all_tables(mod_sqlite))
+    for table in tables:
+        if table not in vanilla_tables or table not in mod_tables:
+            continue
+        if table_shape(vanilla_sqlite, table)["columns"] != table_shape(mod_sqlite, table)["columns"]:
+            continue
+        theirs = {key for key, _values in read_any_table(mod_sqlite, table)}
+        if all(key in theirs for key, _values in read_any_table(vanilla_sqlite, table)):
+            out.add(table)
+    return out
 
 
 def write_unmodelled_table_edits(sqlite_path: Path, table: str, edits: dict) -> int:

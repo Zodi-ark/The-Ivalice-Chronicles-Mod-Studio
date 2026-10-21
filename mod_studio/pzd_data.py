@@ -413,14 +413,24 @@ EDITABLE_FIELDS = {
 }
 
 
+#: Marks an edit that is a line of its own, which the game's file hasn't:
+#: `{line_id: {ADDED_LINE: True, "line": "...", ...}}`. The Event Editor
+#: adds one for a Speak node given new words (approved 19 October: "new
+#: lines in a scene's text file, so a new Speak node can have new words").
+#: Never a field of the line: no field is named with an "@".
+ADDED_LINE = "@added"
+
+
 def apply_line_edits(lines: list, edits: dict) -> list:
     """
     `lines` with `{line_id: {field: value}}` applied.
 
     Returns a new list; the originals are the file on disk and stay that
-    way. Ids the file does not have are ignored rather than added - this
-    tool edits the game's lines, and inventing one would write a row the
-    game never asks for.
+    way. An id the file does not have is ignored rather than added, unless
+    its edit is marked `ADDED_LINE`: a line a mod adds on purpose. Those
+    come after the file's own lines, in id order, every field they don't
+    name empty; one whose id the file has since gained is an edit of that
+    line instead (the mark is dropped, the fields applied).
 
     Only the FIELDS named in an edit change. Somebody rewriting a subtitle
     is not also asking to reset its speaker.
@@ -431,19 +441,28 @@ def apply_line_edits(lines: list, edits: dict) -> list:
         if not fields:
             out.append(entry)
             continue
-        values = {name: getattr(entry, name) for name in EDITABLE_FIELDS}
-        for name, raw in fields.items():
-            if name not in EDITABLE_FIELDS:
-                continue
-            try:
-                values[name] = EDITABLE_FIELDS[name](raw)
-            except (TypeError, ValueError):
-                # Left as the original rather than written as something the
-                # game cannot read. The form validates first; this is the
-                # backstop for an edit recovered from a file.
-                continue
-        out.append(PzdLine(line_id=entry.line_id, **values))
+        out.append(PzdLine(line_id=entry.line_id, **_edited_values(entry, fields)))
+    have = {entry.line_id for entry in lines}
+    for line_id in sorted(k for k, fields in edits.items()
+                          if fields and fields.get(ADDED_LINE) and k not in have):
+        out.append(PzdLine(line_id=int(line_id), **_edited_values(PzdLine(line_id=int(line_id)),
+                                                                   edits[line_id])))
     return out
+
+
+def _edited_values(entry: PzdLine, fields: dict) -> dict:
+    values = {name: getattr(entry, name) for name in EDITABLE_FIELDS}
+    for name, raw in fields.items():
+        if name not in EDITABLE_FIELDS:
+            continue
+        try:
+            values[name] = EDITABLE_FIELDS[name](raw)
+        except (TypeError, ValueError):
+            # Left as the original rather than written as something the
+            # game cannot read. The form validates first; this is the
+            # backstop for an edit recovered from a file.
+            continue
+    return values
 
 
 def line_edits_between(game_lines: list, mod_lines: list) -> Optional[dict]:
@@ -452,11 +471,14 @@ def line_edits_between(game_lines: list, mod_lines: list) -> Optional[dict]:
     game's copy: `{}` when the two say the same, None when no edits can say
     it.
 
-    Edits only change lines the game has (`apply_line_edits` above), so a
+    Edits change lines the game has (`apply_line_edits` above; the lines a
+    mod adds are its own, marked, and only ever made in Mod Studio), so a
     copy with a line added, taken out or moved is None: it can only travel
-    whole. Opening a mod uses this to give its text files back as edits,
-    which export writes on the game's current copy, so a later game update
-    to every other line still reaches the player.
+    whole, and the pages read its lines from the mod's copy and write their
+    edits on it (the Sounds page's `_carried_text`). Opening a mod uses this
+    to give its text files back as edits, which export writes on the game's
+    current copy, so a later game update to every other line still reaches
+    the player.
     """
     if [line.line_id for line in game_lines] != [line.line_id for line in mod_lines]:
         return None

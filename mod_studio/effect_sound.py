@@ -1,7 +1,8 @@
 """
-The sound of an effect, as the PlayStation version plays it. Asked for by
-Zodi on 12 October: "Do it completly now the emitters, timing, camera, and
-sound as well as everything else that is possible".
+The sound of an effect, as the PlayStation version plays it and as The
+Ivalice Chronicles does. Asked for by Zodi on 12 October: "Do it completly
+now the emitters, timing, camera, and sound as well as everything else that
+is possible".
 
 An effect file's sound section ("feds") is a little sequence in the
 language of the game's music files: pairs of channels of notes, rests and
@@ -9,9 +10,19 @@ settings, one pair for each sound the effect's timeline starts
 (`effect_player.SoundWalker` says when, and which: pair = sound - 1). The
 instruments are the PlayStation's own samples, `SOUND/WAVESET.WD`, which
 The Ivalice Chronicles still carries in `system/ffto/fftpack.en.bin`
-(entry 775, `sound/waveset.wd` in the mod loader's list). What it sounds
-like in the Enhanced version, whose sounds are in `sound/common/sound.sab`,
-is not known: nothing yet says which of those belongs to which effect.
+(entry 775, `sound/waveset.wd` in the mod loader's list).
+
+**The remaster's own sounds** (`mix_recordings`) are recordings in
+`sound/common/sound.sab`, named `FID_SOUND_VFX_<resource><sound less one>_WAV`
+in hexadecimal (`vfx_name`): the resource is the sound section's word at
+0x0A (`vfx_resource`), which 386 of the 400 effects' name one of the
+archive's 494 VFX names by (only one of them is its effect's own number:
+Fire, effect 16, is resource 0x1A, `FID_SOUND_VFX_001A0000_WAV`, track 668,
+"Yes, that's Fire": Zodi, 20 October; Holy, 15, is 0xF9, track 809, which
+he knew for "holy/ dark holy"), and the second half is the sound less one,
+as the PlayStation's pair is (385 of the 386 effects' names are under their
+pairs). A name may play several recordings at once (Holy's third sound,
+660 with 683, five seconds of silence).
 
 Read and played as ExMateria-Sound reads and plays them (timbermania,
 GPL-3.0 - github.com/timbermania/exmateria-sound), which its authors
@@ -294,6 +305,8 @@ class Feds:
     data_offset: int
     channels: list         # offsets
     raw: bytes
+    #: The remaster's recordings it names (`vfx_resource`).
+    resource: int = 0
 
     def volume(self, sound: int) -> int:
         """A sound's own volume (`chan_92`): 0x6000 x its byte >> 7, at most 0x7FFF."""
@@ -312,11 +325,11 @@ class Feds:
 def read_feds(blob: bytes) -> Feds:
     if len(blob) < 0x18 or blob[:4] != b"feds":
         raise SoundError("it doesn't begin the way an effect's sound does")
-    data_size, pairs_plus_one, _resource, data_offset = struct.unpack_from("<IHHI", blob, 4)
+    data_size, pairs_plus_one, resource, data_offset = struct.unpack_from("<IHHI", blob, 4)
     pairs = max(0, pairs_plus_one - 1)
     channels = [struct.unpack_from("<H", blob, 0x18 + 2 * i)[0] for i in range(2 * pairs)
                 if 0x1A + 2 * i <= len(blob)]
-    return Feds(data_size, pairs, data_offset, channels, bytes(blob))
+    return Feds(data_size, pairs, data_offset, channels, bytes(blob), resource)
 
 
 def decode_events(data: bytes, start: int, end: int) -> list:
@@ -781,16 +794,18 @@ def empty_instruments(feds: Feds, instruments: list, sounds) -> list:
 
 @dataclass
 class EffectSounds:
-    """An effect's sounds, ready to play: 16-bit stereo, 44,100 a second."""
+    """An effect's sounds, ready to play: 16-bit stereo, `rate` a second."""
     pcm: bytes
     frames: int            # sample frames
     starts: list           # [(seconds, sound)]
-    #: the instruments its notes ask for that the bank has no sample for
+    #: the instruments its notes ask for that the bank has no sample for, or
+    #: (the remaster's) the names it plays that have no recording
     missing: list = field(default_factory=list)
+    rate: int = RATE
 
     @property
     def seconds(self) -> float:
-        return self.frames / RATE
+        return self.frames / self.rate
 
 
 def render_effect(feds_blob: Optional[bytes], instruments: list, events: list,
@@ -820,3 +835,117 @@ def render_effect(feds_blob: Optional[bytes], instruments: list, events: list,
     pcm = np.clip(mix, -32768, 32767).astype("<i2").tobytes()
     return EffectSounds(pcm, length, [(at, sound) for _start, _audio, sound, at in placed],
                         empty_instruments(feds, instruments, rendered))
+
+
+# =============================================================================
+# The remaster's recordings
+# =============================================================================
+
+#: Where The Ivalice Chronicles keeps its effects' sounds, under the unpacked game.
+SOUND_ARCHIVE = "sound/common/sound.sab"
+#: A sound's recording: the resource, then the sound less one, four hexadecimal digits each.
+VFX_NAME = "FID_SOUND_VFX_{:04X}{:04X}_WAV"
+
+
+def vfx_resource(feds_blob: Optional[bytes]) -> Optional[int]:
+    """The resource an effect's sound section names the remaster's recordings by (its word at
+    0x0A), or None without a sound section."""
+    if not feds_blob or len(feds_blob) < 0x18 or bytes(feds_blob[:4]) != b"feds":
+        return None
+    return struct.unpack_from("<H", feds_blob, 0x0A)[0]
+
+
+def vfx_name(resource: int, sound: int) -> str:
+    """The name of the recording an effect's sound `sound` (1 up) plays, for its `resource`."""
+    return VFX_NAME.format(int(resource) & 0xFFFF, (int(sound) - 1) & 0xFFFF)
+
+
+def tracks_by_name(users: dict) -> dict:
+    """
+    `{name: [track numbers]}` from an unpacked archive's list of who plays
+    each track (`sound_data.parse_track_users`: `{"sound_683": "A, B"}`), the
+    tracks in order: a name with several plays them together.
+    """
+    out = {}
+    for stem, names in users.items():
+        _head, _, number = str(stem).rpartition("_")
+        if not number.isdigit():
+            continue
+        for name in str(names or "").split(","):
+            name = name.strip()
+            if name:
+                out.setdefault(name, []).append(int(number))
+    for tracks in out.values():
+        tracks.sort()
+    return out
+
+
+def names_played(resource: Optional[int], events: list) -> list:
+    """The names of the recordings an effect's sounds play (`events`, the player's `(frame,
+    part, lane, sound)`), in the order first played, each once."""
+    if resource is None:
+        return []
+    out = []
+    for _frame, _part, _lane, sound in events:
+        name = vfx_name(resource, sound)
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def _stereo(samples: np.ndarray, channels: int) -> np.ndarray:
+    """16-bit samples as `(frames, 2)`: one channel doubled, more than two cut to the first two."""
+    frames = samples.reshape(-1, max(1, channels))
+    if frames.shape[1] == 1:
+        return np.repeat(frames, 2, axis=1)
+    return frames[:, :2]
+
+
+def _at_rate(frames: np.ndarray, rate: int, wanted: int) -> np.ndarray:
+    """`(frames, 2)` at `rate` a second made `wanted` a second, read between samples."""
+    if rate == wanted or not len(frames):
+        return frames
+    count = max(1, int(round(len(frames) * wanted / rate)))
+    where = np.linspace(0.0, len(frames) - 1, count)
+    return np.stack([np.interp(where, np.arange(len(frames)), frames[:, c]) for c in range(2)], axis=1)
+
+
+def mix_recordings(events: list, frame_seconds: list, resource: Optional[int], recordings: dict,
+                   rate: int = 48000) -> EffectSounds:
+    """
+    Every sound an effect starts, as the remaster plays them: each sound's
+    recordings (`recordings[name]`: `[(rate, channels, 16-bit samples)]`,
+    played together) from when the effect's timeline starts it (`events`,
+    the player's `(frame, part, lane, sound)`; `frame_seconds`, how long each
+    effect frame lasts), mixed at `rate`. A name without a recording is
+    silent and listed in `missing`.
+    """
+    if resource is None or not events:
+        return EffectSounds(b"", 0, [], [], rate)
+    times = [0.0]
+    for seconds in frame_seconds:
+        times.append(times[-1] + seconds)
+    ready = {}
+    missing = []
+    placed = []
+    for frame, _part, _lane, sound in events:
+        name = vfx_name(resource, sound)
+        if name not in ready:
+            layers = [_at_rate(_stereo(np.frombuffer(data, dtype="<i2"), channels).astype(np.int64),
+                               layer_rate, rate)
+                      for layer_rate, channels, data in recordings.get(name) or []]
+            if not layers and name not in missing:
+                missing.append(name)
+            longest = max((len(layer) for layer in layers), default=0)
+            audio = np.zeros((longest, 2), dtype=np.int64)
+            for layer in layers:
+                audio[:len(layer)] += layer.astype(np.int64)
+            ready[name] = audio
+        at = times[min(frame, len(times) - 1)]
+        placed.append((int(round(at * rate)), ready[name], sound, at))
+    length = max([start + len(audio) for start, audio, _s, _a in placed] + [int(times[-1] * rate)])
+    mix = np.zeros((length, 2), dtype=np.int64)
+    for start, audio, _sound, _at in placed:
+        mix[start:start + len(audio)] += audio
+    pcm = np.clip(mix, -32768, 32767).astype("<i2").tobytes()
+    return EffectSounds(pcm, length, [(at, sound) for _start, _audio, sound, at in placed], missing, rate)

@@ -278,6 +278,11 @@ class ExistingMod:
     job_preserved: dict = None
     job_command_table_version: str = "1"
     job_command_other_modes_found: list = None
+    # Which tables/<mode>/ MonsterJobCommandData.xml came from. Its edits
+    # are in `job_command_edits` with the jobs' (the ids don't overlap), as
+    # the Job Commands page keeps them.
+    monster_job_command_game_mode: Optional[str] = None
+    monster_job_command_table_version: str = "1"
     # Diffs for every other XML table (items, shops, treasure, ability
     # effect/animation), keyed by the same table_key as item_xml_io.ALL_SPECS.
     table_edits: dict = field(default_factory=dict)
@@ -355,6 +360,26 @@ def open_existing_mod(mod_root: Path) -> ExistingMod:
         cmd_edits, cmd_version, cmd_preserved = xml_io.parse_job_command_diff_xml(
             mod_root / "FFTIVC" / "tables" / cmd_mode / "JobCommandData.xml"
         )
+
+    # Monster skillsets, back into the same edits. The Job Commands page
+    # edits both kinds and Export writes the monsters' into this file of
+    # their own, so a mod read back without it showed the game's skillset
+    # for a monster it had changed, and the next change to that monster
+    # wrote the file without the first (a user's report, 20 October). Read
+    # from the mode the job commands came from when it is there too.
+    found_monster_modes = [
+        mode for mode in c.GAME_MODES
+        if (mod_root / "FFTIVC" / "tables" / mode / "MonsterJobCommandData.xml").exists()
+    ]
+    monster_mode = (cmd_mode if cmd_mode in found_monster_modes
+                    else found_monster_modes[0] if found_monster_modes else None)
+    monster_version = "1"
+    if monster_mode:
+        monster_edits, monster_version, monster_preserved = (
+            xml_io.parse_monster_job_command_diff_xml(
+                mod_root / "FFTIVC" / "tables" / monster_mode / "MonsterJobCommandData.xml"))
+        cmd_edits = {**cmd_edits, **monster_edits}
+        cmd_preserved = {**cmd_preserved, **monster_preserved}
 
     # Every other XML diff table this tool writes - Items and its five
     # companion tables, shop availability, Treasure Hunter, and the two
@@ -435,6 +460,8 @@ def open_existing_mod(mod_root: Path) -> ExistingMod:
         job_command_preserved=cmd_preserved,
         job_command_table_version=cmd_version,
         job_command_other_modes_found=found_cmd_modes[1:],
+        monster_job_command_game_mode=monster_mode,
+        monster_job_command_table_version=monster_version,
         table_edits=table_edits,
         derived_table_edits=derived_edits,
         derived_table_versions=derived_versions,

@@ -36,6 +36,7 @@ from ... import (
     audiomog, ff16tools, game_install, modconfig, nxd_data, paths, pzd_data,
     reloaded, ui_settings)
 from ... import sound_data as sd, texture_data as td
+from ... import constants as c
 from ... import map_classic as mc
 from ... import uib
 from ..widgets.field_rows import CollapsibleSection
@@ -284,8 +285,10 @@ class ModNxdWorker(Worker):
             # modelled tables and silently dropped the rest.
             unmodelled = nxd_data.recover_unmodelled_edits(
                 Path(self.vanilla_sqlite), modded)
+        described = (nxd_data.tables_described_by_edits(Path(self.vanilla_sqlite), modded, unmodelled)
+                     if self.vanilla_sqlite is not None else set())
         return {"mod_sqlite": modded, "recovered": recovered,
-                "unmodelled": unmodelled, "nxd_dir": source}
+                "unmodelled": unmodelled, "described": described, "nxd_dir": source}
 
 
 class UnpackWorker(Worker):
@@ -1886,6 +1889,7 @@ class SetupPage(QWidget):
         self.state.loaded_mod_config = existing.config
         self.state.loaded_game_mode = (
             existing.game_mode or existing.job_command_game_mode
+            or existing.monster_job_command_game_mode
             or existing.table_game_mode)
         self.state.edits = existing.edits
         self.state.job_command_edits = existing.job_command_edits
@@ -1942,6 +1946,7 @@ class SetupPage(QWidget):
             self._take_over_layouts()
             self._take_over_part_lists()
             self._take_over_maps()
+            self._take_over_scripts()
             self._take_over_texts()
 
         # The mod's own files outside FFTIVC: its program code and what goes
@@ -1985,7 +1990,9 @@ class SetupPage(QWidget):
         name = existing.config.get("ModName", folder.name)
         self.mod_status.setText(f"Editing: {name}")
         self._log(f"Opened {folder}")
-        for line in self._describe_opened_mod(existing):
+        data_dir = existing.mod_root / "FFTIVC" / "data"
+        has_nxd = data_dir.is_dir() and any(data_dir.glob("*/nxd/*.nxd"))
+        for line in self._describe_opened_mod(existing, has_nxd):
             self._log(f"   {line}")
         self._refresh_readiness()
         self.setup_changed.emit()
@@ -2263,6 +2270,59 @@ class SetupPage(QWidget):
             self._log(f"Carrying {kept} battle map file(s) through as they are, changed "
                       f"in ways the Map Editor doesn't make.")
 
+    def _take_over_scripts(self) -> None:
+        """
+        The Event Editor's share of an opened mod: each of its event scripts
+        (`script/<mode>/eventNNN.e`) that reads as a script becomes one of
+        the Event Editor's changed events, which export writes again as it
+        is; one the same as the game's own is let go; one that doesn't read
+        stays carried through untouched. WotL Restoration's 70, events the
+        game hasn't among them, all read.
+
+        Needs the game's BATTLE.BIN for the instructions' lengths, as the
+        page does; without it every script stays carried through.
+        """
+        from ... import event_scripts as es
+        carried = self.state.other_file_replacements
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        try:
+            lengths = es.lengths_from_game(game)
+        except es.ScriptError:
+            return
+        taken = same = kept = 0
+        for rel in sorted(carried):
+            norm = str(rel).replace("\\", "/")
+            mode = next((m for m, folder in es.SCRIPT_FOLDERS.items()
+                         if norm.lower().startswith(folder + "/")), None)
+            number = es.script_number(norm)
+            if mode is None or number is None:
+                continue
+            try:
+                data = Path(carried[rel]).read_bytes()
+                es.read_script(data, lengths, mode)
+            except (OSError, es.ScriptError):
+                kept += 1
+                continue
+            carried.pop(rel)
+            original = Path(game) / es.script_relative(number, mode)
+            try:
+                if original.is_file() and original.read_bytes() == data:
+                    same += 1
+                    continue
+            except OSError:
+                pass
+            self.state.script_edits[es.script_relative(number, mode)] = data
+            taken += 1
+        if taken:
+            self._log(f"Opened {taken} of this mod's event script(s) on the Event Editor.")
+        if same:
+            self._log(f"{same} of this mod's event script(s) "
+                      f"{'is' if same == 1 else 'are'} the same as the game's own, so "
+                      f"{'it' if same == 1 else 'they'} won't be exported again.")
+        if kept:
+            self._log(f"Carrying {kept} event file(s) through as they are: they don't read as "
+                      f"event scripts.")
+
     def forget_opened_mod(self) -> None:
         """
         Goes back to saying no mod is open, after Export Mod's "Start a new
@@ -2326,13 +2386,13 @@ class SetupPage(QWidget):
                 "ok")
             return
 
-        self._apply_recovered_nxd(recovered, result.get("unmodelled"))
+        self._apply_recovered_nxd(recovered, result.get("unmodelled"), result.get("described"))
         self._say("Loaded this mod's game data and worked out what it "
                   "changed.", "ok")
         self._refresh_readiness()
         self.setup_changed.emit()
 
-    def _apply_recovered_nxd(self, recovered, unmodelled=None) -> None:
+    def _apply_recovered_nxd(self, recovered, unmodelled=None, described=None) -> None:
         """
         Merges what the mod's files turned out to contain into the session.
 
@@ -2362,6 +2422,20 @@ class SetupPage(QWidget):
                 merged.update(store.get(table, {}))
                 store[table] = merged
             state.unmodelled_table_edits = store
+        # A table whose rows came back as edits, and make the mod's copy
+        # again over the game's, isn't carried through whole as well: the
+        # copy would put back rows a page took out (`nxd_data.
+        # tables_described_by_edits`).
+        rows_back = {table.lower(): table for table in (described or ()) if table in opened_unmodelled}
+        carried = state.other_file_replacements or {}
+        for rel in [r for r in carried if r.lower().startswith("nxd/") and r.lower().endswith(".nxd")]:
+            stem = Path(rel).name[:-4].lower()
+            parts = stem.split(".")
+            name = f"{parts[0]}-{parts[1]}" if len(parts) == 2 and parts[1] in c.NXD_LANGUAGES else parts[0]
+            if name in rows_back:
+                carried.pop(rel)
+                self._log(f"{rows_back[name]}: its rows are read as this mod's edits, so its file "
+                          f"isn't carried through as well (export writes it from them).")
         state.override_action_edits = _merge_keyed_edits(
             recovered.override_action_edits, state.override_action_edits)
         state.entry_edits = _merge_keyed_edits(
@@ -2381,14 +2455,17 @@ class SetupPage(QWidget):
         self._log(message)
 
     @staticmethod
-    def _describe_opened_mod(existing) -> list:
+    def _describe_opened_mod(existing, has_nxd: bool = False) -> list:
         """
         Says what the mod actually brought in - and only that.
 
         Naming the files it does NOT have told a texture pack's author about
         JobData.xml and JobCommandData.xml, two filenames they have no
         reason to care about. The Tkinter page learned this; the wording
-        follows it.
+        follows it. A mod with `.nxd` tables has them read after this
+        (`_start_mod_nxd_recovery`), so it isn't said to have no table edits
+        before they are (Zodi's stress test of 20 October: "No table edits",
+        then 22 rows read).
         """
         parts = []
         if existing.edits:
@@ -2402,7 +2479,9 @@ class SetupPage(QWidget):
                 parts.append(f"{len(records)} {key.replace('_', ' ')}")
         # "textures or sounds only" stopped being true of every such mod
         # when screen layouts became something a mod could be made of.
-        return parts or ["No table edits in it - only files it replaces, like "
+        if not parts and has_nxd:
+            return ["Its tables are its .nxd files, read next: what it changes in them follows."]
+        return parts or ["No table edits in it, only files it replaces, like "
                          "textures, sounds or screen layouts."]
 
     # -- unpacking -----------------------------------------------------------------
@@ -2988,8 +3067,11 @@ class SetupPage(QWidget):
         if unpacked is None:
             return False
         try:
-            return bool(game_install.groups_present_in(
-                Path(unpacked)).get("game_data"))
+            # The tables, not the group: Game data brings the event scripts
+            # too (19 October), and a folder holding only those has nothing
+            # to convert.
+            return "nxd" in game_install.groups_present_in(
+                Path(unpacked)).get("game_data", [])
         except Exception:                                     # noqa: BLE001
             # An unreadable folder is reported as nothing found rather than
             # as unpacked. Overstating is the failure being fixed here.

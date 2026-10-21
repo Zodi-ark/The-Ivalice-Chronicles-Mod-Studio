@@ -37,6 +37,11 @@ Where each piece comes from, measured on the game's own files (12 October
 - **Which frames and animations a sprite uses, and whether it flies**: 4
   bytes a sprite at 0x2D748 of `fftpack/battle_bin.en.bin`, the
   PlayStation's BATTLE.BIN (ShishiSpriteEditor's `AllSpriteAttributes`).
+  The animation byte does not number the files the way the frame byte
+  does: its 1 is TYPE3's animations, not TYPE2's (`SEQUENCE_KINDS`;
+  TacticsEngineG's `spr.gd` says so, and its list calls TYPE2's unused).
+  The 66 sprites with TYPE2 frames have it, and TYPE2's animations show
+  them turning their backs while they charge a spell (Zodi, 18 October).
 - **Which file and which sheets each sprite number uses**:
   `data/UnitSprites.txt`, made by `dev/make_unit_sprites.py` (the sprite
   table in the same BATTLE.BIN points at the files by PlayStation disc
@@ -51,6 +56,22 @@ Where each piece comes from, measured on the game's own files (12 October
 A unit waiting on the battlefield walks in place: animation 6 seen from the
 front, 7 from behind, both facing left; facing right is the same picture
 mirrored.
+
+**An event's own animations** (Dycedarg sitting in his chair in event 045,
+Zodi, 19 October: "you have my ok"): the PlayStation's EVTCHR.BIN, the
+remaster's `fftpack/event_evtchr_bin.bin`, is blocks of 0x7800 bytes, laid
+out as the decompilation's `evtchr_file_record_t` (`include/fft/gfx.h`): 64
+sequence offsets (s32, -1 the start) and 0x400 bytes of sequences, 40 frame
+offsets and 0x1E0 bytes of frames, 16 palettes, and a 256 by 200 picture at
+4 bits. An event loads a block into one of two slots (`event_scripts`); an
+animation from 500 is sequence n of slot 0's block (500 + n), from 600 slot
+1's, the same from the front and behind (`animation.h`); a frame from 210
+(`SPRITE_SHP_FRAME_EVTCHR_FIRST`) is the block's frame less 210, cut from its
+picture, one below it the unit's own (`sprite_frame_select_unit_shp`), and
+both are coloured with the unit's palette (`sprite_frame_load_parts`). The
+HD pictures are g2d.dat entries 512 wide, the blocks' pictures at twice the
+size colour for colour; which is which block's is `data/EvtchrSheets.txt`,
+measured by `dev/make_evtchr_sheets.py`.
 
 Pure Python (zlib and struct): nothing here imports Qt, numpy or Pillow.
 """
@@ -71,8 +92,11 @@ BATTLE_BIN = "fftpack/battle_bin.en.bin"
 #: Each sprite's frame kind, animation kind, whether it flies, its height.
 ATTRIBUTES_AT = 0x2D748
 ATTRIBUTE_COUNT = 159
-#: The kinds, in the order the attribute bytes number them (ShishiSpriteEditor's `SpriteType`).
+#: The frame kinds, in the order the attribute bytes number them (ShishiSpriteEditor's `SpriteType`).
 KINDS = ("type1", "type2", "cyoko", "mon", "other", "ruka", "arute", "kanzen")
+#: The animation kinds, in the order the attribute bytes number them: TYPE2's
+#: frames play TYPE3's animations (see the module's notes).
+SEQUENCE_KINDS = ("type1", "type3", "cyoko", "mon", "other", "ruka", "arute", "kanzen")
 #: RUKA has animations of its own and no frames: ShishiSpriteEditor cuts it with MON's.
 SHAPE_OF = {"ruka": "mon"}
 
@@ -90,9 +114,12 @@ SHEET_WIDTH = 512
 TILE_SIZES = ((8, 8), (16, 8), (16, 16), (16, 24), (24, 8), (24, 16), (24, 24), (32, 8),
               (32, 16), (32, 24), (32, 32), (32, 40), (48, 16), (40, 32), (48, 48), (56, 56))
 #: An animation's instructions (`0xFF` and a code) and how many bytes follow
-#: each, beyond its own two (`Sequence.Jumps`). The rest take none.
+#: each, beyond its own two (`Sequence.Jumps`). The rest take none. 0xC4
+#: (where a unit holds an item: 2) and 0xFD (holding a weapon: 1) are from
+#: TacticsEngineG's `opcodeParameters.txt`: without them the two bytes of an
+#: item's place were read as a frame (in MON's item use, frame 0 for 216 60ths).
 SEQUENCE_ARGUMENTS = {192: 1, 198: 1, 211: 1, 212: 1, 214: 1, 215: 1, 216: 1, 226: 1, 238: 1,
-                      239: 1, 240: 1, 246: 1, 193: 2, 217: 2, 242: 2, 252: 2, 250: 3}
+                      239: 1, 240: 1, 246: 1, 253: 1, 193: 2, 196: 2, 217: 2, 242: 2, 252: 2, 250: 3}
 
 #: The ENTD sprite sets that take their sprite from the job.
 GENERIC_MAN, GENERIC_WOMAN, GENERIC_MONSTER = 128, 129, 130
@@ -106,6 +133,23 @@ MONSTER_SPRITE_BASE = 133
 
 #: Where the bundled table lives, and its name.
 TABLE_NAME = "UnitSprites.txt"
+
+#: The event animations' file, a block's size, where its parts are, and the
+#: first frame and animation numbers that are a slot's (see the module's notes).
+EVTCHR_FILE = "fftpack/event_evtchr_bin.bin"
+EVTCHR_BLOCK = 0x7800
+EVTCHR_SEQUENCES_AT, EVTCHR_SEQUENCE_BYTES = 0x100, 0x400
+EVTCHR_FRAMES_AT, EVTCHR_FRAME_OFFSETS, EVTCHR_FRAME_BYTES = 0x5A0, 40, 0x1E0
+EVTCHR_PALETTES_AT, EVTCHR_PIXELS_AT = 0x780, 0x980
+EVTCHR_WIDTH, EVTCHR_HEIGHT = 256, 200
+EVTCHR_FRAME_FIRST = 210
+EVTCHR_SLOT_ANIMATIONS = (500, 600)
+#: The instruction a block's sequence ends with (0xFF 0xFF): of the game's
+#: 5,091, 4,933 end at it with the next right after, a block's last (143)
+#: have only zeros after it, and the other 15 loop (0xFF 0xD5) or run on to
+#: the next one.
+EVTCHR_END = 0xFF
+EVTCHR_TABLE_NAME = "EvtchrSheets.txt"
 
 
 class SpriteError(ValueError):
@@ -334,6 +378,107 @@ def frames_of(animation) -> list:
     return [step for step in animation if step[0] != "op"]
 
 
+def _steps(raw: bytes) -> list:
+    """A sequence's bytes as `read_sequences` steps."""
+    steps, i = [], 0
+    while i < len(raw) - 1:
+        if raw[i] != 0xFF:
+            steps.append((raw[i], raw[i + 1]))
+            i += 2
+        else:
+            code = raw[i + 1]
+            extra = SEQUENCE_ARGUMENTS.get(code, 0)
+            steps.append(("op", code, tuple(raw[i + 2:i + 2 + extra])))
+            i += 2 + extra
+    return steps
+
+
+@dataclass
+class Evtchr:
+    """One block of the event animations' file (see the module's notes)."""
+    sequences: list         # each `read_sequences`' steps
+    frames: list            # each `[Tile]`, in drawing order
+    palettes: list          # 16 palettes of 16 colours
+    pixels: bytes           # the 256 by 200 picture, a colour number a pixel
+
+
+def _ended(steps: list) -> list:
+    """A block's sequence up to its end instruction (`EVTCHR_END`), the zeros after a block's last left out."""
+    for k, step in enumerate(steps):
+        if step[0] == "op" and step[1] == EVTCHR_END:
+            return steps[:k + 1]
+    return steps
+
+
+def read_evtchr(block: bytes) -> Evtchr:
+    """
+    A block of `EVTCHR_FILE`: its sequences, each running from its offset
+    to its end instruction (or the next one along, or the sequences' end),
+    its frames (a byte of part count less one and rotation, a byte of
+    flags, then 4 bytes a part: its place from where the unit stands, s8
+    each, and its tile, size and flips as a unit frame's), its palettes
+    and its picture.
+    """
+    if len(block) < EVTCHR_BLOCK:
+        raise SpriteError(f"an event animation block is {EVTCHR_BLOCK} bytes; this is {len(block)}")
+
+    def offsets(at, count, limit):
+        found = []
+        for k in range(count):
+            value = struct.unpack_from("<i", block, at + 4 * k)[0]
+            found.append(0 if value == -1 or not 0 <= value < limit else value)
+        return found
+
+    sequence_data = block[EVTCHR_SEQUENCES_AT:EVTCHR_SEQUENCES_AT + EVTCHR_SEQUENCE_BYTES]
+    starts = offsets(0, 64, EVTCHR_SEQUENCE_BYTES)
+    ends = sorted(set(starts) | {EVTCHR_SEQUENCE_BYTES})
+    sequences = [_ended(_steps(sequence_data[start:next(e for e in ends if e > start)])) for start in starts]
+    frame_data = block[EVTCHR_FRAMES_AT:EVTCHR_FRAMES_AT + EVTCHR_FRAME_BYTES]
+    frames = []
+    for start in offsets(0x500, EVTCHR_FRAME_OFFSETS, EVTCHR_FRAME_BYTES):
+        tiles = []
+        count = (frame_data[start] & 7) + 1 if start < len(frame_data) else 0
+        for k in range(count):
+            at = start + 2 + 4 * k
+            if at + 4 > len(frame_data):
+                break
+            x, y = struct.unpack_from("<bb", frame_data, at)
+            flags = frame_data[at + 2] | (frame_data[at + 3] << 8)
+            width, height = TILE_SIZES[(flags >> 10) & 0x0F]
+            tiles.append(Tile(x, y, (flags & 0x1F) * 8, ((flags >> 5) & 0x1F) * 8, width, height,
+                              bool(flags & 0x4000), bool(flags & 0x8000)))
+        tiles.reverse()          # drawn last first, as a unit's frames are
+        frames.append(tiles)
+    values = struct.unpack_from("<256H", block, EVTCHR_PALETTES_AT)
+    palettes = [list(values[16 * p:16 * p + 16]) for p in range(16)]
+    pixels = bytes(colour_numbers(block[EVTCHR_PIXELS_AT:EVTCHR_PIXELS_AT + EVTCHR_WIDTH * EVTCHR_HEIGHT // 2]))
+    return Evtchr(sequences, frames, palettes, pixels)
+
+
+def evtchr_slot(animation: int) -> Optional[int]:
+    """The slot an animation number plays from (0 or 1), or None for a unit's own animation."""
+    first, second = EVTCHR_SLOT_ANIMATIONS
+    if animation >= second:
+        return 1
+    if animation >= first:
+        return 0
+    return None
+
+
+def read_evtchr_table(path=None) -> dict:
+    """`{block: g2d entry}` from `data/EvtchrSheets.txt` (`block|entry`)."""
+    found = {}
+    try:
+        text = Path(path or (paths.bundled_data_dir() / EVTCHR_TABLE_NAME)).read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for line in text.splitlines():
+        parts = [part.strip() for part in line.split("|")]
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            found[int(parts[0])] = int(parts[1])
+    return found
+
+
 # =============================================================================
 # Pictures
 # =============================================================================
@@ -444,8 +589,8 @@ def read_attributes(battle_bin: bytes) -> dict:
     for number in range(ATTRIBUTE_COUNT):
         shape, sequence, flying, height = battle_bin[ATTRIBUTES_AT + 4 * number:
                                                      ATTRIBUTES_AT + 4 * number + 4]
-        if shape < len(KINDS) and sequence < len(KINDS):
-            out[number] = Attributes(KINDS[shape], KINDS[sequence], bool(flying), height)
+        if shape < len(KINDS) and sequence < len(SEQUENCE_KINDS):
+            out[number] = Attributes(KINDS[shape], SEQUENCE_KINDS[sequence], bool(flying), height)
     return out
 
 
@@ -482,13 +627,16 @@ class UnitSprites:
     missing when nothing can be drawn.
     """
 
-    def __init__(self, game_dir, table: Optional[dict] = None):
+    def __init__(self, game_dir, table: Optional[dict] = None, evtchr_table: Optional[dict] = None):
         self.game_dir = Path(game_dir) if game_dir else None
         self.table = read_table() if table is None else table
+        self.evtchr_table = read_evtchr_table() if evtchr_table is None else evtchr_table
         self.problem = ""
         self._g2d = None
         self._attributes = None
         self._shapes, self._sequences, self._sheets, self._palettes, self._idle = {}, {}, {}, {}, {}
+        self._evtchr_file = None
+        self._evtchr, self._evtchr_sheets = {}, {}
 
     def _file(self, relative: str) -> Path:
         return self.game_dir / relative
@@ -551,6 +699,89 @@ class UnitSprites:
             except SpriteError:
                 self._palettes[entry.name] = None
         return self._palettes[entry.name]
+
+    def evtchr(self, block: int) -> Optional[Evtchr]:
+        """Block `block` of the event animations' file, or None when it can't be read."""
+        if block not in self._evtchr:
+            if self._evtchr_file is None and self.game_dir is not None:
+                try:
+                    self._evtchr_file = self._file(EVTCHR_FILE).read_bytes()
+                except OSError as exc:
+                    self.problem = self.problem or f"{EVTCHR_FILE} couldn't be read ({exc})"
+                    self._evtchr_file = b""
+            data = self._evtchr_file or b""
+            chunk = data[block * EVTCHR_BLOCK:(block + 1) * EVTCHR_BLOCK] if block >= 0 else b""
+            try:
+                self._evtchr[block] = read_evtchr(chunk) if len(chunk) == EVTCHR_BLOCK else None
+            except SpriteError:
+                self._evtchr[block] = None
+        return self._evtchr[block]
+
+    def evtchr_sheet(self, block: int) -> Optional[Sheet]:
+        """A block's HD picture (`data/EvtchrSheets.txt`'s entry in g2d.dat), else its own
+        picture at twice the size."""
+        if block not in self._evtchr_sheets:
+            sheet = None
+            g2d, entry = self.g2d(), self.evtchr_table.get(block)
+            if g2d is not None and entry is not None:
+                sheet = join_sheets([g2d.entry(entry)])
+            if sheet is None:
+                found = self.evtchr(block)
+                if found is not None:
+                    rows = bytearray()
+                    for y in range(EVTCHR_HEIGHT):
+                        line = bytes(found.pixels[y * EVTCHR_WIDTH:(y + 1) * EVTCHR_WIDTH])
+                        doubled = bytes(b for b in line for _ in range(2))
+                        rows += doubled + bytes(SHEET_WIDTH - len(doubled))
+                        rows += doubled + bytes(SHEET_WIDTH - len(doubled))
+                    sheet = Sheet(SHEET_WIDTH, 2 * EVTCHR_HEIGHT, rows)
+            self._evtchr_sheets[block] = sheet
+        return self._evtchr_sheets[block]
+
+    def evtchr_animation(self, number: Optional[int], palette: int, block: int, animation: int,
+                         colours: Optional[tuple] = None) -> Optional[list]:
+        """
+        Animation `animation` (500 up) of sprite `number`, coloured by its
+        palette `palette` (or, `colours` given, by palette `colours[1]` of
+        block `colours[0]`, as EVTCHR palette colours a unit), from event
+        animation block `block`: `[(Picture or None, step)]`, its
+        `read_sequences` steps with each frame drawn; None when it can't be.
+        A frame from `EVTCHR_FRAME_FIRST` is the block's, below it the
+        sprite's own.
+        """
+        slot = evtchr_slot(animation)
+        found = self.evtchr(block)
+        if slot is None or found is None or number is None:
+            return None
+        index = animation - EVTCHR_SLOT_ANIMATIONS[slot]
+        if not 0 <= index < len(found.sequences):
+            return None
+        entry, attributes = self.table.get(number), self.attributes().get(number)
+        colours_block = self.evtchr(colours[0]) if colours else None
+        if colours_block is not None and 0 <= colours[1] < len(colours_block.palettes) \
+                and not is_blank(colours_block.palettes[colours[1]]):
+            colours = colours_block.palettes[colours[1]]
+        else:
+            colours = self.palette(number, palette)
+        if entry is None or attributes is None or colours is None:
+            return None
+        own_sheet, shape = self.sheet(entry), self.shape(attributes.shape)
+        event_sheet = self.evtchr_sheet(block)
+        out = []
+        for step in found.sequences[index]:
+            if step[0] == "op":
+                out.append((None, step))
+                continue
+            frame = step[0]
+            picture = None
+            if frame >= EVTCHR_FRAME_FIRST:
+                k = frame - EVTCHR_FRAME_FIRST
+                if event_sheet is not None and k < len(found.frames):
+                    picture = draw_frame(event_sheet, found.frames[k], colours)
+            elif own_sheet is not None and shape and frame < len(shape):
+                picture = draw_frame(own_sheet, shape[frame], colours)
+            out.append((picture, step))
+        return out
 
     def palette(self, number: int, wanted: int) -> Optional[list]:
         """Palette `wanted` of sprite `number`, or its first where that one is blank."""

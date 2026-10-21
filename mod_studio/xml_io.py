@@ -597,6 +597,43 @@ def parse_job_command_diff_xml(
     {command_id: {field: value}}. Same shape/purpose as parse_diff_xml,
     just for JobCommand's AbilityId/ReactionSupportMovementId fields.
     """
+    return _parse_command_diff_xml(xml_path, "JobCommand",
+                                   JOB_COMMAND_FIELD_ORDER)
+
+
+def parse_monster_job_command_diff_xml(
+    xml_path: Path,
+) -> tuple[dict[int, dict[str, str]], str, dict[int, dict[str, str]]]:
+    """
+    A MOD's `MonsterJobCommandData.xml`, in the same three shapes as
+    `parse_job_command_diff_xml`: the edits, the version and each entry as
+    it was.
+
+    Only entries with a monster's id (176 to 223, the file's own header)
+    come back. The edits join the job ones in `job_command_edits`, where an
+    id below 176 would be a job's skillset and be written into
+    `JobCommandData.xml`, a file this one never was.
+
+    Opening a mod read only `JobCommandData.xml` back into Job Commands, so
+    a monster changed there showed the game's skillset when the mod was
+    opened again, and the next change to that monster wrote the file
+    without the first (a user's report, 20 October).
+    """
+    edits, version, preserved = _parse_command_diff_xml(
+        xml_path, "MonsterJobCommand", _MONSTER_SLOT_NAMES)
+
+    def is_monster(command_id: int) -> bool:
+        return MONSTER_COMMAND_FIRST_ID <= command_id <= MONSTER_COMMAND_LAST_ID
+
+    return ({cid: fields for cid, fields in edits.items() if is_monster(cid)},
+            version,
+            {cid: entry for cid, entry in preserved.items() if is_monster(cid)})
+
+
+def _parse_command_diff_xml(
+    xml_path: Path, entry_tag: str, field_order: list,
+) -> tuple[dict[int, dict[str, str]], str, dict[int, dict[str, str]]]:
+    """The two skillset files' reader: `entry_tag` entries, `field_order` modelled."""
     raw_text = xml_path.read_text(encoding="utf-8-sig")
     root = ET.fromstring(raw_text)
     version_el = root.find("Version")
@@ -608,7 +645,7 @@ def parse_job_command_diff_xml(
     if entries is None:
         return result, version, preserved
 
-    for cmd_el in entries.findall("JobCommand"):
+    for cmd_el in entries.findall(entry_tag):
         id_el = cmd_el.find("Id")
         if id_el is None or id_el.text is None:
             continue
@@ -618,7 +655,7 @@ def parse_job_command_diff_xml(
             continue
 
         fields: dict[str, str] = {}
-        for field_name in JOB_COMMAND_FIELD_ORDER:
+        for field_name in field_order:
             el = cmd_el.find(field_name)
             if el is not None and el.text is not None:
                 fields[field_name] = el.text.strip()

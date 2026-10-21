@@ -11,7 +11,16 @@ and painted here, turned with the mouse, with the battle grid over it.
   the card off). (The first build used the game's `ui/sword.tga`; Zodi
   asked for the mouse back.)
 - **Clicking** a tile picks it; with Ctrl held, it is added to the tiles
-  picked, or taken out. The page decides what a pick means.
+  picked, or taken out. The page decides what a pick means. With
+  `box_select` on (the Map Editor's), **Ctrl and drag** draws a box and
+  says the tiles whose middles are in it (`tiles_boxed`), rather than
+  turning the map (Zodi's stress test of 20 October: 109 Ctrl and clicks to
+  paint a tundra's grass).
+- **Which way is north** (`show_compass`, the Map Editor's): N, E, S and
+  W just past the middle of each edge of the grid, and while the camera is
+  at one of the game's corners, which (Zodi's stress test of 20 October:
+  Light the map's "0 north" and parts.txt's corners had nothing on screen
+  to go by).
 - **What moves in the map plays on a loop**: the view looks for a new
   frame every `ANIMATION_TICK` milliseconds while it is on screen, and
   draws again only when there is one.
@@ -36,6 +45,7 @@ from PySide6.QtCore import QCoreApplication, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
+from ... import map_classic as mc
 from .. import map_scene as ms
 from .. import theme
 from ..map_render import Camera, MapRenderer
@@ -71,6 +81,9 @@ class MapView(QWidget):
     tile_clicked = Signal(object, bool)
     #: The camera moved: dragged, zoomed, or set by `set_camera`.
     camera_changed = Signal()
+    #: Ctrl and a drag, with `box_select` on: the tiles whose middles are in
+    #: the box drawn, as `(x, z, level)`s.
+    tiles_boxed = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -83,8 +96,16 @@ class MapView(QWidget):
         self.edited: set = set()
         self.hovered = None
         self.picked: list = []
+        #: The tiles battles use, `{(x, z, level): kinds}` (`map_scene.battle_geometry`): none shown when empty.
+        self.marks: dict = {}
+        self._marks_stale = True
         self.show_grid = True
         self.show_info = True
+        #: N, E, S and W round the grid, and the corner the camera is at.
+        self.show_compass = False
+        #: Whether Ctrl and a drag picks the tiles in a box, not turns the map.
+        self.box_select = False
+        self._box: Optional[QRectF] = None
         #: Said on the picture: why there is no map, or what is happening.
         self.message = ""
         #: `describe(tile) -> (title, detail)`: the card's two lines.
@@ -113,6 +134,14 @@ class MapView(QWidget):
         #: Render the map with nothing behind it (alpha 0 there), for an
         #: overlay that paints its own backdrop.
         self.transparent = False
+        #: Whether each drawing also measures how far the map is at each pixel
+        #: (`MapRenderer.render_depth`), into `depth`: for an overlay that
+        #: hides what stands behind the map's walls.
+        self.want_depth = False
+        self.depth = None
+        #: The map's colours changed (`MapRenderer.render`'s `tint`): an
+        #: event's ColorField, set by the Event Editor's map. None: its own.
+        self.tint = None
         #: Whether the overlay moves by itself (`overlay_ticker` repaints it).
         self.overlay_moves = False
         self.overlay_ticker = QTimer(self)
@@ -139,6 +168,7 @@ class MapView(QWidget):
         self.scene = scene
         self.hovered = None
         self.picked = []
+        self.depth = None
         self.renderer.set_scene(scene)
         if scene is not None and self.renderer.error is None:
             # On the graphics card now; an enhanced map's pictures are tens
@@ -157,8 +187,16 @@ class MapView(QWidget):
         self.tiles = list(tiles)
         self._by_key = {(t.x, t.z, t.level): t for t in self.tiles}
         self.edited = set(edited)
-        self._grid_stale = self._highlight_stale = True
+        self._grid_stale = self._highlight_stale = self._marks_stale = True
         self.schedule()
+
+    def set_marks(self, marks) -> None:
+        """The tiles battles use, drawn over the grid (`map_scene.battle_geometry`); {} for none."""
+        marks = {key: set(kinds) for key, kinds in (marks or {}).items()}
+        if marks != self.marks:
+            self.marks = marks
+            self._marks_stale = True
+            self.schedule()
 
     def set_picked(self, keys) -> None:
         self.picked = list(keys)
@@ -176,6 +214,12 @@ class MapView(QWidget):
 
     def tile(self, key):
         return self._by_key.get(key)
+
+    def set_tint(self, tint) -> None:
+        """The map's colours changed (`tint`, as the attribute says), drawn again when it changes."""
+        if tint != self.tint:
+            self.tint = tint
+            self.schedule()
 
     # -- drawing ----------------------------------------------------------------
 
@@ -199,6 +243,9 @@ class MapView(QWidget):
         if self._highlight_stale:
             self.renderer.set_grid(ms.highlight_geometry(self._by_key, self.hovered, self.picked))
             self._highlight_stale = False
+        if self._marks_stale:
+            self.renderer.set_grid(ms.battle_geometry(self._by_key, self.marks))
+            self._marks_stale = False
         ratio = self.devicePixelRatioF()
         ground = _colour("surface_alt")
         seconds = self.seconds()
@@ -206,10 +253,14 @@ class MapView(QWidget):
         image = self.renderer.render(self.camera, round(self.width() * ratio),
                                      round(self.height() * ratio), show_grid=self.show_grid,
                                      background=(ground.redF(), ground.greenF(), ground.blueF()),
-                                     seconds=seconds, transparent=self.transparent)
+                                     seconds=seconds, transparent=self.transparent,
+                                     tint=self.tint)
         if image is not None:
             image.setDevicePixelRatio(ratio)
             self.renders += 1
+        self.depth = (self.renderer.render_depth(self.camera, round(self.width() * ratio),
+                                                 round(self.height() * ratio), seconds=seconds)
+                      if self.want_depth and image is not None else None)
         self.image = image
         self.update()
 
@@ -291,10 +342,17 @@ class MapView(QWidget):
             # Instead of a map: in the middle.
             p.drawText(area, int(Qt.TextWordWrap) | int(Qt.AlignCenter), error or self.message)
         else:
+            if self.show_compass and self.image is not None and self.scene is not None:
+                self._paint_compass(p, area)
             if self.overlay is not None and self.image is not None and self.scene is not None:
                 p.save()
                 self.overlay(p)
                 p.restore()
+            if self._box is not None:
+                p.setPen(QPen(_colour("accent", 235), 1.4, Qt.DashLine))
+                p.setBrush(_colour("accent", 45))
+                p.drawRect(self._box)
+                p.setBrush(Qt.NoBrush)
             if self.message:
                 # Over a map: in its corner, out of the way.
                 p.drawText(area, int(Qt.TextWordWrap) | int(Qt.AlignLeft | Qt.AlignTop), self.message)
@@ -308,6 +366,49 @@ class MapView(QWidget):
         p.drawRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5))
         p.end()
 
+    def compass_marks(self) -> dict:
+        """
+        `{letter: QPointF}`: where N, E, S and W go in the picture, half a
+        tile past the middle of each edge of the grid, on the ground (north
+        is the files' +z, east their +x: `map_scene.CORNERS`' angles, and
+        Light the map's compass). Empty with no grid.
+        """
+        shown = [t for t in self.tiles if not t.is_blank]
+        if self.scene is None or not shown or self.renderer.error:
+            return {}
+        size = mc.TILE_SIZE
+        x0, x1 = min(t.x for t in shown) * size, (max(t.x for t in shown) + 1) * size
+        z0, z1 = min(t.z for t in shown) * size, (max(t.z for t in shown) + 1) * size
+        cx, cz, pad = (x0 + x1) / 2, (z0 + z1) / 2, size / 2
+        places = {"N": (cx, z1 + pad), "E": (x1 + pad, cz), "S": (cx, z0 - pad), "W": (x0 - pad, cz)}
+        return {letter: QPointF(*self.renderer.project((-x, 0.0, z), self.camera, self.width(), self.height()))
+                for letter, (x, z) in places.items()}
+
+    def corner_text(self) -> str:
+        """What the picture says of the camera's corner: "Seen from the SW corner", or nothing between corners."""
+        name = ms.corner_at(self.camera.yaw)
+        return f"Seen from the {name} corner" if name else ""
+
+    def _paint_compass(self, p: QPainter, area: QRectF) -> None:
+        font = QFont(self.font())
+        font.setBold(True)
+        p.setFont(font)
+        metrics = QFontMetricsF(font)
+        radius = metrics.height() * 0.75
+        for letter, point in self.compass_marks().items():
+            disc = QRectF(point.x() - radius, point.y() - radius, 2 * radius, 2 * radius)
+            p.setPen(QPen(_colour("accent" if letter == "N" else "border", 230), 1.2))
+            p.setBrush(_colour("surface", 215))
+            p.drawEllipse(disc)
+            p.setPen(_colour("text"))
+            p.drawText(disc, int(Qt.AlignCenter), letter)
+        p.setBrush(Qt.NoBrush)
+        text = self.corner_text()
+        if text:
+            p.setFont(self.font())
+            p.setPen(_colour("text_muted"))
+            p.drawText(area, int(Qt.AlignLeft | Qt.AlignBottom), text)
+
     def card_rect(self, title: str, detail: str) -> QRectF:
         """
         Where the card goes: right of the pointer, above its tip, inside
@@ -315,9 +416,10 @@ class MapView(QWidget):
         below where there's none above.
         """
         bold, plain = self._card_fonts()
-        width = max(QFontMetricsF(bold).horizontalAdvance(title),
-                    QFontMetricsF(plain).horizontalAdvance(detail)) + 26
-        height = QFontMetricsF(bold).height() + QFontMetricsF(plain).height() + 22
+        lines = detail.split("\n")
+        width = max([QFontMetricsF(bold).horizontalAdvance(title)]
+                    + [QFontMetricsF(plain).horizontalAdvance(line) for line in lines]) + 26
+        height = QFontMetricsF(bold).height() + len(lines) * QFontMetricsF(plain).height() + 22
         tip_x, tip_y = self._pointer.x(), self._pointer.y()
         x, y = tip_x + CARD_RIGHT, tip_y - CARD_ABOVE - height
         if x + width > self.width() - 6 and tip_x - CARD_RIGHT - width >= 6:
@@ -348,7 +450,7 @@ class MapView(QWidget):
         p.drawText(inner, int(Qt.AlignLeft | Qt.AlignTop), title)
         p.setFont(plain)
         p.setPen(_colour("text_muted"))
-        p.drawText(inner, int(Qt.AlignLeft | Qt.AlignBottom), detail)
+        p.drawText(inner, int(Qt.AlignLeft | Qt.AlignBottom), detail)    # its lines, the last at the bottom
 
     # -- the pointer --------------------------------------------------------------
 
@@ -357,6 +459,21 @@ class MapView(QWidget):
             return None
         return self.renderer.pick(point.x(), point.y(), self.camera, self.width(), self.height(),
                                   self.tiles)
+
+    def tiles_in(self, box: QRectF) -> list:
+        """The tiles the grid shows whose middles are inside `box` of the picture, as `(x, z, level)`s."""
+        if self.scene is None or self.renderer.error:
+            return []
+        out = []
+        for tile in self.tiles:
+            if not ms.shows(tile) or tile.is_blank:
+                continue
+            corners = ms.tile_corners(tile)
+            middle = tuple(sum(c[i] for c in corners) / 4 for i in range(3))
+            x, y = self.renderer.project(middle, self.camera, self.width(), self.height())
+            if box.contains(QPointF(x, y)):
+                out.append((tile.x, tile.z, tile.level))
+        return out
 
     def batch_at(self, point: QPointF):
         """The batch drawn at a point: an enhanced one's `group` names its pictures."""
@@ -376,6 +493,7 @@ class MapView(QWidget):
     def mousePressEvent(self, event):                             # noqa: N802
         self._press = (event.position(), event.button(), event.modifiers(), self.camera.copy())
         self._dragging = False
+        self._box = None
         self._grabbed = bool(self.grabber is not None and event.button() == Qt.LeftButton
                              and not event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)
                              and self.grabber.press(event.position()))
@@ -395,6 +513,13 @@ class MapView(QWidget):
             self._set_hover(self.tile_at(point))
             self.grabber.move(point)
             return
+        if (self.box_select and button == Qt.LeftButton
+                and modifiers & (Qt.ControlModifier | Qt.MetaModifier)):
+            self._dragging = True
+            self._box = QRectF(start, point).normalized()
+            self._set_hover(None)
+            self.update()
+            return
         moving = button == Qt.MiddleButton or (button == Qt.LeftButton
                                                and modifiers & Qt.ShiftModifier)
         if not moving and button != Qt.LeftButton:
@@ -402,7 +527,9 @@ class MapView(QWidget):
         self._dragging = True
         if moving:
             per_pixel = 2 * self.renderer.half_height(camera, self._aspect()) / max(1, self.height())
-            self.camera.pan = (camera.pan[0] + dx * per_pixel, camera.pan[1] + dy * per_pixel)
+            # A picture drawn wider across (`Camera.stretch`) moves less across a pixel.
+            self.camera.pan = (camera.pan[0] + dx * per_pixel / max(0.05, camera.stretch),
+                               camera.pan[1] + dy * per_pixel)
         else:
             self.camera.yaw = (camera.yaw - dx * TURN_PER_PIXEL) % 360.0
             self.camera.pitch = min(ms.TOP_PITCH, max(LOWEST_PITCH, camera.pitch + dy * TILT_PER_PIXEL))
@@ -423,6 +550,10 @@ class MapView(QWidget):
             return
         if self._dragging:
             self._dragging = False
+            if self._box is not None:
+                box, self._box = self._box, None
+                self.tiles_boxed.emit(self.tiles_in(box))
+                self.update()
             self._set_hover(self.tile_at(event.position()))
             return
         if button == Qt.LeftButton:
@@ -442,7 +573,8 @@ class MapView(QWidget):
         down = 1 - 2 * point.y() / max(1, self.height())
         # The point under the pointer stays where it is.
         px, py = self.camera.pan
-        self.camera.pan = (px + (after - before) * aspect * across, py - (after - before) * down)
+        self.camera.pan = (px + (after - before) * aspect * across / max(0.05, self.camera.stretch),
+                           py - (after - before) * down)
         self.camera.zoom = zoom
         self.camera_changed.emit()
         self.schedule()

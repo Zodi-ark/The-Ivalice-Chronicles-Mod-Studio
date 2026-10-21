@@ -190,6 +190,10 @@ def load_any_image(path: Path):
     existing game .tex files - those need load_game_texture_preview below
     (tex-conv first).
 
+    A .dds of one channel (DXGI 61, R8_UNORM: the fonts' pictures, as
+    FF16Tools writes them) is read here: Pillow can't, and said
+    "Unimplemented DXGI format 61" on the Textures page (`_one_channel_dds`).
+
     This used to return a numpy array and go through imageio for .dds.
     Neither was earning its place. Every caller immediately did
     `Image.fromarray(arr, "RGBA")` to get back to the image it started as,
@@ -205,7 +209,43 @@ def load_any_image(path: Path):
     """
     from PIL import Image
 
+    if Path(path).suffix.lower() == ".dds":
+        data = Path(path).read_bytes()
+        image = _one_channel_dds(data)
+        if image is not None:
+            return image
     return Image.open(str(path)).convert("RGBA")
+
+
+#: DXGI's R8_UNORM: one byte a pixel. The game's fonts are pictures of this
+#: kind, each a signed distance field of its glyphs (`game_fonts`).
+DXGI_R8_UNORM = 61
+
+
+def _one_channel_dds(dds: bytes):
+    """
+    A DDS of one channel (`DXGI_R8_UNORM`) as an RGBA `PIL.Image`, grey: each
+    pixel's byte in red, green and blue, opaque. None for any other DDS,
+    which Pillow reads.
+
+    Its rows are read at the length the data gives them (its size over its
+    height): FF16Tools' and `tex_as_dds`' are as wide as the picture, but a
+    DDS from elsewhere may pad them.
+    """
+    from PIL import Image
+
+    if len(dds) < 148 or dds[:4] != b"DDS " or dds[84:88] != b"DX10":
+        return None
+    height, width = struct.unpack_from("<II", dds, 12)
+    if struct.unpack_from("<I", dds, 128)[0] != DXGI_R8_UNORM or not width or not height:
+        return None
+    data = dds[148:]
+    row = len(data) // height
+    if row < width:
+        raise ValueError("the picture's data is shorter than its size says")
+    if row != width:
+        data = b"".join(data[y * row: y * row + width] for y in range(height))
+    return Image.frombytes("L", (width, height), bytes(data[:width * height])).convert("RGBA")
 
 
 def save_image_as_png(img, dest_path: Path) -> None:
@@ -312,6 +352,9 @@ def _image_from_dds(dds: bytes):
 
     from PIL import Image
 
+    image = _one_channel_dds(dds)
+    if image is not None:
+        return image
     return Image.open(io.BytesIO(dds)).convert("RGBA")
 
 
@@ -446,6 +489,12 @@ _TEX_RGBA_FORMATS = {
     0xA0450: 27,           # R8G8B8A8_TYPELESS
     0xA1450: 28,           # R8G8B8A8_UNORM
     0xA2450: 29,           # R8G8B8A8_UNORM_SRGB
+}
+#: One byte a pixel: the fonts' pictures (`system/graphics/font2/*_font.tex`,
+#: every one of the game's fifteen in this format). Read here and shown grey
+#: (`_one_channel_dds`), which Pillow can't.
+_TEX_ONE_CHANNEL_FORMATS = {
+    0x11130: 61,           # R8_UNORM
 }
 
 
@@ -775,6 +824,10 @@ def tex_as_dds(tex: bytes, max_packed: Optional[int] = None) -> bytes:
         dxgi = _TEX_RGBA_FORMATS[fmt]
         pitch = width * 4
         rows = slice_rows = height
+    elif fmt in _TEX_ONE_CHANNEL_FORMATS:
+        dxgi = _TEX_ONE_CHANNEL_FORMATS[fmt]
+        pitch = width
+        rows = slice_rows = height
     else:
         raise TexNotReadHere(f"pixel format 0x{fmt:X}")
     if not width or not height:
@@ -844,6 +897,41 @@ def decode_tex_in_process(path: Path, max_packed: Optional[int] = IN_PROCESS_MAX
 SEAM_FIX_NEEDS = ("The face seam fix needs numpy and scipy, which aren't installed here. "
                   "Install them with: pip install numpy scipy")
 
+#: Said instead in the packaged program, where they won't load. It carries
+#: its own copies, which pip can't reach, so `SEAM_FIX_NEEDS` sent a user
+#: of 0.9.0 the wrong way and hid what had failed (a user's report, 20
+#: October). `{error}` is Python's own, the last in its chain.
+SEAM_FIX_BROKEN = ("The face seam fix couldn't load numpy and scipy, which come with Mod Studio "
+                   "in its _internal folder: {error}. Unzip Mod Studio again into a new folder, "
+                   "and check your antivirus hasn't quarantined a file from it.")
+
+
+def seam_fix_unavailable(exc: BaseException, frozen: Optional[bool] = None) -> str:
+    """
+    What to say when numpy or scipy won't import: `SEAM_FIX_NEEDS` running
+    from source, `SEAM_FIX_BROKEN` with the real error in the packaged
+    program (`sys.frozen`, which PyInstaller sets).
+
+    The error shown is the innermost of the chain. numpy wraps a failed load
+    of its compiled half in a page of advice, "IMPORTANT: PLEASE READ THIS
+    ...", with the error itself at the end ("DLL load failed while
+    importing _multiarray_umath") and as its `__cause__`.
+    """
+    import sys
+    if frozen is None:
+        frozen = bool(getattr(sys, "frozen", False))
+    if not frozen:
+        return SEAM_FIX_NEEDS
+    root = exc
+    for _ in range(10):
+        if root.__cause__ is None:
+            break
+        root = root.__cause__
+    text = " ".join(str(root).split()) or type(root).__name__
+    if len(text) > 300:
+        text = text[:297] + "..."
+    return SEAM_FIX_BROKEN.format(error=text.rstrip("."))
+
 
 def apply_seam_fix(img):
     """
@@ -869,15 +957,15 @@ def apply_seam_fix(img):
     the seam this is for. `dev/test_seam_fix.py` holds this function to
     the script's own, byte for byte.
 
-    Raises RuntimeError (`SEAM_FIX_NEEDS`) without numpy and scipy: a face
-    exported without its fix would show the seam, so it is not written
+    Raises RuntimeError (`seam_fix_unavailable`) without numpy and scipy: a
+    face exported without its fix would show the seam, so it is not written
     another way.
     """
     try:
         import numpy as np
         from scipy import ndimage
     except ImportError as exc:
-        raise RuntimeError(SEAM_FIX_NEEDS) from exc
+        raise RuntimeError(seam_fix_unavailable(exc)) from exc
     from PIL import Image
 
     arr = np.array(img.convert("RGBA"), dtype=np.uint8)

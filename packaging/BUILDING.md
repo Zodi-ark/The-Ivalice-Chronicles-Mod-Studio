@@ -7,31 +7,37 @@ You only do steps 1-4 once. After that, rebuilding is just step 5.
 
 ---
 
-## Step 1 - Install Python
+## Step 1 - Python 3.14
 
-Get Python **3.12** from https://www.python.org/downloads/windows/ and run
-the installer.
-
-Two things on the installer screens matter:
-
-- On the first screen, tick **"Add python.exe to PATH"** (bottom of the
-  window). Easy to miss, and nothing later works without it.
-- On the "Optional Features" screen, **"tcl/tk and IDLE"** can be left
-  ticked or unticked - it makes no difference to this build. It used to say
-  to keep it, because the interface was built with Tkinter, which is what
-  tcl/tk provides. The interface is Qt now and the build explicitly excludes
-  Tkinter, so nothing here depends on it either way. Leaving it ticked is
-  the default and is harmless.
-
-**Check it worked.** Press `Windows key + R`, type `cmd`, press Enter, then
+Mod Studio is built with Python **3.14**: checked with 3.14.8, python.org's
+newest on 30 September 2026. If 3.14 is what you already use, check which
+one Windows finds. Press `Windows key + R`, type `cmd`, press Enter, then
 type:
 
 ```
-python --version
+py -3.14 --version
 ```
 
-You should see `Python 3.12.something`. If you get "not recognised", the
-PATH tickbox was missed - re-run the installer, choose Modify, and tick it.
+You should see `Python 3.14.something`. Then go on to step 2.
+
+If you don't have 3.14 yet, get the **Windows installer (64-bit)** of the
+newest 3.14 from https://www.python.org/downloads/windows/ and run it:
+
+- On the first screen, tick **"Add python.exe to PATH"** (bottom of the
+  window). Easy to miss.
+- On the "Optional Features" screen, **"tcl/tk and IDLE"** makes no
+  difference to this build (it leaves Tkinter out either way), and
+  **"Download free-threaded binaries"** is best left unticked. The
+  free-threaded Python (3.14t) can't run PySide6; `py -3.14` always picks
+  the normal one, so even ticked it changes nothing below.
+
+**If `py` is "not recognised"**, the launcher wasn't installed. Type
+`python --version` instead: if it says 3.14, use `python` wherever these
+steps say `py -3.14`. If it says another version, re-run the 3.14
+installer, choose Modify, and tick "py launcher".
+
+Python 3.12 works too (the same steps with `-3.12`). 3.14 is the one this
+page was checked with.
 
 ---
 
@@ -64,18 +70,32 @@ whatever else is installed on your machine can't leak into the .exe. That
 is not housekeeping - an earlier build was 483 MB instead of 154 MB purely
 because unrelated packages were sitting in the environment.
 
-Type these one at a time:
+**If the folder already has a `.venv` from an earlier build, delete it
+first.** It holds whatever versions were installed then: 0.9.0 was built
+with PySide6 6.12.0, not the 6.11.2 step 4 installs (read from its own
+files). Type:
 
 ```
-python -m venv .venv
+rmdir /s /q .venv
+```
+
+(If it says "The system cannot find the file specified", there was none,
+which is fine.) Then, one at a time:
+
+```
+py -3.14 -m venv .venv
 ```
 
 ```
 .venv\Scripts\activate
 ```
 
+```
+python --version
+```
+
 **Check it worked.** The start of your command line should now show
-`(.venv)`, like this:
+`(.venv)`, and the last command should say `Python 3.14.something`:
 
 ```
 (.venv) C:\...\The Ivalice Chronicles Mod Studio>
@@ -95,14 +115,26 @@ step 2.
 ## Step 4 - Install what the build needs
 
 ```
-pip install PySide6-Essentials pillow numpy scipy pyinstaller
+python -m pip install PySide6-Essentials==6.11.2 pillow==12.3.0 numpy==2.5.3 scipy==1.18.1 pyinstaller==6.22.3
 ```
 
-That is the complete list. numpy and scipy are the face seam fix's: the
-Portrait Seam Fixer's own algorithm, back at Zodi's asking, adds them to the
-build again (91 MB of a Linux build; the spec leaves out the parts of scipy
-it never loads). **Do not install imageio**: the script used it only to open
+That is the complete list, every version pinned: they are the versions
+every check here runs with, and the ones the build was checked with on
+3.14.8. Each has a Windows download for Python 3.14, so pip fetches it
+ready made rather than trying to compile anything. If pip ever says
+"Building wheel for ...", stop: that means a version has no download for
+your Python, and the build would not be the one checked.
+
+numpy and scipy are the face seam fix's: the Portrait Seam Fixer's own
+algorithm, back at Zodi's asking, adds them to the build again (91 MB of a
+Linux build; the spec leaves out the parts of scipy it never loads). **Do not install imageio**: the script used it only to open
 .dds files, which Pillow reads itself here, and it drags in video tools.
+
+**Keep the `==6.11.2`**: it is the PySide6 Mod Studio is checked with. The
+next, 6.12.0 (pip's newest in October 2026), sizes some panes differently;
+on Linux the window then can't be made narrower than 2,476 pixels. 0.9.0
+was built with 6.12.0 (its own files say so); none of the checks here ran
+with it.
 
 Two notes on that command, both of which cost real megabytes:
 
@@ -126,27 +158,37 @@ Two notes on that command, both of which cost real megabytes:
   actually gets the size down and works whichever package is installed.
 
 **Check it worked.** The last line should say `Successfully installed ...`
-mentioning `PySide6_Essentials`, `pillow`, `numpy`, `scipy` and
-`pyinstaller`.
+mentioning `PySide6_Essentials-6.11.2`, `pillow-12.3.0`, `numpy-2.5.3`,
+`scipy-1.18.1` and `pyinstaller-6.22.3`.
 
 ---
 
 ## Step 5 - Build it
 
 ```
-pyinstaller packaging\ModStudio.spec --noconfirm
+pyinstaller packaging\ModStudio.spec --noconfirm --clean
 ```
 
 This takes a couple of minutes and prints a lot of text. That is normal.
+`--clean` makes PyInstaller forget what it kept from an earlier build (one
+made with another Python, say), so nothing old is mixed in.
 
-**Check it worked.** The last line should be:
+**Check it worked.** The last lines should be these three (the numbers in
+front of `INFO` are timings, and differ):
 
 ```
-Building COLLECT COLLECT-00.toc completed successfully.
+... INFO: Building COLLECT COLLECT-00.toc completed successfully.
+
+package check: 3 required folders present, 7 excluded items absent, no Tkinter runtime.
+... INFO: Build complete! The results are available in: ...\dist
 ```
 
-If it ends in a red `ERROR` instead, copy the last 20 lines and send them
-to me - don't try to work around it.
+The `package check` line is the spec's own check of what it built: the
+folders the program needs are in, the things it must leave out are not.
+If it instead stops with `*** The built package is not what it should be
+***`, or ends in a red `ERROR`, copy the last 20 lines and send them to me
+- don't try to work around it. A few `WARNING` lines along the way are
+normal.
 
 ---
 
@@ -158,7 +200,9 @@ The finished program is in:
 dist\The Ivalice Chronicles Mod Studio\
 ```
 
-Inside there is **The Ivalice Chronicles Mod Studio.exe**. Double-click it.
+Inside there is **The Ivalice Chronicles Mod Studio.exe**, with `LICENSE`,
+`NOTICE.md` and `README.md` beside it (the build copies them there; 0.9.0
+had no `NOTICE.md`, so it came from an older spec). Double-click the .exe.
 
 > **Important:** the .exe needs the folder around it. Copying just the .exe
 > somewhere else will not work. When you share it, share (or zip) the whole
@@ -194,7 +238,9 @@ exactly as it always has.
 for byte (`dev/test_seam_fix.py`). **What to look for: no dark line across
 the portrait**, as the fixer's own before and after pictures show. If the
 build can't find numpy or scipy, the export says so for that texture
-rather than writing it without the fix.
+rather than writing it without the fix, naming what failed to load in
+Python's own words (it used to tell you to run pip, which can't reach the
+.exe's own copies in `_internal`).
 
 ---
 
@@ -305,16 +351,21 @@ Steps 1-4 are one-off. Next time, do step 2 (open cmd in the folder), then:
 
 ```
 .venv\Scripts\activate
-pyinstaller packaging\ModStudio.spec --noconfirm
+pyinstaller packaging\ModStudio.spec --noconfirm --clean
 ```
+
+A new Python (say 3.14.9) needs nothing; a new minor version (3.15) means
+steps 3 and 4 again, and is worth asking about first: PySide6 6.11.2 runs
+on 3.10 to 3.14 only.
 
 ---
 
 ## Please tell me
 
 - The size of the `dist\The Ivalice Chronicles Mod Studio` folder
-  (right-click it, Properties). My Linux build is 274 MB, 91 MB of it numpy
-  and scipy; Windows will differ and I'd rather have the real number than
-  an estimate.
+  (right-click it, Properties). My Linux build on Python 3.14.8 is 304 MB,
+  92 MB of it numpy and scipy (a Linux build also carries the system's own
+  libraries, which Windows doesn't need); Windows will differ and I'd
+  rather have the real number than an estimate.
 - Which of the six checks passed and which didn't.
 - Whether the portrait looks the same in-game.

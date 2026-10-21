@@ -28,7 +28,8 @@ def preview(folder, game_dir, out, size=(640, 480)) -> Path:
     built = mpk.build(folder)
     mesh_file = mpk.write_built(folder, built)
     scene = ms.build_enhanced(Path(game_dir), built.number, mesh_file=mesh_file,
-                              picture_files=built.pictures, rows=built.table_rows)
+                              picture_files=built.pictures, rows=built.table_rows,
+                              anim_file=mpk.write_built_anim(folder, built))
     renderer = mr.MapRenderer()
     if not renderer.ensure_context():
         raise mpk.PackageError(f"can't draw here: {renderer.error}")

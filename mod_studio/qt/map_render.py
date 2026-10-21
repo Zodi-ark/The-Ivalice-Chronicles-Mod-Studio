@@ -26,6 +26,13 @@ an array the shader doesn't use; Zodi's Windows driver crashed on it
 ("access violation" in `glDrawArrays`, switching from Classic to Enhanced
 and between enhanced maps).
 
+**How far the map is, pixel by pixel** (`render_depth`): the solid
+polygons drawn again, each pixel's depth written as its colour, for a page
+that hides what stands behind the map's walls (the Event Editor's units,
+Zodi, 19 October: "we should not be able to see units through walls").
+Only what writes depth in a picture writes it here: polygons a corner
+leaves out, see through edges and what is blended over the map don't.
+
 **Back faces are not drawn** (`Scene.front`), and **see through pictures
 are drawn in two passes** (`render`): first every polygon where its
 picture is all but solid (90% or more), writing depth like any solid one,
@@ -69,9 +76,10 @@ GL_CULL_FACE, GL_BACK, GL_CW, GL_CCW = 0x0B44, 0x0405, 0x0900, 0x0901
 # and whether this pass draws it: SOLID the whole, SEE_THROUGH anything
 # showing, FADING the part-shown, blended by how much.
 _SHOWN = """
-uniform vec4 cornerWeight; uniform int drawPass;
+uniform vec4 cornerWeight; uniform int drawPass; uniform int bandBit;
 float shownBy(float render) {
   int r = int(render + 0.5);
+  if (bandBit >= 0 && ((r >> bandBit) & 1) == 1) return 0.0;
   vec4 hidden = vec4((r >> 13) & 1, (r >> 12) & 1, (r >> 11) & 1, (r >> 10) & 1);
   return 1.0 - dot(cornerWeight, hidden);
 }
@@ -81,6 +89,28 @@ bool drawnIn(float s) {
   return s > 0.001 && s <= 0.999;
 }"""
 
+# A pixel's depth written as its colour (`render_depth`), 24 bits across red, green and blue.
+_DEPTH = """
+uniform int depthOut;
+vec4 packedDepth(float z) {
+  float v = floor(z * 16777215.0 + 0.5);
+  float r = floor(v / 65536.0);
+  float g = floor((v - r * 65536.0) / 256.0);
+  float b = v - r * 65536.0 - g * 256.0;
+  return vec4(r / 255.0, g / 255.0, b / 255.0, 1.0);
+}"""
+
+# The map's colours changed by the event (ColorField, `event_scripts.colour_change`):
+# each colour as a matrix and an offset make it, black left alone, as the
+# PlayStation leaves a colour of 0.
+_TINT = """
+uniform int tintOn; uniform vec3 tintRow[3]; uniform vec3 tintOffset;
+vec3 tinted(vec3 c) {
+  if (tintOn == 0 || max(c.r, max(c.g, c.b)) < 0.004) return c;
+  return clamp(vec3(dot(tintRow[0], c), dot(tintRow[1], c), dot(tintRow[2], c)) + tintOffset,
+               0.0, 1.0);
+}"""
+
 ENHANCED_VS = """#version 330 core
 layout(location=0) in vec3 pos; layout(location=1) in vec2 uv; layout(location=2) in float render;
 uniform mat4 mvp; out vec2 vuv; flat out float vrender;
@@ -88,7 +118,7 @@ void main() { vuv = uv; vrender = render; gl_Position = mvp * vec4(pos, 1.0); }"
 ENHANCED_FS = """#version 330 core
 in vec2 vuv; flat in float vrender;
 uniform sampler2D colourMap; uniform sampler2D lightMap; uniform int hasLight;
-uniform float gain; uniform vec2 uvScale; uniform int alphaMode; out vec4 frag;""" + _SHOWN + """
+uniform float gain; uniform vec2 uvScale; uniform int alphaMode; out vec4 frag;""" + _SHOWN + _DEPTH + _TINT + """
 void main() {
   float s = shownBy(vrender);
   if (!drawnIn(s)) discard;
@@ -100,7 +130,8 @@ void main() {
   else if (alphaMode == 1) { if (c.a >= 0.9 || c.a < 0.02) discard; }
   else if (c.a < 0.02) discard;
   vec3 l = hasLight == 1 ? texture(lightMap, vuv).rgb * gain : vec3(1.0);
-  frag = vec4(min(c.rgb * l, vec3(1.0)), c.a * s);
+  frag = vec4(tinted(min(c.rgb * l, vec3(1.0))), c.a * s);
+  if (depthOut == 1) frag = packedDepth(gl_FragCoord.z);
 }"""
 CLASSIC_VS = """#version 330 core
 layout(location=0) in vec3 pos; layout(location=1) in vec2 uv; layout(location=2) in vec3 nrm;
@@ -113,7 +144,7 @@ uniform sampler2D indexMap; uniform sampler2D paletteMap;
 uniform vec3 ambient; uniform vec3 lightDir[3]; uniform vec3 lightCol[3];
 uniform int uvCount; uniform vec4 uvCanvas[32]; uniform vec2 uvShift[32];
 uniform int paletteRow[16];
-out vec4 frag;""" + _SHOWN + """
+out vec4 frag;""" + _SHOWN + _DEPTH + _TINT + """
 void main() {
   float s = shownBy(vrender);
   if (!drawnIn(s)) discard;
@@ -131,32 +162,42 @@ void main() {
     light = ambient;
     for (int i = 0; i < 3; i++) light += lightCol[i] * max(dot(n, lightDir[i]), 0.0);
   }
-  frag = vec4(min(c.rgb * light, vec3(1.0)), s);
+  frag = vec4(tinted(min(c.rgb * light, vec3(1.0))), s);
+  if (depthOut == 1) frag = packedDepth(gl_FragCoord.z);
 }"""
 FLAT_VS = """#version 330 core
 layout(location=0) in vec3 pos; layout(location=1) in vec4 col; layout(location=2) in float render;
 uniform mat4 mvp; out vec4 vcol; flat out float vrender;
 void main() { vcol = col; vrender = render; gl_Position = mvp * vec4(pos, 1.0); }"""
 FLAT_FS = """#version 330 core
-in vec4 vcol; flat in float vrender; out vec4 frag;""" + _SHOWN + """
+in vec4 vcol; flat in float vrender; out vec4 frag;""" + _SHOWN + _DEPTH + """
 void main() {
   float s = shownBy(vrender);
   if (!drawnIn(s)) discard;
-  frag = vec4(vcol.rgb, vcol.a * s); }"""
+  frag = vec4(vcol.rgb, vcol.a * s);
+  if (depthOut == 1) frag = packedDepth(gl_FragCoord.z); }"""
 
 
 class Camera:
     """
     Where the map is seen from: `yaw`, the camera's place around the map in
     the files' ground plane (225 is the south-west corner), `pitch` above
-    the ground, `zoom`, and `pan` in screen units.
+    the ground, `zoom`, and `pan` in screen units. `stretch`: how many times
+    wider across than up the picture is drawn (1, square; the Event
+    Editor's camera is the game's 8 to 7, `event_map.EVENT_STRETCH`).
+    `psx_yaw`: for the game's own camera (the Event Editor's), its turn in
+    4,096ths, which says which walls the game leaves out
+    (`map_scene.psx_hiding`); None for the pages' own cameras, whose walls
+    fade as they turn (`map_scene.corner_weights`).
     """
 
-    def __init__(self, yaw=225.0, pitch=ms.LOW_PITCH, zoom=1.0, pan=(0.0, 0.0)):
-        self.yaw, self.pitch, self.zoom, self.pan = yaw, pitch, zoom, pan
+    def __init__(self, yaw=225.0, pitch=ms.LOW_PITCH, zoom=1.0, pan=(0.0, 0.0), stretch=1.0,
+                 psx_yaw=None):
+        self.yaw, self.pitch, self.zoom, self.pan, self.stretch = yaw, pitch, zoom, pan, stretch
+        self.psx_yaw = psx_yaw
 
     def copy(self) -> "Camera":
-        return Camera(self.yaw, self.pitch, self.zoom, self.pan)
+        return Camera(self.yaw, self.pitch, self.zoom, self.pan, self.stretch, self.psx_yaw)
 
 
 class _Upload:
@@ -193,6 +234,14 @@ class MapRenderer:
         self._uploaded = []          # _Upload per batch
         self._grid = {}
         self.index_tex = self.palette_tex = None
+        self.depth_fbo = None
+        self.depth_fbo_size = (0, 0)
+        #: 1 while `render_depth` draws: the shaders write depth as colour.
+        self._depth_out = 0
+        #: The band of polygons left out while drawing (`map_scene.hiding`), -1 none.
+        self._band = -1
+        #: The map's colours changed while drawing (`render`'s `tint`), or None.
+        self._tint = None
 
     # -- the context ------------------------------------------------------
     def ensure_context(self) -> bool:
@@ -316,8 +365,9 @@ class MapRenderer:
     def set_grid(self, geometry: dict) -> None:
         """
         Replaces the named parts of the grid (`map_scene.grid_geometry`'s
-        "fill" and "lines", `highlight_geometry`'s "hover" and "selected"),
-        leaving the others: the pointer moving redraws one tile, not 512.
+        "fill" and "lines", `highlight_geometry`'s "hover" and "selected",
+        `battle_geometry`'s "battles"), leaving the others: the pointer
+        moving redraws one tile, not 512.
         """
         if not self.make_current():
             return
@@ -334,6 +384,7 @@ class MapRenderer:
         if self.ctx is not None and self.ctx.makeCurrent(self.surface):
             self._release()
             self.fbo = None
+            self.depth_fbo = None
             self.scene = None
             self.ctx.doneCurrent()
 
@@ -402,20 +453,23 @@ class MapRenderer:
         view, reach = self._view(camera)
         aspect = width / max(height, 1)
         half = self.half_height(camera, aspect)
+        across = half * aspect / max(0.05, getattr(camera, "stretch", 1.0))
         px, py = camera.pan
         proj = QMatrix4x4()
-        proj.ortho(-half * aspect - px, half * aspect - px, -half + py, half + py,
+        proj.ortho(-across - px, across - px, -half + py, half + py,
                    reach * 0.5, reach * 3.5)
         return proj, view
 
     # -- drawing ----------------------------------------------------------------
     def render(self, camera: Camera, width: int, height: int, show_grid=True,
                background=(0.10, 0.105, 0.12), seconds: float = 0.0,
-               transparent: bool = False) -> Optional[QImage]:
+               transparent: bool = False, tint: Optional[tuple] = None) -> Optional[QImage]:
         """
         The map from `camera`, `seconds` into its animations. `transparent`:
         nothing behind the map (alpha 0), the map's own alpha kept, for a
         page that paints its own backdrop (the Abilities page's screen colour).
+        `tint`: the map's colours changed, `(matrix, offset)` as
+        `event_scripts.colour_change` gives them (an event's ColorField), or None.
         """
         if not self.make_current():
             return None
@@ -450,7 +504,8 @@ class MapRenderer:
         if self.scene is not None:
             proj, view = self.matrices(camera, width, height)
             mvp = proj * view
-            weights = ms.corner_weights(camera.yaw)
+            weights, self._band = ms.hiding(camera)
+            self._tint = tint
             drawn = [u for u in self._uploaded if self.in_view(u.batch, camera)]
             # Only the side of a polygon its corners go round the right way.
             gl.glEnable(GL_CULL_FACE)
@@ -473,25 +528,89 @@ class MapRenderer:
                     self._draw_batch(up, mvp, seconds, weights, FADING, ALL)
             gl.glDepthMask(True)
             gl.glDisable(GL_CULL_FACE)
-            if show_grid and self._grid:
+            self._tint = None
+            # The battles' tiles (Show battles) are drawn with the grid hidden too.
+            if self._grid and (show_grid or "battles" in self._grid):
                 flat = self.programs["flat"]
                 flat.bind()
                 flat.setUniformValue("mvp", mvp)
                 # The grid is never left out.
                 flat.setUniformValue("cornerWeight", QVector4D(0, 0, 0, 0))
+                flat.setUniformValue1i("bandBit", -1)
                 flat.setUniformValue1i("drawPass", SOLID)
+                flat.setUniformValue1i("depthOut", 0)
                 gl.glDepthMask(False)
-                for name in ("fill", "lines"):
+                for name in (("fill", "lines", "battles") if show_grid else ("battles",)):
                     if name in self._grid:
                         self._draw(self._grid[name], flat, (3, 4))
                 gl.glDisable(GL_DEPTH_TEST)
-                for name in ("selected", "hover"):
+                for name in (("selected", "hover") if show_grid else ()):
                     if name in self._grid:
                         self._draw(self._grid[name], flat, (3, 4))
                 gl.glEnable(GL_DEPTH_TEST)
                 gl.glDepthMask(True)
         self.fbo.release()
         return self.fbo.toImage()
+
+    def render_depth(self, camera: Camera, width: int, height: int, seconds: float = 0.0):
+        """
+        How far the map is at each pixel from `camera`, as a numpy array of
+        `height` rows by `width`, 0 the nearest and 1 the farthest (where no
+        polygon is): the polygons `render` draws solid, drawn again writing
+        their depth as their colour. None without a scene, or without numpy.
+        """
+        try:
+            import numpy as np
+        except ImportError:
+            return None
+        if self.scene is None or not self.make_current():
+            return None
+        from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
+        width, height = max(1, int(width)), max(1, int(height))
+        if self.depth_fbo is None or self.depth_fbo_size != (width, height):
+            fmt = QOpenGLFramebufferObjectFormat()
+            fmt.setAttachment(QOpenGLFramebufferObject.Depth)
+            self.depth_fbo = QOpenGLFramebufferObject(width, height, fmt)
+            self.depth_fbo_size = (width, height)
+        gl = self.gl
+        self.depth_fbo.bind()
+        gl.glViewport(0, 0, width, height)
+        gl.glClearColor(1.0, 1.0, 1.0, 1.0)
+        gl.glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        gl.glEnable(GL_DEPTH_TEST)
+        gl.glDepthFunc(GL_LEQUAL)
+        gl.glDisable(GL_BLEND)
+        proj, view = self.matrices(camera, width, height)
+        mvp = proj * view
+        weights, self._band = ms.hiding(camera)
+        self._tint = None
+        gl.glEnable(GL_CULL_FACE)
+        gl.glCullFace(GL_BACK)
+        gl.glFrontFace(GL_CW if self.scene.front == "cw" else GL_CCW)
+        self._depth_out = 1
+        try:
+            for up in self._uploaded:
+                if self.in_view(up.batch, camera) and not up.batch.overlay:
+                    self._draw_batch(up, mvp, seconds, weights, SOLID, SOLID_PART)
+        finally:
+            self._depth_out = 0
+            gl.glDisable(GL_CULL_FACE)
+            gl.glEnable(GL_BLEND)
+            self.depth_fbo.release()
+        image = self.depth_fbo.toImage().convertToFormat(QImage.Format_RGBA8888)
+        rows = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.bytesPerLine())
+        rgb = rows[:, :image.width() * 4].reshape(image.height(), image.width(), 4).astype(np.float64)
+        return ((rgb[..., 0] * 65536.0 + rgb[..., 1] * 256.0 + rgb[..., 2]) / 16777215.0).astype(np.float32)
+
+    def depth_of(self, point, camera: Camera, width: int, height: int) -> float:
+        """How far a point of the map is from `camera`, as `render_depth` measures it."""
+        proj, view = self.matrices(camera, width, height)
+        return ((proj * view).map(QVector3D(*point)).z() + 1.0) / 2.0
+
+    def depth_per_unit(self, camera: Camera) -> float:
+        """How much depth one of the map's units of length is, toward the camera or away."""
+        _view, reach = self._view(camera)
+        return 1.0 / max(1e-6, reach * 3.5 - reach * 0.5)
 
     @staticmethod
     def in_view(batch, camera: Camera) -> bool:
@@ -546,8 +665,23 @@ class MapRenderer:
             p.bind()
             p.setUniformValue("mvp", mvp)
         p.setUniformValue("cornerWeight", QVector4D(*weights))
+        p.setUniformValue1i("bandBit", self._band)
         p.setUniformValue1i("drawPass", pass_)
+        p.setUniformValue1i("depthOut", self._depth_out)
+        if batch.kind in (ms.ENHANCED, ms.CLASSIC):
+            self._set_tint(p)
         self._draw((up.vbo, batch.count, GL_TRIANGLES), p, batch.layout)
+
+    def _set_tint(self, p) -> None:
+        """The map's colour change (`render`'s `tint`) for a program that draws its pictures."""
+        if self._tint is None:
+            p.setUniformValue1i("tintOn", 0)
+            return
+        matrix, offset = self._tint
+        p.setUniformValue1i("tintOn", 1)
+        for row in range(3):
+            p.setUniformValue(f"tintRow[{row}]", QVector3D(*matrix[row * 3:row * 3 + 3]))
+        p.setUniformValue("tintOffset", QVector3D(*offset))
 
     def _classic_animations(self, p, seconds: float) -> None:
         """The texture's moving rectangles and the palettes' frames, `seconds` in."""
@@ -635,7 +769,7 @@ class MapRenderer:
         if ray is None:
             return None
         origin, direction = ray
-        weights = ms.corner_weights(camera.yaw)
+        weights, band = ms.hiding(camera)
         # The side a polygon is seen from: its corners go round anticlockwise
         # on the picture for "ccw", so its normal points back along the ray.
         facing = -1.0 if self.scene.front == "cw" else 1.0
@@ -646,7 +780,7 @@ class MapRenderer:
             stride = sum(batch.layout)
             f = batch.floats
             for start in range(0, len(f) - 3 * stride + 1, 3 * stride):
-                if ms.shown(f[start + stride - 1] + 0.5, weights) < 0.5:
+                if ms.shown(f[start + stride - 1] + 0.5, weights, band) < 0.5:
                     continue
                 a = (f[start], f[start + 1], f[start + 2])
                 b = (f[start + stride], f[start + stride + 1], f[start + stride + 2])

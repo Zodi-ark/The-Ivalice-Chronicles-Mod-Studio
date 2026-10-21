@@ -21,7 +21,7 @@ On Linux and macOS the extension means nothing; run it as before:
 
 Requires:  Python 3.10+ and PySide6, and Pillow, numpy and scipy for the
            parts that use them:
-               pip install PySide6-Essentials pillow numpy scipy
+               pip install PySide6-Essentials==6.11.2 pillow numpy scipy
            The frozen Windows build bundles all of these, so a user running
            the .exe installs none of them. The bundled FF16Tools and
            AudioMog need the .NET 9 Runtime and .NET Framework 4.7.2

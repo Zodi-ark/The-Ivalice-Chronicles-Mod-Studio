@@ -216,7 +216,7 @@ class TreasureHunterPage(TableEditorPage):
             chip = QPushButton(f"Tile {slot}")
             chip.setCheckable(True)
             chip.setIcon(_dot(SLOT_COLOURS[slot]))
-            chip.setToolTip(f"Tile {slot}'s fields. On the map, its mark is this colour.")
+            chip.setToolTip(f"Tile {slot}'s fields. On the map, its mark is this color.")
             chip.clicked.connect(lambda _on=False, s=slot: self.show_slot(s))
             self.chip_group.addButton(chip)
             self.chips[slot] = chip

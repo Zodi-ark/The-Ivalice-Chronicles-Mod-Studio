@@ -92,6 +92,28 @@ FACING_STEPS = {0: (0, -1), 1: (-1, 0), 2: (0, 1), 3: (1, 0)}
 #: A PlayStation pixel is a world unit: a person is about 40 tall, a tile
 #: 28 across.
 WORLD_PER_HD_PIXEL = 1.0 / us.SCALE
+#: The sprites that wear the palette their ENTD slot names: the generic
+#: jobs' (96 to 133), and only its first six (the decompilation's
+#: `unit_init`).
+WEARS_ENTD_PALETTE, ENTD_PALETTES = range(us.FIRST_GENERIC_SPRITE, us.MONSTER_SPRITE_BASE + 1), 6
+
+
+def drawn_palette(sprite, sprite_set: int, entd_palette: int, monster_palette: int = 0) -> int:
+    """
+    The palette a unit is drawn in, as the game picks it (the
+    decompilation's `unit_init`): a generic job's sprite in its ENTD slot's
+    palette, a monster in its job's MonsterPalette, every other sprite (a
+    story character's) in its first, whatever the slot says. Zodi, 19
+    October: Dycedarg's gloves were blue in event 045, his slot's palette 1;
+    the game draws him in his first, the gloves red.
+    """
+    if sprite_set == us.GENERIC_MONSTER:
+        wanted = monster_palette
+    elif sprite is not None and sprite in WEARS_ENTD_PALETTE:
+        wanted = entd_palette
+    else:
+        return 0
+    return wanted if 0 <= wanted < ENTD_PALETTES else 0
 #: Units sharing a tile: how far apart they stand, in tiles, and their size.
 SHARED_STEP, SHARED_SCALE = 0.42, 0.8
 #: How high a flying unit floats over its tile and how far it bobs, in world

@@ -49,6 +49,19 @@ the classic polygon's on 86%, and set on some of the 17,227 new ones; the
 remaster adjusted the rest for its own walls. The Map Editor leaves out by
 these.
 
+  Bits 9 to 2 leave a polygon out while the event camera turns through
+  the eight bands between the corners (`map_classic.HIDE_BITS`: SSW, WSW,
+  WNW, NNW, NNE, ENE, ESE, SSE). A corner's bit goes with the two bands
+  either side of it (`CAMERA_CORNERS`): of the 11,339 enhanced polygons
+  with any of bits 2 to 13, those with SW's bit have SSW's on 79% and
+  WSW's on 83%; NW's, WNW's 78% and NNW's 75%; NE's, NNE's and ENE's 77%;
+  SE's, ESE's 83% and SSE's 78%. Which of its walls the game leaves out is
+  its makers' choice, not where a face is: of the faces left out from a
+  corner, 17 to 23% stand between that corner's camera and a tile's middle
+  or a unit on it, and of the faces that do, 2 to 4% are left out
+  (`parts.txt`'s "hide auto" leaves out a part from every corner it does,
+  for a wall a map adds: `map_battles.corners_hiding`).
+
   Polygons are in file order: textured quads, textured triangles, then the
   untextured ones, each polygon's corners in order around it. Block 0 is
   the map; the other blocks (10 maps have them) are the parts that move -
@@ -112,6 +125,15 @@ which battle uses which; the Map Editor offers each.
   Read back from that, 57 of the files are the game's byte for byte; the
   other 6 also have numbers past a channel's count (in the second channel
   of 001's gates and 012's doors, say), which nothing here reads.
+  `write_anim` writes one so, for a map package's new groups with frames.
+
+  The game's `RefinedBgAnim` table has a row per track, in the file's
+  order (`Key2`): `Unknown4` its kind (1, played on a loop, on 160 rows,
+  every picture's; 2 on a trigger, doors, 42) and `Unknown8` the texture
+  group. On 61 of the 63 maps with a file the rows and tracks line up one
+  for one, each track named for its row's group; 078 lists its three in
+  another order, and 100 has two tracks and one empty row. The 54 maps
+  with no file have one row of zeros (085's).
 
 Only the third channel ever counts anything. On the 199 tracks of texture
 groups whose colour picture has frames (57 maps) it is the frame shown at
@@ -152,8 +174,32 @@ MESH_FOLDER = "bg/meshes"
 TEXTURE_FOLDER = "bg/textures"
 UNBOUND = b"\xfe\xff"
 NEW_POLYGON = 0xFFFF
+#: The game's four camera corners, by the names the documents and
+#: `parts.txt` give them: where the battle camera stands (an angle in the
+#: files' ground plane: 0 is +x, east; 90 is +z, north), the render bit that
+#: leaves a polygon out from there, and the bits of the two bands the event
+#: camera turns through either side of it (see the notes).
+CAMERA_CORNERS = {"SW": (225.0, 13, (9, 8)), "NW": (135.0, 12, (7, 6)),
+                  "NE": (45.0, 11, (5, 4)), "SE": (315.0, 10, (3, 2))}
+#: Bits 2 to 13: every bit that leaves a polygon out from a camera.
+CAMERA_BITS = 0x3FFC
 
 _MESH_NAME = re.compile(r"map_(\d{3})_mesh\.bin$", re.IGNORECASE)
+
+
+def camera_bits(corners) -> int:
+    """The render bits that leave a polygon out from `corners` (names in `CAMERA_CORNERS`), bands and all."""
+    bits = 0
+    for name in corners:
+        _angle, bit, bands = CAMERA_CORNERS[name.upper()]
+        for b in (bit, *bands):
+            bits |= 1 << b
+    return bits
+
+
+def hidden_corners(render: int) -> tuple:
+    """The corners (`CAMERA_CORNERS`' names, in its order) whose bit is set in `render`."""
+    return tuple(name for name, (_angle, bit, _bands) in CAMERA_CORNERS.items() if (int(render) >> bit) & 1)
 
 
 def is_panel(part: str) -> bool:
@@ -830,6 +876,67 @@ _TRACK_GROUP = re.compile(r"GT_(\d+)_", re.IGNORECASE)
 
 def anim_path(game_dir: Path, number: int) -> Path:
     return Path(game_dir) / ANIM_FOLDER / f"map_{number:03d}_anim.bin"
+
+
+def anim_relative_path(number: int) -> str:
+    """A map's anim file's path inside the unpacked game and a mod's data folder."""
+    return f"{ANIM_FOLDER}/map_{number:03d}_anim.bin"
+
+
+def frame_track_name(group: int) -> str:
+    """The name the game gives the track of texture group `group`'s frames ("l_GT_2_anim")."""
+    return f"l_GT_{int(group)}_anim"
+
+
+def frame_track(frames: int, ticks: int) -> tuple:
+    """
+    A track's channels for a picture of `frames` frames, each shown for
+    `ticks` ticks in turn: the frame channel (`FRAME_CHANNEL`) alone, as
+    every track of the game's pictures has it.
+    """
+    values = tuple(float(f) for f in range(int(frames)) for _ in range(max(1, int(ticks))))
+    return tuple(values if c == FRAME_CHANNEL else () for c in range(ANIM_CHANNELS))
+
+
+def track_ticks(track: tuple) -> Optional[int]:
+    """How many ticks each frame of a frame track (`frame_track`'s shape) lasts, when every one lasts as long."""
+    frames = track[FRAME_CHANNEL] if len(track) > FRAME_CHANNEL else ()
+    runs, run = [], 0
+    for i, value in enumerate(frames):
+        run += 1
+        if i + 1 == len(frames) or frames[i + 1] != value:
+            runs.append(run)
+            run = 0
+    return runs[0] if runs and len(set(runs)) == 1 else None
+
+
+def write_anim(number: int, tracks: dict, base: Optional[bytes] = None) -> bytes:
+    """
+    An anim file holding `tracks` (`{name: channels}`, in the order the
+    game is to read them): what `read_anim` reads back, laid out as the
+    notes say, the unused names and tracks zeros. Written so from their
+    readings, 57 of the game's 63 files come out byte for byte. Written
+    over `base` (a map's own file), all of the other 6 do too: what is past
+    a channel's count stays as it was.
+    """
+    if len(tracks) > ANIM_SLOTS:
+        raise EnhancedMapError(f"an anim file holds {ANIM_SLOTS} tracks, and these are {len(tracks)}")
+    out = bytearray(base) if base is not None and len(base) == ANIM_SIZE else bytearray(ANIM_SIZE)
+    out[0:8] = ANIM_MAGIC
+    struct.pack_into("<I", out, 8, int(number))
+    struct.pack_into("<I", out, ANIM_USED, len(tracks))
+    for k, (name, channels) in enumerate(tracks.items()):
+        slot = name.encode("ascii") + b"\0"
+        if len(slot) > 32:
+            raise EnhancedMapError(f"a track's name is 31 letters at most: {name}")
+        out[ANIM_NAMES + 32 * k:ANIM_NAMES + 32 * (k + 1)] = slot + b"\xfe" * (32 - len(slot))
+        for c, values in enumerate(channels):
+            if len(values) > ANIM_CAPACITY:
+                raise EnhancedMapError(f"track {name} has {len(values)} ticks, more than {ANIM_CAPACITY}")
+            start = ANIM_TRACKS + k * ANIM_TRACK_SIZE + c * ANIM_CHANNEL_SIZE
+            struct.pack_into(f"<{len(values)}f", out, start, *values)
+            struct.pack_into("<I", out, start + ANIM_CAPACITY * 4, len(values))
+    return bytes(out)
 
 
 def read_anim(data: bytes) -> dict:

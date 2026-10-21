@@ -21,7 +21,9 @@ played the last sample, not when a timer thinks it should have.
 
 Streaming also means the loop is never baked into a file. Each buffer is cut
 from the track as it is needed, wrapping at the loop's end, so moving a flag
-while it plays is heard a moment later with no rebuild and no gap.
+while it plays is heard a moment later with no rebuild and no gap. So is a
+change of loudness (`LoopPlayer.set_gain`: the Event Editor's music fading in
+and out), each buffer scaled as it is cut.
 
 Off Windows, `ClockDevice` plays nothing and consumes audio at the real rate
 by the clock - for developing off Windows, and for the suite, which drives
@@ -60,7 +62,7 @@ class LoopStream:
     """
 
     def __init__(self, pcm, start_frame, loop_start=None, loop_end=None,
-                 looping=False):
+                 looping=False, gain=1.0):
         self.pcm = pcm
         self.total = pcm.frames
         self.frame = max(0, min(int(start_frame), self.total))
@@ -68,6 +70,8 @@ class LoopStream:
         self._segments = deque()           # (out_start, src_start, length)
         self.loop = None
         self.set_loop(loop_start, loop_end, looping)
+        #: How loud what is cut next is (1: as recorded).
+        self.gain = float(gain)
 
     def set_loop(self, loop_start, loop_end, looping) -> None:
         """Changes the loop for everything not yet cut."""
@@ -96,7 +100,10 @@ class LoopStream:
             wanted -= take
             if looping_here and self.frame >= self.loop[1]:
                 self.frame = self.loop[0]
-        return b"".join(parts) if parts else None
+        if not parts:
+            return None
+        data = b"".join(parts)
+        return data if self.gain == 1.0 else scaled(data, self.gain)
 
     def frame_at(self, out_position: int):
         """The track frame sounding `out_position` frames in, or None past all of it."""
@@ -107,6 +114,13 @@ class LoopStream:
             if out_start <= out_position < out_start + length:
                 return src_start + (out_position - out_start)
         return None
+
+
+def scaled(data: bytes, gain: float) -> bytes:
+    """16-bit samples made `gain` times as loud, clipped."""
+    import numpy as np
+    samples = np.frombuffer(data, dtype="<i2").astype(np.float32) * max(0.0, float(gain))
+    return np.clip(np.round(samples), -32768, 32767).astype("<i2").tobytes()
 
 
 class ClockDevice:
@@ -322,9 +336,9 @@ class LoopPlayer(QObject):
         return self._device is not None
 
     def play(self, pcm, start_frame, loop_start=None, loop_end=None,
-             looping=False) -> None:
+             looping=False, gain=1.0) -> None:
         self.stop()
-        self._stream = LoopStream(pcm, start_frame, loop_start, loop_end, looping)
+        self._stream = LoopStream(pcm, start_frame, loop_start, loop_end, looping, gain)
         self._chunk_frames = max(1, int(pcm.sample_rate * CHUNK_SECONDS))
         self._device = self.device_factory(
             pcm.sample_rate, pcm.channels, self._chunk_frames * 2 * pcm.channels)
@@ -337,6 +351,11 @@ class LoopPlayer(QObject):
         """A loop change for what isn't queued yet - no restart, no gap."""
         if self._stream is not None:
             self._stream.set_loop(loop_start, loop_end, looping)
+
+    def set_gain(self, gain: float) -> None:
+        """How loud what isn't queued yet is (1: as recorded) - no restart, no gap."""
+        if self._stream is not None:
+            self._stream.gain = float(gain)
 
     def pump(self) -> None:
         """Refills whatever the device has finished with; notices the end."""

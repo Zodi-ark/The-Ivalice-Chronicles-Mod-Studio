@@ -24,10 +24,12 @@ zeroes.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from functools import lru_cache
+
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QListWidgetItem, QPushButton, QSplitter, QVBoxLayout, QWidget,
     QSizePolicy,
 )
 
@@ -51,17 +53,155 @@ from ..widgets.field_rows import (
     NamedNumberRow, NumericFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.layout_settle import settle_layout
 from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.texture_slot import InlineTextureSlot
 from .ability_map import AbilityMap, AbilityShow
+from .data_browser import XML_PREFIX
 from .poaching import TextFieldRow
 
-#: The fields' column beside the map: the width the mock-up Zodi agreed to
-#: on 12 October gave it.
-FORM_WIDTH = 600
+#: Where a jump ability's distance is: its own table, rows keyed by the
+#: ability's id ("extra data for ability 394 through 405", the file's
+#: header), edited in All Game Data. Those abilities have no action data.
+JUMP_TABLE = "AbilityJumpData.xml"
+
+
+@lru_cache(maxsize=1)
+def jump_rows() -> frozenset:
+    """
+    The abilities `JUMP_TABLE` has a row for, read from the bundled file.
+
+    From the file, not from the loaded table: `item_xml_io.load_table`
+    fills every id below the file's first with a blank row, so the loaded
+    jump table runs 0 to 405 where the file has 394 to 405.
+    """
+    import xml.etree.ElementTree as ET
+    from ... import paths
+    try:
+        root = ET.parse(paths.bundled_data_dir() / JUMP_TABLE).getroot()
+        return frozenset(int(entry.findtext("Id")) for entry in root.iter("AbilityJump")
+                         if (entry.findtext("Id") or "").strip().isdigit())
+    except (OSError, ET.ParseError):
+        return frozenset()
+
+#: The fields' column beside the map at first: the width the mock-up Zodi
+#: agreed to on 12 October gave it. The list's at first beside it.
+FORM_WIDTH, LIST_WIDTH = 600, 280
+#: The least the list and the fields' column are given, the window at its
+#: narrowest or a divider dragged. The fields' at its least still holds its
+#: widest rows whole: the icon's buttons, and Inflict Status with its Edit
+#: button and its box at `DROPDOWN_LEAST`. With the map's least (its row of
+#: controls) the three fit the window at its narrowest (`shell.MIN_WIDTH`).
+LIST_LEAST, FORM_LEAST, DROPDOWN_LEAST = 130, 495, 150
 #: How long the map waits after an edit before playing the ability again,
 #: so a number typed or spun is played once, not at every step.
 MAP_DELAY_MS = 150
+#: The kinds of ability the map isn't shown for: the game gives them no
+#: animation of their own (Zodi, 18 October: "Support and movement
+#: abilities do not need the map viewer because there is nothing to show").
+NO_MAP_TYPES = ("Support", "Movement")
+
+
+def _dropdown_first(row) -> None:
+    """
+    A dropdown row whose box takes the room its entries need (up to the row's
+    cap) before the note and the space after it get any. Zodi, 18 October:
+    "The formula, Inflict status, Charge Effect Type, and Animation ID boxes
+    are too small now to display their contents text". The box shared what
+    the row had over its least with the note and the space after it, a
+    third each; in the fields' column beside the map that left it at its
+    least, 160, too narrow for "011 - Hit_F(MA+X)% NE". Its least is a
+    little less (`DROPDOWN_LEAST`), so the column's least holds the row whole.
+
+    The room it asks for is its longest entry's, kept up to date: the
+    Inherit entry is retitled for each ability ("Inherit (leave the
+    ability's own value)" is longer than any status's name), and a box sized
+    to its entries when first shown kept that first width.
+    """
+    row.layout().setStretchFactor(row.combo, 0)
+    row.combo.setMinimumWidth(DROPDOWN_LEAST)
+    row.combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+
+
+class _Panes(QObject):
+    """
+    The page's three panes and the two dividers between them, as the Map
+    Editor has them (Zodi, 18 October: "Just like how you could extend the
+    left or right side of the map editor page you should be able to do the
+    same"). The list is `LIST_WIDTH` wide at first and the fields
+    `FORM_WIDTH`, then wherever the person leaves the dividers; the map has
+    the rest. When that leaves the map less than its least (its row of
+    controls), the two sides give it, each down to its least, and take it
+    back when the window is wider again: the window starts at its narrowest,
+    and a page first seen there would otherwise keep that squeeze at any
+    size.
+
+    The map can be hidden (`show_map`): the fields then take its room, and
+    give it back when it is shown again, at the width they had beside it.
+    """
+
+    def __init__(self, splitter: QSplitter):
+        super().__init__(splitter)
+        self.splitter = splitter
+        #: The widths the list and the fields are given beside the map:
+        #: the first ones, then wherever the person leaves the dividers.
+        self.list_width, self.form_width = LIST_WIDTH, FORM_WIDTH
+        #: Whether the splitter has had a width to share out yet.
+        self.sized = False
+        splitter.installEventFilter(self)
+        splitter.splitterMoved.connect(self._moved)
+
+    def panes(self) -> list:
+        return [self.splitter.widget(i) for i in range(3)]
+
+    @staticmethod
+    def least(widget) -> int:
+        return max(widget.minimumWidth(), widget.minimumSizeHint().width())
+
+    def room(self) -> int:
+        """The width the shown panes share: the splitter's, less a divider between each two."""
+        shown = sum(not pane.isHidden() for pane in self.panes())
+        return max(0, self.splitter.width() - max(0, shown - 1) * self.splitter.handleWidth())
+
+    def sizes(self) -> list:
+        """The panes' widths for the room there is, the map shown or not."""
+        left, middle, right = self.panes()
+        room = self.room()
+        list_width, form_width = self.list_width, self.form_width
+        if middle.isHidden():
+            return [list_width, 0, max(self.least(right), room - list_width)]
+        short = self.least(middle) - (room - list_width - form_width)
+        if short > 0:
+            # The two sides give it, each in proportion to what it can give.
+            spare = (max(0, list_width - self.least(left)), max(0, form_width - self.least(right)))
+            if sum(spare):
+                taken = min(short, sum(spare))
+                from_list = round(taken * spare[0] / sum(spare))
+                list_width, form_width = list_width - from_list, form_width - (taken - from_list)
+        return [list_width, room - list_width - form_width, form_width]
+
+    def eventFilter(self, watched, event):                        # noqa: N802
+        if event.type() == QEvent.Resize and watched.width() > 0:
+            self.sized = True
+            self.splitter.setSizes(self.sizes())
+        return False
+
+    def _moved(self, _position: int, _index: int) -> None:
+        """A divider dragged: the list and the fields keep the widths it leaves them."""
+        left, middle, right = self.panes()
+        widths = self.splitter.sizes()
+        if not left.isHidden():
+            self.list_width = widths[0]
+        if not middle.isHidden():
+            self.form_width = widths[2]
+
+    def show_map(self, shown: bool) -> None:
+        left, middle, right = self.panes()
+        if shown == (not middle.isHidden()):
+            return
+        middle.setVisible(shown)
+        if self.sized:
+            self.splitter.setSizes(self.sizes())
 
 
 class JpCostRow(NumericFieldRow):
@@ -337,6 +477,8 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
     # shell decides whether that is possible.
     navigate_requested = Signal(str, object)
     jump_to_texture = Signal(str)
+    #: The map's "Open in Sounds": `(archive under the game, the words its tracks are found by)`.
+    open_sounds = Signal(str, str)
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -416,22 +558,31 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         # receives the preference and still answers `state()`.
         self.view_toggles.follow_only()
 
-        split = QHBoxLayout()
-        split.setSpacing(14)
+        # Three panes with dividers between them, as the Map Editor has: the
+        # list, the map and the fields (`_Panes`).
+        split = QSplitter(Qt.Horizontal)
+        split.setHandleWidth(14)
+        split.setChildrenCollapsible(False)
+        self.splitter = split
 
-        left = QVBoxLayout()
+        self.list_pane = QWidget()
+        left = QVBoxLayout(self.list_pane)
+        left.setContentsMargins(0, 0, 0, 0)
+        # The search box 14 above the list, as on the other editing pages,
+        # whose list column takes the 14 of the row it sits in.
+        left.setSpacing(14)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search by name or ID")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter_list)
         left.addWidget(self.search)
         self.list = QListWidget()
-        self.list.setFixedWidth(280)
         # Rows alternate dark and light, as the Map Editor's map list does.
         self.list.setAlternatingRowColors(True)
         self.list.currentItemChanged.connect(self._on_selection)
         left.addWidget(self.list, 1)
-        split.addLayout(left)
+        self.list_pane.setMinimumWidth(LIST_LEAST)
+        split.addWidget(self.list_pane)
 
         # The ability played out on map 116, between the list and the
         # fields. Zodi, 12 October: "Redesign the abilities page, so that
@@ -439,7 +590,8 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         # 116 and after it completes then show the ability effect on the
         # map". See `ability_map.py`.
         self.map = AbilityMap(state)
-        split.addWidget(self.map, 1)
+        self.map.open_sounds.connect(self.open_sounds)
+        split.addWidget(self.map)
         self._map_timer = QTimer(self)
         self._map_timer.setSingleShot(True)
         self._map_timer.setInterval(MAP_DELAY_MS)
@@ -520,14 +672,24 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         text_column.addWidget(self.jp_cost_row)
 
         override_body = QWidget()
-        override_column = QVBoxLayout(override_body)
-        override_column.setContentsMargins(0, 0, 0, 0)
-        override_column.setSpacing(2)
+        override_outer = QVBoxLayout(override_body)
+        override_outer.setContentsMargins(0, 0, 0, 0)
+        override_outer.setSpacing(2)
 
         self.override_state = QLabel("")
         self.override_state.setProperty("role", "muted")
         self.override_state.setWordWrap(True)
-        override_column.addWidget(self.override_state)
+        override_outer.addWidget(self.override_state)
+
+        # The fields in one box under the note, so an ability with no
+        # action data can hide them all at once (`_load_override`). Hiding
+        # the rows one by one would not hold: the view toggles show and
+        # hide each row themselves.
+        self.override_fields = QWidget()
+        override_column = QVBoxLayout(self.override_fields)
+        override_column.setContentsMargins(0, 0, 0, 0)
+        override_column.setSpacing(2)
+        override_outer.addWidget(self.override_fields)
 
         # The sentence explaining the dagger is gone, at Zodi's request. The
         # daggers stay, and so does the explanation - on each marked flag's
@@ -547,6 +709,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                 # differently is two things to learn.
                 row = OverrideChoiceRow(field_name, label,
                                         reference_names.formula_names())
+                _dropdown_first(row)
             else:
                 # `spec[3]` - the layout's own help text - is deliberately
                 # not passed. Effect Area's "AoE radius override." is a
@@ -642,6 +805,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                 ("AnimationId", "Animation ID",
                  reference_names.animation_names())):
             row = NamedNumberRow(field_name, label, names)
+            _dropdown_first(row)
             row.edited.connect(self._on_animation_edited)
             self.animation_rows[field_name] = row
             animation_column.addWidget(row)
@@ -735,7 +899,13 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         scroll.setWidget(holder)
         self.scroll = scroll
         right.addWidget(scroll, 1)
+        self.side.setMinimumWidth(FORM_LEAST)
         split.addWidget(self.side)
+        # The window's width goes to the map; the list and the fields keep theirs.
+        split.setStretchFactor(0, 0)
+        split.setStretchFactor(1, 1)
+        split.setStretchFactor(2, 0)
+        self.panes = _Panes(split)
 
                 # The counter goes on a line of its OWN, directly above the body.
         #
@@ -755,7 +925,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         self.counter.setWordWrap(True)
         outer.addWidget(self.counter)
 
-        outer.addLayout(split, 1)
+        outer.addWidget(split, 1)
         self._apply_view(*self.view_toggles.state())
         self.refresh_records()
 
@@ -783,15 +953,13 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
         # for browsing nothing.
         set_empty_state(
             self.empty_note, has_data,
-            self.scroll, self.search, self.list, self.editing_label,
-            self.language_controls, self.counter, self.map)
-        # Beside the map the fields keep their column's width; with nothing
-        # loaded the note has the page.
-        if has_data:
-            self.side.setFixedWidth(FORM_WIDTH)
-        else:
-            self.side.setMinimumWidth(0)
-            self.side.setMaximumWidth(16777215)
+            self.scroll, self.list_pane, self.editing_label,
+            self.language_controls, self.counter)
+        # With nothing loaded the note has the page: no map, and no least
+        # width for a column of fields that isn't there.
+        self.side.setMinimumWidth(FORM_LEAST if has_data else 0)
+        if not has_data:
+            self.panes.show_map(False)
         self._mark_edited()
         self._update_counter()
         if self.list.count():
@@ -930,8 +1098,20 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
             reach=ap.Reach(scalar("Range"), scalar("EffectArea"), scalar("Vertical"), flags),
             reaction=reaction)
 
+    def map_wanted(self) -> bool:
+        """
+        Whether the ability on the page is played out on the map: not a
+        Support or Movement one (`NO_MAP_TYPES`), by its Ability Type as the
+        field shows it, an edit included.
+        """
+        row = self.base_stat_rows.get("AbilityType")
+        kind = row.get_value_str().strip() if row is not None else ""
+        return self.current_key is not None and kind not in NO_MAP_TYPES
+
     def _show_on_map(self) -> None:
-        if self.current_key is not None:
+        wanted = self.map_wanted()
+        self.panes.show_map(wanted)
+        if wanted:
             self.map.show(self.ability_show(self.current_key))
 
     def _map_follows(self) -> None:
@@ -1165,6 +1345,29 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                 # indexing into `flags12`/`flags34` itself.
                 panel.load(action.flag_group_value(panel.group_index), False)
 
+        # Abilities 368 and up have no action data at all: the game's
+        # 14-byte records stop at 0x16F, and `OverrideAbilityActionData`
+        # with them (368 rows, 0 to 367). Export only changes a row that is
+        # there, so a field set here for one of them went nowhere, while
+        # this note said setting one "creates" a row (a user's report on
+        # the Dragoon's jumps, 20 October). The fields are hidden, still
+        # loaded so the map reads this ability's values and not the last.
+        first_without = (max(actions) + 1 if actions
+                         else ability_defaults.ABILITY_COUNT)
+        no_action_data = action is None and key >= first_without
+        if self.override_fields.isHidden() != no_action_data:
+            self.override_fields.setHidden(no_action_data)
+            # Now, not a posted event later: the sections below would
+            # show a frame in the old place (`settle_layout`).
+            settle_layout(self.override_fields.parentWidget())
+        if no_action_data:
+            text = (f"Abilities {first_without} and up have no action data, so "
+                    f"there's nothing to change here for this one.")
+            if key in jump_rows():
+                text += (f" Its jump distance is in All Game Data, {XML_PREFIX}{JUMP_TABLE}, "
+                         f"row {key} (Range and Vertical).")
+            self.override_state.setText(text)
+            return
         if action is None:
             self.override_state.setText(
                 "This ability has no override row, so everything below "
@@ -1302,11 +1505,13 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
                 jump_tooltip="Open this ability on the Abilities tab")
             row.jump_requested.connect(self._jump_to_own_ability)
             row.lists_abilities = True
+            _dropdown_first(row)
             return row
         row = OverrideChoiceRow(
             "InflictStatus", label, self._inflict_choices(),
             jump_label="Edit \u2192",
             jump_tooltip="Open this row on the Inflict Status tab")
+        _dropdown_first(row)
         # Through the page's general router, which every other cross-tab
         # jump on this page already uses.
         row.jump_requested.connect(
@@ -1402,6 +1607,9 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
 
     def _on_base_stat_edited(self) -> None:
         self._commit_xml_table("ability", self.base_stat_rows)
+        # Ability Type decides whether there is a map at all.
+        if self.map_wanted() != (not self.map.isHidden()):
+            self._show_on_map()
 
     def refresh_from_store(self) -> None:
         """

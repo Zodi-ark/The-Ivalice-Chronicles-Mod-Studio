@@ -1662,12 +1662,20 @@ NXD_ALL_UI_FILENAMES = list(NXD_UI_FILENAMES.values())
 # assumed to be regenerated. Conflating the two silently dropped every
 # ui.*.nxd from any mod regenerated into a new folder.
 # XML tables that have a curated tab but do NOT go through
-# `item_xml_io.ALL_SPECS`. Both are handled by `xml_io` directly, because
-# they were written before the generic engine existed and have controls
-# (skillset dropdowns, ability pickers) a generic table editor cannot
-# offer. Listed so the derived-spec loader does not offer them a second
-# time as raw grids - two editors writing competing diffs for one file.
-XML_HANDLED_ELSEWHERE = ("JobData.xml", "JobCommandData.xml")
+# `item_xml_io.ALL_SPECS`. All three are handled by `xml_io` directly,
+# because they were written before the generic engine existed and have
+# controls (skillset dropdowns, ability pickers) a generic table editor
+# cannot offer. Listed so the derived-spec loader does not offer them a
+# second time as raw grids - two editors writing competing diffs for one
+# file.
+#
+# `MonsterJobCommandData.xml` joined the list late (20 October, a user's
+# report). The Job Commands page had edited monsters since they were added
+# to it, while All Game Data still offered the file as a raw grid and an
+# opened mod's monster file was read into that grid's edits: the page
+# showed the game's skillset, and Export wrote the page's edits over the
+# grid's.
+XML_HANDLED_ELSEWHERE = ("JobData.xml", "JobCommandData.xml", "MonsterJobCommandData.xml")
 
 
 NXD_EDITABLE_FILENAMES = (

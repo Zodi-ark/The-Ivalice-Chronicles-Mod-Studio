@@ -26,11 +26,19 @@ notes):
   sun's angle; 002's is a strong sun and a blue purple sky.
 - Around each patch of faces the texture is black.
 - `lut_chara_<a to d>_0`: 128 by 128, black but for a box at the file's
-  first rows, 4 x (grid x + 1) pixels wide and 4 x (grid z + 1) high: two
-  values a tile each way, each value 2 by 2 pixels, about 125 to 137 on
-  open ground. What each of a sample's values means isn't known; here they
-  are all the light a unit standing there gets. `lut_chara_<a to d>_1`:
-  64 by 64 of (128, 128, 128) with alpha 0 on every map measured.
+  first rows, 4 x (grid x + 1) pixels wide and 4 x (grid z + 1) high: a
+  block of 2 by 2 values a tile (the grid's tile x, z; the last row and
+  column past the grid), each value 2 by 2 pixels. **A letter is the way
+  a unit faces** (FFT's facings 0 to 3: south, west, north, east), and a
+  tile's four values are the light on four sides of a unit facing so:
+  its front left and front right, a little below level (the block's
+  first row in the file), and up, a little to its left and right (the
+  next row). Measured 20 October: fitted to that, each map's open ground
+  points at the sun its ground's shadows show (048: 217 degrees, the
+  ground's 220; 002: north north east), the values within about 4 of the
+  game's; the four sides' light differing by facing as much as 32 to 153
+  on 048's open ground. `lut_chara_<a to d>_1`: 64 by 64 of (128, 128,
+  128) with alpha 0 on every map measured.
 - A border's colour texture is dark earth, darker further down the map's
   sides (048: about 53 at the top, 13 at the bottom).
 
@@ -65,9 +73,28 @@ STEP = 12.0                 # units a height step
 SKY_DIRECTIONS = 48
 #: What a lighting texture's value means: colour x value / 128.
 NEUTRAL = 128.0
-#: How much of a texel's light a unit standing there gets in its
-#: `lut_chara` box (open ground under the game's light: about 130).
-UNIT_SHARE = 0.56
+#: The units' lighting: each `lut_chara_<letter>_0` is for a unit facing
+#: one way, as a compass turn (FFT's facings 0 to 3: south, west, north,
+#: east), and a tile's four values the light on four of its sides:
+#: `(row, column)` in the tile's block (row 0 the file's first), the turn
+#: from the facing and the height above level, in degrees. Fitted to the
+#: game's own on 002, 026 and 048 (the module's notes).
+UNIT_FACINGS = (("a", 180.0), ("b", 270.0), ("c", 0.0), ("d", 90.0))
+UNIT_SIDES = (((0, 0), -45.0, -15.0), ((0, 1), 45.0, -15.0), ((1, 0), -90.0, 85.0), ((1, 1), 90.0, 85.0))
+#: How much of the sky's light, and of the sun's and the lamps', those
+#: sides take (on the lighting textures' scale), and how far above its
+#: tile's ground a unit's light is taken: fitted on 048 under its measured
+#: light, every tile of its four letters (24 from the game's, value for
+#: value, where one light for all four was 40).
+UNIT_SKY, UNIT_SUN = 0.6, 0.8
+UNIT_LIFT = 12.0
+#: Light the ground under a unit throws back onto its lower sides: the
+#: ground's colour (0 to 1) times the light on it, over the share of the
+#: side's view that is ground. A quarter is as much as 048's values allow
+#: (its grass a quarter of white: with it they are as near the game's, 26
+#: over every tile and 16 on open ground, where without it 26 and 14); on
+#: snow it lights a unit's shaded sides a little, as snow does.
+UNIT_GROUND = 0.25
 LUT_SIZE, LUT1_SIZE = 128, 64
 LUT1_VALUE = (128, 128, 128, 0)
 #: Parts whose faces cast no shadow, by a word in their name.
@@ -145,6 +172,7 @@ class Faces:
     casts: np.ndarray               # (T,), casts a shadow
     tiles: list                     # the polygon's tile (x, z, level) or None, per triangle
     tops: np.ndarray                # (T,), the highest Y of the polygon the triangle is of
+    parts: list = field(default_factory=list)   # the polygon's part's name, per triangle (when known)
 
 
 def _tile_space(position) -> tuple:
@@ -159,7 +187,7 @@ def casts_shadow(part: str) -> bool:
 
 def faces_of(mesh: me.EnhancedMesh) -> Faces:
     """`mesh`'s triangles (each quad as two, as the Map Editor draws them), panels left out."""
-    corners, normals, uvs, groups, casts, tiles, tops = [], [], [], [], [], [], []
+    corners, normals, uvs, groups, casts, tiles, tops, parts = [], [], [], [], [], [], [], []
     for poly in mesh.polygons():
         if me.is_panel(poly.part):
             continue
@@ -186,9 +214,10 @@ def faces_of(mesh: me.EnhancedMesh) -> Faces:
             casts.append(casts_shadow(poly.part))
             tiles.append(poly.tile)
             tops.append(max(p[1] for p in points))
+            parts.append(poly.part or "")
     return Faces(np.array(corners, float).reshape(-1, 3, 3), np.array(normals, float).reshape(-1, 3, 3),
                  np.array(uvs, float).reshape(-1, 3, 2), np.array(groups, int), np.array(casts, bool), tiles,
-                 np.array(tops, float))
+                 np.array(tops, float), parts)
 
 
 def surface_points(triangles: np.ndarray, spacing: float) -> np.ndarray:
@@ -390,18 +419,18 @@ class Lighter:
             weight += w
         return np.where(weight > 0, seen / np.maximum(weight, 1e-9), 1.0)
 
-    def terms(self, points: np.ndarray, normals: np.ndarray, sprite: bool = False) -> tuple:
+    def terms(self, points: np.ndarray, normals: np.ndarray) -> tuple:
         """
-        `(open sky, sun, lamps)` at each point: the share of the sky it sees
-        (0 to 1), how much of the sun reaches it, shadows and angle taken
-        (0 to 1), and the lamps' light on it (N, 3). A `sprite` (a unit
-        standing there) takes the light all round it, not on a face.
+        `(open sky, sun, lamps)` at each point, on a face turned to its
+        normal: the share of the sky it sees (0 to 1), how much of the sun
+        reaches it, shadows and angle taken (0 to 1), and the lamps' light
+        on it (N, 3).
         """
         light = self.light
-        open_sky = self.sky_open(points, None if sprite else normals)
+        open_sky = self.sky_open(points, normals)
         sun = np.zeros(len(points))
         if light.sun_height > 0:
-            facing = np.full(len(points), 0.75) if sprite else np.clip(normals @ self.sun, 0, None)
+            facing = np.clip(normals @ self.sun, 0, None)
             lit = np.ones(len(points))
             if self.sun_maps:
                 soft = 1 if self.quality == "full" else 0
@@ -413,7 +442,7 @@ class Lighter:
             dist = np.linalg.norm(rel, axis=1) + 1e-9
             reach = max(lamp.reach, 0.1) * UNIT
             fall = np.clip(1 - dist / reach, 0, None) ** 2
-            facing = np.full(len(points), 0.75) if sprite else np.clip((normals * rel).sum(axis=1) / dist, 0, None)
+            facing = np.clip((normals * rel).sum(axis=1) / dist, 0, None)
             lit = np.ones(len(points))
             reached = (fall * facing) > 0
             if near is not None and reached.any():
@@ -429,9 +458,9 @@ class Lighter:
         out = out + (np.array(light.sun_colour, float) * light.sun_strength)[None, :] * sun[:, None]
         return out + lamps
 
-    def colour(self, points: np.ndarray, normals: np.ndarray, sprite: bool = False) -> np.ndarray:
+    def colour(self, points: np.ndarray, normals: np.ndarray) -> np.ndarray:
         """The light at each point (N, 3), on the lighting textures' scale."""
-        return self.combine(*self.terms(points, normals, sprite))
+        return self.combine(*self.terms(points, normals))
 
 
 def blur_within(values: np.ndarray, mask: np.ndarray, radius: int) -> np.ndarray:
@@ -618,38 +647,101 @@ def ground_colour(image: Optional[Image.Image]) -> tuple:
     return tuple(int(round(v)) for v in a.mean(axis=0) * 0.6)
 
 
-def units_lighting(lighter: Lighter, size_x: int, size_z: int, ground: Callable) -> tuple:
+def _towards(turn: float, height: float) -> np.ndarray:
+    """The unit vector a compass `turn` round (0 north, 90 east) and `height` degrees up, in tile space."""
+    t, h = math.radians(turn), math.radians(height)
+    return np.array([math.sin(t) * math.cos(h), math.sin(h), math.cos(t) * math.cos(h)])
+
+
+def ground_colours(faces: Faces, pictures: dict, size_x: int, size_z: int) -> np.ndarray:
     """
-    `(lut_chara_X_0, lut_chara_X_1)` for a map whose grid is `size_x` by
-    `size_z`: the light a unit standing at each half tile gets, two values a
-    tile each way over (size + 1) tiles, each 2 by 2 pixels, from the file's
-    first row (the image's bottom); and the second, as every map's is.
-    `ground(x, z)` is the height in steps of the ground there.
+    `(size_z, size_x, 3)`: the colour (0 to 1) of the ground drawn for each
+    tile of the grid, the mean of its faces turned up (water's surface
+    among them, not shadows or icons lying on the ground), read off their
+    groups' colour textures (`pictures`, `{group: image}`) at their corners
+    and middles; mid grey for a tile with none.
     """
-    cells_x, cells_z = 2 * (size_x + 1), 2 * (size_z + 1)
-    xs = (np.arange(cells_x) + 0.5) * UNIT / 2
-    zs = (np.arange(cells_z) + 0.5) * UNIT / 2
-    gx, gz = np.meshgrid(xs, zs)
-    heights = np.array([[ground(x / UNIT, z / UNIT) for x in xs] for z in zs])
-    points = np.stack([gx, heights * STEP + 20.0, gz], axis=-1).reshape(-1, 3)
-    up = np.tile(np.array([0.0, 1.0, 0.0]), (len(points), 1))
-    values = lighter.colour(points, up, sprite=True) * UNIT_SHARE
-    values = np.clip(np.rint(values), 0, 255).reshape(cells_z, cells_x, 3).astype(np.uint8)
-    lut = np.zeros((LUT_SIZE, LUT_SIZE, 3), np.uint8)
-    doubled = values.repeat(2, axis=0).repeat(2, axis=1)
-    h, w = min(doubled.shape[0], LUT_SIZE), min(doubled.shape[1], LUT_SIZE)
-    # The file's first rows are the image's last: z grows up the image.
-    lut[LUT_SIZE - h:, :w] = doubled[:h, :w][::-1]
+    total = np.zeros((size_z, size_x, 3))
+    count = np.zeros((size_z, size_x))
+    arrays = {group: np.asarray(image.convert("RGB"), float) / 255.0 for group, image in pictures.items()}
+    for t, tile in enumerate(faces.tiles):
+        group = int(faces.groups[t])
+        if tile is None or tile[2] != 0 or group not in arrays:
+            continue
+        part = (faces.parts[t] if t < len(faces.parts) else "").lower()
+        if any(word in part for word in ("shadow", "icon")) or (not faces.parts and not faces.casts[t]):
+            continue
+        x, z = int(tile[0]), int(tile[1])
+        if not (0 <= x < size_x and 0 <= z < size_z) or faces.normals[t].mean(axis=0)[1] < 0.7:
+            continue
+        a = arrays[group]
+        h, w = a.shape[:2]
+        samples = np.concatenate([faces.uvs[t], faces.uvs[t].mean(axis=0, keepdims=True)])
+        px = np.clip((samples[:, 0] * w).astype(int), 0, w - 1)
+        py = np.clip((samples[:, 1] * h).astype(int), 0, h - 1)
+        total[z, x] += a[py, px].mean(axis=0)
+        count[z, x] += 1
+    out = np.full((size_z, size_x, 3), 0.5)
+    seen = count > 0
+    out[seen] = total[seen] / count[seen][:, None]
+    return out
+
+
+def units_lighting(lighter: Lighter, size_x: int, size_z: int, ground: Callable,
+                   under: Optional[np.ndarray] = None) -> tuple:
+    """
+    `({letter: lut_chara_<letter>_0}, lut_chara_X_1)` for a map whose grid
+    is `size_x` by `size_z`: for each way a unit faces (`UNIT_FACINGS`), a
+    block of four values a tile over (size + 1) tiles each way, each value
+    2 by 2 pixels, from the file's first row (the image's bottom): the
+    light on the four sides `UNIT_SIDES` names of a unit standing on the
+    tile facing so, its sun and lamps shadowed as the map's are, and the
+    light its ground throws back when `under` gives the ground's colours
+    (`ground_colours`); and the second, as every map's is. `ground(x, z)`
+    is the height in steps of the ground there.
+    """
+    light = lighter.light
+    tiles_x, tiles_z = size_x + 1, size_z + 1
+    xs, zs = np.meshgrid(np.arange(tiles_x) + 0.5, np.arange(tiles_z) + 0.5)
+    heights = np.array([[ground(x, z) for x, z in zip(row_x, row_z)] for row_x, row_z in zip(xs, zs)])
+    points = np.stack([xs * UNIT, heights * STEP + UNIT_LIFT, zs * UNIT], axis=-1).reshape(-1, 3)
+    sky = np.array(light.sky_colour, float) * light.sky_strength
+    sun = np.array(light.sun_colour, float) * light.sun_strength
+    thrown = np.zeros((len(points), 3))
+    if under is not None and size_x and size_z:
+        # The past-the-grid row and column take the colour of the tile beside them.
+        colours = np.asarray(under, float)[np.minimum(np.arange(tiles_z), size_z - 1)][:, np.minimum(
+            np.arange(tiles_x), size_x - 1)].reshape(-1, 3)
+        on_ground = points - np.array([0.0, UNIT_LIFT - 2.0, 0.0])
+        thrown = colours * lighter.colour(on_ground, np.tile(np.array([0.0, 1.0, 0.0]), (len(points), 1)))
+    firsts = {}
+    for letter, facing in UNIT_FACINGS:
+        values = np.zeros((2 * tiles_z, 2 * tiles_x, 3))
+        for (row, column), turn, height in UNIT_SIDES:
+            towards = _towards(facing + turn, height)
+            normals = np.tile(towards, (len(points), 1))
+            open_sky, sun_on, lamps = lighter.terms(points, normals)
+            here = (UNIT_SKY * sky[None, :] * (1 - light.corner_shade * (1 - open_sky))[:, None]
+                    + UNIT_SUN * (sun[None, :] * sun_on[:, None] + lamps)
+                    + UNIT_GROUND * thrown * (1 - towards[1]) / 2)
+            values[row::2, column::2] = here.reshape(tiles_z, tiles_x, 3)
+        values = np.clip(np.rint(values), 0, 255).astype(np.uint8)
+        lut = np.zeros((LUT_SIZE, LUT_SIZE, 3), np.uint8)
+        doubled = values.repeat(2, axis=0).repeat(2, axis=1)
+        h, w = min(doubled.shape[0], LUT_SIZE), min(doubled.shape[1], LUT_SIZE)
+        # The file's first rows are the image's last: z grows up the image.
+        lut[LUT_SIZE - h:, :w] = doubled[:h, :w][::-1]
+        firsts[letter] = Image.fromarray(lut, "RGB")
     second = Image.new("RGBA", (LUT1_SIZE, LUT1_SIZE), LUT1_VALUE)
-    return Image.fromarray(lut, "RGB"), second
+    return firsts, second
 
 
 # -- a map, lit ---------------------------------------------------------------------
 
 #: The tables a map's lighting is found by: its groups' textures, and its
-#: units' lighting per camera corner (Key3 0 to 3 `lut_chara_a_0` to `d_0`,
-#: 4 to 7 `lut_chara_a_1` to `d_1`; `Unknown8` per story lighting,
-#: `Unknown10` per random battle).
+#: units' lighting per facing (Key3 0 to 3 `lut_chara_a_0` to `d_0`, 4 to 7
+#: `lut_chara_a_1` to `d_1`; `Unknown8` per story lighting, `Unknown10` per
+#: random battle).
 TEXTURE_TABLE, SYSTEM_TABLE = "RefinedBgTexture", "RefinedBgSystemTexture"
 
 
@@ -699,6 +791,21 @@ def grid_ground(tiles: dict) -> tuple:
             return 0.0
         return float(tile.get("height")) + float(tile.get("slope_height")) / 2
     return size_x, size_z, ground
+
+
+def one_lighting_groups(found: list, names: dict) -> list:
+    """
+    The groups of `names` (`{group: lighting texture name}`, one lighting's)
+    whose lighting texture is the same in every lighting of `found`
+    (`map_enhanced.lightings`): a group a mod adds has one. Made for one
+    lighting, such a group is lit that way in every battle (Zodi's stress
+    test of 20 October: Make for random battle C relit the new glacier for
+    all of them).
+    """
+    if len(found) < 2:
+        return []
+    return sorted(g for g, name in names.items()
+                  if all(other.pictures.get(g) is not None and other.pictures[g].lighting == name for other in found))
 
 
 def light_map(game_dir, number: int, light: Light, sqlite_path=None, mesh_file=None,
@@ -775,6 +882,13 @@ def light_map(game_dir, number: int, light: Light, sqlite_path=None, mesh_file=N
                            stem)
         if not names:
             made.notes.append("no texture group of the model has a lighting texture")
+        shared = one_lighting_groups(found, names) if which is not None else []
+        if shared:
+            said = ", ".join(f"group_{g}" for g in shared[:-1]) + (" and " if len(shared) > 1 else "") \
+                + f"group_{shared[-1]}"
+            made.notes.append(f"{said} {'has' if len(shared) == 1 else 'have'} one lighting texture for every "
+                              f"battle, so {'it is' if len(shared) == 1 else 'they are'} lit this way in all of "
+                              f"them")
     if border:
         borders = sorted({poly.group for poly in mesh.polygons()
                           if poly.textured and "border" in (poly.part or "").lower()})
@@ -806,7 +920,17 @@ def light_map(game_dir, number: int, light: Light, sqlite_path=None, mesh_file=N
         elif not size_x:
             made.notes.append("the map has no battle grid, so no units' lighting")
         else:
-            first, second = units_lighting(lighter, size_x, size_z, ground)
+            pictures = {}
+            for group, entry in chosen.pictures.items():
+                if entry.colour and group in set(faces.groups.tolist()):
+                    try:
+                        with Image.open(replaced.get(entry.colour[0].lower(), folder / entry.colour[0])) as image:
+                            pictures[group] = image.convert("RGB")
+                    except (OSError, ValueError):
+                        pass
+            under = ground_colours(faces, pictures, size_x, size_z)
+            firsts, second = units_lighting(lighter, size_x, size_z, ground, under)
+            letters = [letter for letter, _turn in UNIT_FACINGS]
             for (key2, key3), fields in sorted(system_rows.items()):
                 story, random_ = _json_list(fields.get("Unknown8")), _json_list(fields.get("Unknown10"))
                 if which is None or chosen.kind != "random":
@@ -816,7 +940,7 @@ def light_map(game_dir, number: int, light: Light, sqlite_path=None, mesh_file=N
                     stem = random_[chosen.index] if chosen.index < len(random_) else None
                 if not stem:
                     continue
-                made.textures[f"{stem}.tga"] = first if key3 < 4 else second
+                made.textures[f"{stem}.tga"] = firsts[letters[key3 % 4]] if key3 < 4 else second
                 if which is None:
                     point_rows(SYSTEM_TABLE, {(key2, key3): fields}, lambda g: (key3,), stem)
     return made

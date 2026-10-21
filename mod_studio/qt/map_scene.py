@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from .. import map_battles as mb
 from .. import map_classic as mc
 from .. import map_enhanced as me
 from .. import map_package as mpk
@@ -72,9 +73,9 @@ ENHANCED, CLASSIC = "enhanced", "classic"
 #: The camera corners the game uses, where its camera stands (an angle in
 #: the files' ground plane: 0 is +x, east; 90 is +z, north), and the
 #: render-properties bit of the polygons the game leaves out from there. The
-#: bits are the documents' SW, NW, NE and SE; GaneshaDx leaves out the same
-#: bits from the same corners.
-CORNERS = ((225.0, 13), (135.0, 12), (45.0, 11), (315.0, 10))
+#: bits are the documents' SW, NW, NE and SE (`map_enhanced.CAMERA_CORNERS`,
+#: in its order); GaneshaDx leaves out the same bits from the same corners.
+CORNERS = tuple((angle, bit) for angle, bit, _bands in me.CAMERA_CORNERS.values())
 #: Between two corners, the share of the turn over which the walls one
 #: leaves out fade into the ones the next does: 0.4 of 90 degrees, 36.
 FADE_SPAN = 0.4
@@ -298,7 +299,7 @@ def played_on_a_trigger(sqlite_path, number: int) -> set:
 def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,
                    state: mc.State = mc.State(), mesh_file: Optional[Path] = None,
                    picture_files: Optional[dict] = None, lighting: int = 0,
-                   rows: Optional[dict] = None) -> Scene:
+                   rows: Optional[dict] = None, anim_file: Optional[Path] = None) -> Scene:
     """
     The enhanced look of a map: its mesh, coloured by colour x lighting,
     under the map's `lighting`th lighting (`map_enhanced.lightings`, the
@@ -306,7 +307,8 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
     image file}`) are a mod's own, drawn in place of the game's, and `rows`
     its `RefinedBgTexture` and `RefinedBgMeshNode` rows (`{table: {key:
     fields}}`, `state.unmodelled_table_edits`' shape): its own texture groups
-    and parts, drawn as they say.
+    and parts, drawn as they say. `anim_file` is the mod's anim file, whose
+    tracks its pictures' frames play by.
     """
     rows = rows or {}
     from PIL import Image
@@ -356,7 +358,7 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
     scene.frame = _bounds(framed or points)
     still = played_on_a_trigger(sqlite_path, number)
     try:
-        tracks = me.picture_tracks(me.anim_path(game_dir, number).read_bytes())
+        tracks = me.picture_tracks(Path(anim_file or me.anim_path(game_dir, number)).read_bytes())
     except (OSError, me.EnhancedMapError):
         tracks = {}
 
@@ -526,8 +528,13 @@ def tile_corners(tile: mc.Tile, lift: float = 0.0) -> list:
 
 
 def shows(tile: mc.Tile) -> bool:
-    """Whether the grid draws a tile: every tile but the blank places of the upper level."""
-    return not (tile.level == 1 and tile.is_blank)
+    """
+    Whether the grid draws a tile, and the pointer can pick it: every tile
+    but the upper level's places with none (blank, or the game's placeholder,
+    `Tile.is_placeholder`: on 085, a third of the clicks of 20 October's
+    test landed on one, at the foot of its ground).
+    """
+    return not (tile.level == 1 and (tile.is_blank or tile.is_placeholder))
 
 
 #: The grid's colours (red, green, blue, opacity): a tile units can stand
@@ -541,6 +548,11 @@ HOVER_FILL = (1.0, 1.0, 1.0, 0.32)
 PICKED_FILL, PICKED_EDGE = (1.0, 0.78, 0.12, 0.50), (1.0, 0.86, 0.20, 1.0)
 #: The picked tile's band: how far in from its edges, as a share of the way to its middle.
 PICKED_BAND = 0.22
+#: Show battles (`battle_geometry`): a square the player may place a unit
+#: on, filled blue as the game's own squares are; where a battle's unit
+#: starts, amber, a band round a square that is both.
+SQUARE_FILL, START_FILL, START_EDGE = (0.20, 0.55, 1.0, 0.55), (1.0, 0.55, 0.15, 0.55), (1.0, 0.62, 0.20, 1.0)
+START_BAND = 0.28
 #: Floats a vertex of the grid: position and colour.
 GRID_STRIDE = 7
 
@@ -602,6 +614,28 @@ def highlight_geometry(by_key: dict, hovered, picked) -> dict:
     return {"hover": hover, "selected": chosen}
 
 
+def battle_geometry(by_key: dict, marks: dict) -> dict:
+    """
+    `{"battles": ...}`: the tiles battles use (`marks`, `{(x, z, level): set
+    of map_battles.START and SQUARE}`), drawn over the grid: filled blue
+    where the player places units, amber where a battle's unit starts.
+    """
+    out = array.array("f")
+    for key, kinds in sorted((marks or {}).items()):
+        tile = by_key.get(key)
+        if tile is None or not shows(tile):
+            continue
+        corners = tile_corners(tile, 0.8)
+        if mb.SQUARE in kinds:
+            _quad(out, corners, SQUARE_FILL)
+        if mb.START in kinds:
+            if mb.SQUARE in kinds:
+                _band(out, corners, START_EDGE, START_BAND)
+            else:
+                _quad(out, corners, START_FILL)
+    return {"battles": out}
+
+
 class SceneWorker(Worker):
     """
     Reads a map and decodes its pictures, off the GUI thread. Returns
@@ -611,18 +645,20 @@ class SceneWorker(Worker):
     """
 
     def __init__(self, token, game_dir, number, look, state, sqlite_path=None, mesh_file=None,
-                 picture_files=None, lighting=0, rows=None):
+                 picture_files=None, lighting=0, rows=None, anim_file=None):
         super().__init__()
         self.token, self.game_dir, self.number, self.look = token, game_dir, number, look
         self.state, self.sqlite_path, self.lighting = state, sqlite_path, lighting
         self.mesh_file, self.picture_files = mesh_file, dict(picture_files or {})
         self.rows = {table: dict(found) for table, found in (rows or {}).items()}
+        self.anim_file = anim_file
 
     def run(self):
         try:
             if self.look == ENHANCED:
                 scene = build_enhanced(self.game_dir, self.number, self.sqlite_path, self.state,
-                                       self.mesh_file, self.picture_files, self.lighting, self.rows)
+                                       self.mesh_file, self.picture_files, self.lighting, self.rows,
+                                       anim_file=self.anim_file)
             else:
                 scene = build_classic(self.game_dir, self.number, self.state)
             if scene.grid_file:
@@ -644,6 +680,17 @@ def _smoothstep(a: float, b: float, x: float) -> float:
     return t * t * (3 - 2 * t)
 
 
+def corner_at(yaw: float, slack: float = 0.5) -> Optional[str]:
+    """
+    The name of the camera corner the camera is at, turned to `yaw`
+    (`map_enhanced.CAMERA_CORNERS`': "SW" ...), or None between corners.
+    """
+    for (angle, _bit), name in zip(CORNERS, me.CAMERA_CORNERS):
+        if abs((yaw - angle + 180.0) % 360.0 - 180.0) <= slack:
+            return name
+    return None
+
+
 def corner_weights(yaw: float) -> tuple:
     """
     How far each corner's walls are left out from `yaw`, in `CORNERS`'
@@ -660,6 +707,43 @@ def corner_weights(yaw: float) -> tuple:
     return tuple(weights)
 
 
-def shown(render: int, weights: tuple) -> float:
+def psx_hiding(psx_yaw: float) -> tuple:
+    """
+    `(weights, band bit)`: which polygons the game leaves out with its camera
+    at `psx_yaw` (4,096ths of a turn, the event camera's). A polygon's bits 2
+    to 9 leave it out while the yaw is in one of eight 45 degree bands, bit
+    2 + ((yaw - 1) & 0xE00) >> 9, whatever the yaw; its bits 10 to 13 only
+    while the camera rests on a corner (yaw 0x200, 0x600, 0xA00 or 0xE00),
+    bit 10 + yaw >> 10 (the decompilation's `BATTLE_MAP_POLYGON_FLAG_HIDDEN_*`
+    and the four `battle_map_queue_` routines). The weights are `CORNERS`'
+    (1 for the corner rested on), as `corner_weights` gives them.
+    """
+    yaw = int(round(psx_yaw)) % 4096
+    band = 2 + (((yaw - 1) & 0xE00) >> 9)
+    weights = [0.0] * len(CORNERS)
+    if ((yaw + 0x200) & 0x3FF) == 0:
+        bit = 10 + (yaw >> 10)
+        for i, (_angle, corner_bit) in enumerate(CORNERS):
+            if corner_bit == bit:
+                weights[i] = 1.0
+    return tuple(weights), band
+
+
+def hiding(camera) -> tuple:
+    """
+    `(weights, band bit)` for a view's camera: the game's own rule
+    (`psx_hiding`) for a camera that is the game's (the Event Editor's, its
+    `psx_yaw` set), else the walls of the corner the camera is at faded in
+    and out as it turns (`corner_weights`, band -1: none).
+    """
+    psx_yaw = getattr(camera, "psx_yaw", None)
+    if psx_yaw is not None:
+        return psx_hiding(psx_yaw)
+    return corner_weights(camera.yaw), -1
+
+
+def shown(render: int, weights: tuple, band: int = -1) -> float:
     """How much of a polygon shows (0 left out, 1 drawn) for its render properties."""
+    if band >= 0 and (int(render) >> band) & 1:
+        return 0.0
     return 1.0 - sum(w for w, (_angle, bit) in zip(weights, CORNERS) if (int(render) >> bit) & 1)

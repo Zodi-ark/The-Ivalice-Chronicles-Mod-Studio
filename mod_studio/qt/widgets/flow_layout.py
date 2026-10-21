@@ -114,7 +114,12 @@ class FlowLayout(QLayout):
             hint = QSize(min(hint.width(), max(item.minimumSize().width(), area.width())),
                          hint.height())
             next_x = x + hint.width() + self.spacing()
-            if next_x - self.spacing() > area.right() and line_height > 0:
+            # Its last pixel is past the row's: `right()` is the row's last
+            # pixel, not the one after it, so a row given exactly what it
+            # asked for (`sizeHint`, one row) wrapped its last item - the
+            # Abilities map's Pause button, on a line of its own at every
+            # width (Zodi, 18 October).
+            if next_x - self.spacing() - 1 > area.right() and line_height > 0:
                 # Does not fit on this line, and this line has something on
                 # it already - so wrap. The second condition matters: an
                 # item wider than the whole area would otherwise wrap

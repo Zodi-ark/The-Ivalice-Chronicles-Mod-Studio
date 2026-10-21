@@ -1,0 +1,78 @@
+# The event faces for The Ivalice Chronicles Mod Studio
+# =====================================================
+#
+# One portrait of fftpack/event_evtface_bin.bin (the PlayStation's
+# EVTFACE.BIN: 8 blocks of 8 portraits) per line:
+# `<block x 8 + slot>|<face sheet>|<colours>`, the game's face sheet
+# ui/ffto/common/face/texture/wldface_<sheet>_<colours>_uitx it is drawn
+# from in the remaster. A speech box whose portrait is 1 to 8 shows slot
+# portrait - 1 of the block its event last read ("Portraits read", 0x50).
+#
+# Made by dev/make_event_faces.py from the game's own files, by comparing
+# each portrait with every face sheet's whole face at 32 by 48.
+#
+# index|sheet|colours
+0|183|8
+1|28|8
+2|184|8
+3|9|8
+4|176|8
+5|183|8
+6|183|8
+7|183|8
+8|24|8
+9|12|8
+10|34|8
+11|190|8
+12|189|8
+13|183|8
+14|183|8
+15|183|8
+16|11|8
+17|197|8
+18|30|8  # alike: 30_08, 199_08
+19|13|8
+20|170|8
+21|188|8
+22|183|8
+23|183|8
+24|191|8
+25|200|8
+26|27|8
+27|13|8
+28|198|8
+29|48|8
+30|181|8
+31|19|8
+32|48|8
+33|38|8
+34|193|8
+35|25|8
+36|192|8
+37|29|8
+38|19|8
+39|26|8
+40|37|8
+41|9|8
+42|36|8
+43|194|8
+44|13|8
+45|29|8
+46|19|8
+47|26|8
+48|100|11
+49|107|11
+50|114|11
+51|96|11
+52|180|8
+53|104|11
+54|102|11
+55|31|8
+56|48|8
+57|38|8
+58|193|8
+59|196|8
+60|100|11
+61|29|8
+62|19|8
+63|201|8

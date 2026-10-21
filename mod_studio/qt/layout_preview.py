@@ -13,14 +13,40 @@ What the preview cannot know, and does not pretend to:
 - **Text.** What a text box says comes from the game's text tables or its
   code. The preview writes the box's own name in it, at its font size and
   alignment, so the size and place are right and the words are obviously a
-  stand-in.
+  stand-in. They are in the game's own letters (Zodi, 19 October: "use them
+  in the UI Layouts page"): the menus' English font, Zilvertype Pro Bold
+  (`MENU_FONT`, as his screenshots of the tavern's rumors and the units,
+  status and equipment screens show), and the talk window's and the event
+  balloon's, Bouwsma Text (`words_font`), read from the unpacked game
+  (`Pictures.game_text`), lines broken and placed as the game's are
+  (`game_text`). Which font set each box uses isn't in the layout file, so
+  a box the game draws in another (Jura SemiBold, for the gil and a unit's
+  level) is drawn in that one too. A game unpacked without the fonts has a
+  serif stand in.
 - **Blur.** The game blurs what is behind a few overlays (`BGBlur`,
   `ffto_common_black_blur`). In the file those are plain rectangles - white,
   in the tavern's case - so drawing them as written would whiten the whole
   screen. Anything whose name says "blur" is left out.
-- **What code decides.** Which background a chapter uses, how wide the talk
-  window grows, how many list rows there are, and what fills an empty slot
-  are all chosen while the game runs. The file's own values are drawn.
+- **What code decides.** Which background a chapter uses, how many list
+  rows there are, and what fills an empty slot are all chosen while the
+  game runs. The file's own values are drawn. But for one:
+- **The menus' talk window** (`ffto_common_talk_window.uib`'s TalkWindow,
+  on the tavern, the shops, the guilds and more) is as wide as the game
+  makes it while it runs, not as the file places it (Zodi, 19 October:
+  "it is noticeably longer and the portrait is further to the right in
+  game"): its words as wide as the screen's `SizeDefine` allows
+  (`TextWidthMax`, 1,234 measured at its 44 pixel letters), at the window's
+  own English letters (`ScrollText_EnFrDe`, 34), so 954, and its margins
+  (213); its parchment centred where the file centres the piece; the
+  words' boxes as wide, the face at the window's right end
+  (`talk_window`). Measured on his screenshot of the tavern: the parchment
+  335 to 1,588 across and 105 to 309 down, drawn here 335 to 1,587 and 106
+  to 309; the face's right edge at the parchment's, as in the game. Every
+  one of the 18 screens placing it (the tavern's, the shops', the guilds',
+  the Poachers' Den's, the Brave Story's, status, removing a unit) has a
+  `SizeDefine` of 1,234. The game may make it narrower for a short line,
+  as it does the event balloon; both screenshots of the tavern have it at
+  the most, and the picture has no words to measure, so it is drawn so.
 - **Masks** are not applied, and Bezier, ellipse and counter boxes are not
   drawn; they are still listed and selectable.
 
@@ -57,8 +83,10 @@ from typing import Callable, Optional
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QTransform
 
+from .. import game_fonts as gf
 from .. import texture_data as td
 from .. import uib
+from . import game_text
 from .workers import Worker
 
 #: Blend modes the preview can reproduce, by the file's number.
@@ -167,6 +195,12 @@ class DrawCancelled(Exception):
     """A newer drawing was asked for, so this one stops where it is."""
 
 
+#: The game's fonts made ready, by their files: each read once, a few kept.
+_FONTS: "OrderedDict" = OrderedDict()
+_FONTS_LOCK = threading.Lock()
+FONTS_KEPT = 4
+
+
 class Pictures:
     """
     Finds and decodes the texture pieces a layout names.
@@ -229,6 +263,41 @@ class Pictures:
                 return None
             self.cache.put(key, image)
         return image
+
+    def game_text(self, name: str):
+        """
+        The game's font `name` made ready (`game_text.GameText`): its file
+        from the unpacked game, its atlas the mod's replacement or the game's,
+        decoded as the sheets are. None when the game hasn't it (a serif then
+        stands in).
+        """
+        font_path = gf.find_file(self.game_dir, gf.font_relative(name))
+        wanted = gf.atlas_relative(name).lower()
+        replacement = next(((entry or {}).get("source_path") for rel, entry in self.texture_edits.items()
+                            if str(rel).replace("\\", "/").lower() == wanted), None)
+        atlas_path = Path(replacement) if replacement else gf.find_file(self.game_dir, gf.atlas_relative(name))
+        if font_path is None or atlas_path is None:
+            return None
+        try:
+            key = tuple((str(path), path.stat().st_size, int(path.stat().st_mtime))
+                        for path in (Path(font_path), Path(atlas_path)))
+        except OSError:
+            return None
+        with _FONTS_LOCK:
+            if key in _FONTS:
+                _FONTS.move_to_end(key)
+                return _FONTS[key]
+        decode = self.decode_replacement if replacement else self.decode
+        try:
+            text = game_text.load(font_path, decode(atlas_path))
+        except Exception as exc:                                      # noqa: BLE001
+            self.missing[gf.font_relative(name)] = str(exc) or exc.__class__.__name__
+            text = None
+        with _FONTS_LOCK:
+            _FONTS[key] = text
+            while len(_FONTS) > FONTS_KEPT:
+                _FONTS.popitem(last=False)
+        return text
 
     def piece(self, ref: uib.TextureRef) -> Optional[QImage]:
         if not ref.uri:
@@ -414,6 +483,63 @@ def fitted_sizes(boxes, state: dict, frame: tuple, size: tuple, out: Optional[di
     return out
 
 
+#: The menus' talk window (see the module's notes): the file and piece, its
+#: boxes that move with its right end, and those whose width grows with it.
+#: The English font of the game's menus' words. Zodi's screenshots (19
+#: October, 16:40) of the tavern's rumors and the units, status and
+#: equipment screens: the rumor's title, 294 pixels of ink at its box's 36,
+#: and the list's names, 261 at 32, are Zilvertype Pro Bold's 295 and 262
+#: (Bunyan Pro's, which UI Layouts drew in before, 304 and 270), and its
+#: letters and its old style figures (HP 999/999) are his screenshots'. The
+#: commonest English font of the game's font sets too (`UIFontSet`: 56 of
+#: 100, `UIFontType` 5). The gil, the party's count and a unit's level are
+#: in Jura SemiBold (6), which the layout file doesn't tell apart.
+MENU_FONT = "FFTO_Zilvertype Pro Bold"
+#: The layouts whose words are a balloon's, in the balloons' font (Bouwsma
+#: Text, `game_fonts.BALLOON_FONT`, Zodi: "The font that the speech bubbles
+#: use in English is ffto_bouwsmatext-master_font").
+BALLOON_LAYOUTS = frozenset({"ffto_common_talk_window.uib", "ffto_event_balloon.uib"})
+
+
+def words_font(file_rel: str) -> str:
+    """The game's font a layout's words are drawn in: the balloons' for a balloon's layout, else the menus'."""
+    name = str(file_rel).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return gf.BALLOON_FONT if name in BALLOON_LAYOUTS else MENU_FONT
+
+
+TALK_WINDOW = ("ui/ffto/common/ffto_common_talk_window.uib", "TalkWindow")
+TALK_RIGHT = frozenset({"Face"})
+TALK_GROW = frozenset({"ScrollText_EnFrDe", "ScrollText"})
+#: The talk window's words in English, French and German (the game's Ja
+#: and EnFrDe animations show one or the other).
+TALK_WORDS = "ScrollText_EnFrDe"
+
+
+def _walk(boxes):
+    for box in boxes:
+        yield box
+        yield from _walk(box.children)
+
+
+def talk_window(screen: uib.Layout, talk: uib.Layout) -> Optional[float]:
+    """
+    How wide the game makes the talk window on `screen`: its words as wide as
+    the screen's `SizeDefine` allows, at the window's own letters, and its
+    margins. None when either file hasn't what it takes.
+    """
+    size_define = screen.components.get("SizeDefine")
+    window = talk.components.get(TALK_WINDOW[1])
+    if size_define is None or window is None:
+        return None
+    widest = next((b for b in _walk(size_define.boxes) if b.name == "TextWidthMax"), None)
+    words = next((b for b in _walk(window.boxes) if b.name == TALK_WORDS), None)
+    piece = talk.components.get(words.reference_name) if words is not None else None
+    letters = next((b for b in _walk(piece.boxes) if b.kind == "Text"), None) if piece is not None else None
+    if widest is None or not widest.font_size or letters is None or not letters.font_size:
+        return None
+    return widest.size[0] * letters.font_size / widest.font_size + (window.size[0] - words.size[0])
+
+
 class _Painter:
     """One drawing of one screen. See `draw_layout`."""
 
@@ -446,10 +572,24 @@ class _Painter:
     def component(self, p: QPainter, file_rel: str, lay: uib.Layout, c: uib.Component,
                   transform: QTransform, opacity: float, owner: Optional[str],
                   depth: int, record: bool = True, paint: bool = True,
-                  tint: tuple = _WHITE, size: Optional[tuple] = None) -> None:
-        """A component drawn at `transform`; at `size`, the placing box's, laid out to it."""
+                  tint: tuple = _WHITE, size: Optional[tuple] = None, talk: bool = False) -> None:
+        """
+        A component drawn at `transform`; at `size`, the placing box's, laid
+        out to it. `talk`: a talk window at the width the game gives it, its
+        face at its right end and its words as wide (see the module's notes).
+        """
         state = resting_state(c, self.timeline)
         sizes = fitted_sizes(c.boxes, state, tuple(c.size), tuple(size)) if size else {}
+        if talk and size:
+            grown = size[0] - c.size[0]
+            for box in _walk(c.boxes):
+                if box.name in TALK_RIGHT:
+                    s = state.setdefault(box.name, {})
+                    x, y = s.get("origin", box.origin)
+                    s["origin"] = (x + grown, y)
+                elif box.name in TALK_GROW:
+                    w, h = sizes.get(box.key, state.get(box.name, {}).get("size", box.size))
+                    sizes[box.key] = (w + grown, h)
         mode = _COMPOSITION.get(c.blend)
         self._effects += c.blend != 0
         try:
@@ -586,6 +726,29 @@ class _Painter:
         rect = transform.mapRect(QRectF(0, 0, w, h))
         return transform, alpha, rect
 
+    def _game_words(self, p, file_rel, box, transform, alpha, colour, w, h) -> bool:
+        """
+        A Text box's words (its name) in the game's font for its layout
+        (`words_font`): at its size, its lines `line_height` further apart
+        than that, broken to its width, aligned as it says. False when the
+        game's font isn't to be had.
+        """
+        text = self.pictures.game_text(words_font(file_rel))
+        if text is None:
+            return False
+        size = max(1, int(box.font_size or 24))
+        pitch = size + max(0, int(box.line_height or 0))
+        lines = text.layout([(box.name, False)], size, w)
+        tall = text.height(len(lines), size, pitch)
+        top = {1: (h - tall) / 2, 2: h - tall}.get(box.v_align, 0.0)
+        p.save()
+        p.setTransform(transform)
+        p.setOpacity(alpha)
+        p.setClipRect(QRectF(0, 0, w, h))
+        text.draw(p, None, 0.0, top, w, size, pitch, _qcolour(colour), align=box.h_align, lines=lines)
+        p.restore()
+        return True
+
     def box(self, p, file_rel, lay, box, state, parent, parent_opacity, owner, depth, record,
             paint=True, tint=_WHITE, sizes=None) -> None:
         if self.pictures.cancelled():
@@ -632,6 +795,20 @@ class _Painter:
                     if record:
                         self.result.empty_slots.append(box.key)
                     return
+                if (other_rel, box.reference_name) == TALK_WINDOW:
+                    wide = talk_window(lay, other)
+                    if wide is not None:
+                        # As wide as the game makes it, the window's parchment
+                        # (its nine grid, which overhangs the piece more on the
+                        # left) centred where the file centres the piece.
+                        nine = next((b for b in _walk(target.boxes) if b.kind == "Ninegrid"), None)
+                        off = (nine.origin[0] + nine.size[0] / 2 - target.size[0] / 2) if nine else 0.0
+                        moved = QTransform()
+                        moved.translate(-(wide - w) / 2 - off, 0)
+                        self.component(p, other_rel, other, target, moved * transform, alpha,
+                                       this_owner, depth + 1, record, tint=colour, size=(wide, h),
+                                       talk=True)
+                        return
                 self.component(p, other_rel, other, target, transform, alpha,
                                this_owner, depth + 1, record, tint=colour, size=(w, h))
             elif box.reference_name in lay.components:
@@ -658,6 +835,9 @@ class _Painter:
             p.setOpacity(alpha)
             p.fillRect(QRectF(0, 0, w, h), _qcolour(colour))
             p.restore()
+        elif box.kind == "Text" and w > 2 and h > 2 and self._game_words(p, file_rel, box, transform, alpha, colour,
+                                                                           w, h):
+            pass
         elif box.kind == "Text" and w > 2 and h > 2:
             p.save()
             p.setTransform(transform)

@@ -27,6 +27,8 @@ better than an empty pane that looks broken.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontDatabase
 from PySide6.QtWidgets import (
@@ -331,6 +333,14 @@ class ModContentsPane(QWidget):
                  True, self._look_summary,
                  lambda: bool(self._map_looks())),
             ]),
+            ("Event Editor", [
+                ("Changed events",
+                 "Each event's script goes into the mod whole, where the game "
+                 "reads it. Its words are lines of the scene's text, listed "
+                 "with the text files.",
+                 True, self._script_summary,
+                 lambda: state.has_any_script_edits()),
+            ]),
         ])
 
     def _with_every_registered_table(self, sections: list) -> list:
@@ -537,6 +547,8 @@ class ModContentsPane(QWidget):
             what = []
             if look["mesh"]:
                 what.append("its model")
+            if look.get("anim"):
+                what.append("its anim file (frames that move)")
             if look["textures"]:
                 count = len(look["textures"])
                 what.append(f"{count} texture{'s' if count != 1 else ''}")
@@ -548,6 +560,9 @@ class ModContentsPane(QWidget):
             if look["mesh"]:
                 lines.append(f"  bg/meshes/map_{number:03d}_mesh.bin")
                 lines.append(f"      from {look['mesh']}")
+            if look.get("anim"):
+                lines.append(f"  bg/anims/map_{number:03d}_anim.bin")
+                lines.append(f"      from {look['anim']}")
             for rel, source in sorted(look["textures"].items()):
                 lines.append(f"  {rel}")
                 lines.append(f"      from {source}")
@@ -837,13 +852,13 @@ class ModContentsPane(QWidget):
             if name == "font_size":
                 return f"text size {value}"
             if name == "colour":
-                return f"colour R {value[0]}, G {value[1]}, B {value[2]}, A {value[3]}"
+                return f"color R {value[0]}, G {value[1]}, B {value[2]}, A {value[3]}"
             if name == "opacity":
                 return f"opacity {value:g}"
             return f"{name} {value}"
 
         kinds = {uib.KEY_POSITION: "position", uib.KEY_SIZE: "size", uib.KEY_SCALE: "scale",
-                 uib.KEY_COLOUR: "colour", uib.KEY_OPACITY: "opacity",
+                 uib.KEY_COLOUR: "color", uib.KEY_OPACITY: "opacity",
                  uib.KEY_CHILD_TIMELINE: "child animation"}
         for rel in sorted(edits):
             lines.append(rel)
@@ -899,7 +914,13 @@ class ModContentsPane(QWidget):
         total = sum(len(tiles) for tiles in edits.values())
         maps = len(self.state.edited_map_numbers())
         lines = [f"{total} tile(s) edited on {maps} map(s).", ""]
-        said = {"no_walk": lambda v: "units can't stand here" if v else "units can stand here",
+        # Surfaces by the game's names for them, as the Map Editor says them
+        # (Zodi's stress test of 20 October: "surface 5", "surface 13").
+        from ..pages.map_editor import names_language, surface_names
+        sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
+        names = surface_names(sqlite_path, names_language(sqlite_path)) if sqlite_path else {}
+        said = {"surface": lambda v: "surface " + (names.get(int(v)) or str(int(v))),
+                "no_walk": lambda v: "units can't stand here" if v else "units can stand here",
                 "no_cursor": lambda v: "the cursor can't stop here" if v else "the cursor can stop here",
                 "pass_through": lambda v: "units cross it without stopping" if v
                 else "units don't cross it without stopping",
@@ -911,6 +932,20 @@ class ModContentsPane(QWidget):
                 what = "; ".join(said[f](v) if f in said else f"{f.replace('_', ' ')} {int(v)}"
                                  for f, v in changes.items())
                 lines.append(f"    {where}: {what}")
+        return "\n".join(lines)
+
+    def _script_summary(self) -> str:
+        """Which events change: each script's path, its nodes, and whether the game has it."""
+        edits = {rel: data for rel, data in (getattr(self.state, "script_edits", {}) or {}).items()
+                 if data is not None}
+        if not edits:
+            return "No events changed."
+        lines = [f"{len(edits)} event(s) changed.", ""]
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        for rel in sorted(edits):
+            own = not (game and (Path(game) / rel).is_file())
+            lines.append(f"{rel}, {len(edits[rel]):,} bytes"
+                         + (", an event the game hasn't" if own else ""))
         return "\n".join(lines)
 
     def _sound_summary(self) -> str:

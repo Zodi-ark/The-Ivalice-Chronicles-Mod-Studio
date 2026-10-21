@@ -38,7 +38,7 @@ _DEPTH_LIMIT = 16
 #: open as" in the right-click menu, so each is the rest of that sentence.
 NO_PICTURE = {
     "Text": "a text box draws its words, not a picture",
-    "Rect": "a colour box is filled with a colour, not a picture",
+    "Rect": "a color box is filled with a color, not a picture",
     "Collision": "a click area is never drawn",
     "Bezier": "a line is drawn, not a picture",
     "Ellipse": "an ellipse is drawn, not a picture",

@@ -117,8 +117,11 @@ class AssetExportWorker(Worker):
                  cli_path, audiomog_path, game_dir, pzd_edits=None,
                  sound_file_replacements=None, other_file_replacements=None,
                  uib_edits=None, utexpt_edits=None, map_edits=None,
-                 own_files=None):
+                 own_files=None, script_edits=None):
         super().__init__()
+        # The Event Editor's scripts, whole: `{relative path: bytes}`.
+        self.script_edits = {rel: bytes(data) for rel, data in (script_edits or {}).items()
+                             if data is not None}
         self.mod_root = Path(mod_root)
         self.mode = mode
         # The opened mod's files outside FFTIVC (its program code among
@@ -166,6 +169,7 @@ class AssetExportWorker(Worker):
                   "layouts": 0, "layout_total": len(self.uib_edits),
                   "part_lists": 0, "part_list_total": len(self.utexpt_edits),
                   "maps": 0, "map_total": 0,
+                  "scripts": 0, "script_total": len(self.script_edits),
                   "carried": 0,
                   "carried_total": len(self.other_file_replacements),
                   "own": 0, "own_total": len(self.own_files),
@@ -235,6 +239,19 @@ class AssetExportWorker(Worker):
         # a battle reads is not known. Needs only the unpacked game.
         if self.map_edits:
             self._write_maps(dest_root, result)
+
+        # Event scripts: written whole where the game reads them
+        # (`script/<mode>/eventNNN.e`), as the Event Editor made them. They
+        # need nothing else, not the game, not FF16Tools.
+        for relative_path, data in sorted(self.script_edits.items()):
+            self.log.emit(f"Writing {relative_path}...")
+            try:
+                destination = dest_root / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(data)
+                result["scripts"] += 1
+            except OSError as exc:
+                result["errors"].append(f"{relative_path}: {exc}")
 
         # Text files first: they are the cheapest and the most likely to
         # fail for a reason worth hearing early (no FF16Tools), and a person
@@ -1263,7 +1280,10 @@ class ExportPage(QWidget):
         return [
             ("Jobs", len(self._edited_jobs())
              + state.edited_job_text_total_count(), "job"),
-            ("Job Commands", len(self._edited_commands()), "job command"),
+            # Both files: a mod changing only a monster showed "Nothing
+            # edited in" Job Commands.
+            ("Job Commands", len(self._edited_commands())
+             + len(self._edited_commands(monsters=True)), "job command"),
             ("Abilities",
              state.edited_ability_total_count() + state.edited_override_count()
              + state.edited_ability_effect_count()
@@ -1285,6 +1305,7 @@ class ExportPage(QWidget):
             ("UI Layouts", state.edited_uib_file_count(), "screen"),
             ("Texture parts", state.edited_utexpt_file_count(), "part list"),
             ("Map Editor", len(set(state.edited_map_numbers()) | set(self._map_looks())), "map"),
+            ("Event Editor", state.edited_script_count(), "event"),
             ("Subtitles", state.edited_pzd_line_count(), "line"),
             ("Game data (no tab)", self._merged_table_count(), "merged table"),
             ("Carried through", len(self._carried_files()), "file"),
@@ -1308,9 +1329,11 @@ class ExportPage(QWidget):
                    if any(fields and key not in theirs.get(table, {}) for key, fields in rows.items()))
 
     def _carried_files(self) -> list:
-        """Files carried through whole, less the maps' models, which the Map Editor counts."""
+        """Files carried through whole, less the maps' models and anim files, which the Map Editor counts."""
         models = {f"bg/meshes/map_{n:03d}_mesh.bin" for n, look in self._map_looks().items()
                   if look["mesh"]}
+        models |= {f"bg/anims/map_{n:03d}_anim.bin" for n, look in self._map_looks().items()
+                   if look.get("anim")}
         return [rel for rel in (self.state.other_file_replacements or {})
                 if str(rel).replace("\\", "/").lower() not in models]
 
@@ -1350,6 +1373,7 @@ class ExportPage(QWidget):
                              or self.state.uib_edits
                              or self.state.utexpt_edits
                              or self.state.has_any_map_edits()
+                             or self.state.has_any_script_edits()
                              or self.state.sound_edits
                              or self.state.sound_file_replacements
                              or self.state.other_file_replacements
@@ -1424,11 +1448,30 @@ class ExportPage(QWidget):
             names.append("Edited battle maps (fftpack/map, and bg/meshes where their highlights move)")
         if any(look["mesh"] for look in self._map_looks().values()):
             names.append("Map models (bg/meshes)")
+        if any(look.get("anim") for look in self._map_looks().values()):
+            names.append("Map anim files, the frames that move (bg/anims)")
+        if self.state.has_any_script_edits():
+            names.append("Event scripts (script/)")
         if self._carried_files():
             names.append("Carried-through files")
         if getattr(self.state, "mod_own_files", None):
             names.append("The mod's own files, beside ModConfig.json")
+        nxd_files = self._nxd_files()
+        if nxd_files:
+            # Zodi's stress test of 20 October: a map's 22 rows went into
+            # three .nxd files this list never named, nor that FF16Tools
+            # writes them.
+            names.append("Game data tables, written with FF16Tools (nxd/): " + ", ".join(nxd_files))
         return names
+
+    def _nxd_files(self) -> list:
+        """The `.nxd` files the export writes from table edits, as the export's own worker names them."""
+        try:
+            worker = NxdExportWorker(self.state, Path("."), getattr(self.state, "loaded_game_mode", None)
+                                     or "enhanced")
+            return worker.filenames_to_copy() if worker.has_work() else []
+        except Exception:                                     # noqa: BLE001
+            return []
 
     def _managed_table_filenames(self) -> set:
         """Every table file this export can write - the only ones it may remove."""
@@ -1671,7 +1714,8 @@ class ExportPage(QWidget):
                     or state.has_any_pzd_edits()
                     or state.has_any_uib_edits()
                     or state.has_any_utexpt_edits()
-                    or state.has_any_map_edits())
+                    or state.has_any_map_edits()
+                    or state.has_any_script_edits())
 
     def _nxd_backed_edit_count(self) -> int:
         """
@@ -1880,9 +1924,13 @@ class ExportPage(QWidget):
             self.state.job_command_preserved)
 
     def monster_job_command_diff_xml_text(self) -> str:
+        # An opened mod's monster entries are kept with the jobs' (the ids
+        # don't overlap), so anything in them this tool doesn't model goes
+        # back as it came.
         return xml_io.build_monster_job_command_diff_xml_text(
             self.state.monster_job_command_version,
-            self._edited_commands(monsters=True))
+            self._edited_commands(monsters=True),
+            self.state.job_command_preserved)
 
     def table_diff_xml_text(self, key: str) -> str:
         spec = ix.ALL_SPECS.get(key)
@@ -2048,12 +2096,16 @@ class ExportPage(QWidget):
 
         jobs = self._edited_jobs()
         commands = self._edited_commands()
+        # Counted here with the rest: a mod whose only change was a monster
+        # on Job Commands was refused, "There's nothing to export yet" (a
+        # user's report, 20 October).
+        monsters = self._edited_commands(monsters=True)
         extras = self._extra_table_files()
         assets = self._has_asset_work()
         # A texture pack has no table edits at all, and this used to refuse
         # to export one - "there's nothing to export yet" for a mod whose
         # entire content is textures.
-        if not (jobs or commands or extras or assets):
+        if not (jobs or commands or monsters or extras or assets):
             # Never write an empty mod and report success - but a mod whose
             # whole content is name and description edits is NOT empty.
             #
@@ -2097,7 +2149,6 @@ class ExportPage(QWidget):
             # are any. An empty MonsterJobCommandData.xml in every mod
             # would be one more file for the loader to read and one more
             # thing for a reader of the mod to wonder about.
-            monsters = self._edited_commands(monsters=True)
             if monsters:
                 extras = dict(extras or {})
                 extras["MonsterJobCommandData.xml"] = (
@@ -2166,7 +2217,8 @@ class ExportPage(QWidget):
                 uib_edits=self.state.uib_edits,
                 utexpt_edits=self.state.utexpt_edits,
                 map_edits=self.state.map_edits,
-                own_files=getattr(self.state, "mod_own_files", None))
+                own_files=getattr(self.state, "mod_own_files", None),
+                script_edits=getattr(self.state, "script_edits", None))
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -2263,6 +2315,9 @@ class ExportPage(QWidget):
         if result.get("map_total"):
             parts.append(f"{result.get('maps', 0)} of "
                          f"{result['map_total']} battle map file(s)")
+        if result.get("script_total"):
+            parts.append(f"{result.get('scripts', 0)} of "
+                         f"{result['script_total']} event script(s)")
         if result.get("carried_total"):
             parts.append(f"{result.get('carried', 0)} of "
                          f"{result['carried_total']} carried-through file(s)")
@@ -2282,6 +2337,7 @@ class ExportPage(QWidget):
                  and result.get("layouts", 0) == result.get("layout_total", 0)
                  and result.get("part_lists", 0) == result.get("part_list_total", 0)
                  and result.get("maps", 0) == result.get("map_total", 0)
+                 and result.get("scripts", 0) == result.get("script_total", 0)
                  and result.get("carried", 0) == result.get("carried_total", 0)
                  and result.get("own", 0) == result.get("own_total", 0))
         self._said_trouble = not clean

@@ -635,6 +635,7 @@ class TexturesPage(QWidget):
         # keeps the model's reference live; opening a mod does not, and
         # opening a mod is the case that matters.
         self.model.set_edits(self.state.texture_edits)
+        self._marked = self._edits_signature()
         self.empty_note.setVisible(tree is None)
         self.tree.setVisible(tree is not None)
         self.search.setEnabled(tree is not None)
@@ -1028,6 +1029,21 @@ class TexturesPage(QWidget):
     def showEvent(self, event):                                # noqa: N802
         super().showEvent(event)
         self._even_compare_columns()
+        # Other pages put textures in too (the Map Editor's Load edited and
+        # Light the map): marked and counted again when the page is shown
+        # (Zodi's stress test of 20 October: "0 of 116 textures replaced"
+        # with 20 in the mod). Marked again only when they changed: a whole
+        # new marking folds the tree up.
+        if self._edits_signature() != getattr(self, "_marked", None):
+            self.model.set_edits(self.state.texture_edits)
+            self._marked = self._edits_signature()
+        self._update_counter()
+
+    def _edits_signature(self) -> tuple:
+        """What the tree's marks are made from: the store, and each replacement in it."""
+        edits = self.state.texture_edits
+        return id(edits), frozenset((rel, str(info.get("source_path") if isinstance(info, dict) else info))
+                                    for rel, info in edits.items())
 
     def changeEvent(self, event):                              # noqa: N802
         super().changeEvent(event)
@@ -1235,6 +1251,7 @@ class TexturesPage(QWidget):
         changed = (self.current_node.relative_path
                    if self.current_node is not None else None)
         self.model.set_edits(self.state.texture_edits, changed)
+        self._marked = self._edits_signature()
         self._refresh_detail()
         self._update_counter()
         self.edits_changed.emit()

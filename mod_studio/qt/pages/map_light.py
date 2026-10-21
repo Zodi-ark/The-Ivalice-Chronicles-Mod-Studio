@@ -6,7 +6,9 @@ source and color of the source", the border texture and lut_chara).
 A sun, the sky and lamps, set here; Preview draws the map with them, Make
 puts the textures they make into the mod, with the table rows naming them
 (`map_lighting.light_map`). The light is remembered for each map, beside
-the textures made (`light_folder`).
+the textures made (`light_folder`), with the border's color since 20
+October, and travels with the map: Save for editing puts it in the folder,
+and Load edited brings it back (`map_editor.light_file`).
 """
 from __future__ import annotations
 
@@ -34,6 +36,11 @@ def light_folder(number: int) -> Path:
     return paths.local_data_dir() / LIGHT_FOLDER / f"map_{number:03d}"
 
 
+#: The key `light.json` keeps the border's color under, beside the light's
+#: own (`map_lighting.Light.from_dict` passes over it).
+BORDER_KEY = "border_colour"
+
+
 def saved_light(number: int) -> ml.Light:
     """The light last made for map `number`, or the default."""
     try:
@@ -42,10 +49,23 @@ def saved_light(number: int) -> ml.Light:
         return ml.Light()
 
 
-def save_light(number: int, light: ml.Light) -> None:
+def saved_border(number: int):
+    """The border's color last made for map `number` (`(r, g, b)`), or None."""
+    try:
+        colour = json.loads((light_folder(number) / LIGHT_FILE).read_text(encoding="utf-8")).get(BORDER_KEY)
+        return tuple(int(c) for c in colour)[:3] if colour and len(colour) >= 3 else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def save_light(number: int, light: ml.Light, border=None) -> None:
+    """Keeps map `number`'s light, and the border's color when given (`saved_border`)."""
     folder = light_folder(number)
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / LIGHT_FILE).write_text(json.dumps(light.to_dict(), indent=1), encoding="utf-8")
+    data = light.to_dict()
+    if border is not None:
+        data[BORDER_KEY] = [int(c) for c in tuple(border)[:3]]
+    (folder / LIGHT_FILE).write_text(json.dumps(data, indent=1), encoding="utf-8")
 
 
 class LightWorker(Worker):
@@ -60,12 +80,17 @@ class LightWorker(Worker):
         return made, ml.save_made(made, self.folder)
 
 
-class ColourButton(QPushButton):
-    """A colour, shown as a swatch, picked with the system's colour window."""
+#: The swatch's own name: its style names it, so the color reaches it alone.
+SWATCH = "colorSwatch"
 
-    def __init__(self, colour=(255, 255, 255), title: str = "Colour", parent=None):
+
+class ColourButton(QPushButton):
+    """A color, shown as a swatch, picked with the system's color window."""
+
+    def __init__(self, colour=(255, 255, 255), title: str = "Color", parent=None):
         super().__init__(parent)
         self.title = title
+        self.setObjectName(SWATCH)
         self.setFixedWidth(64)
         self.set_colour(colour)
         self.clicked.connect(self.choose)
@@ -73,12 +98,18 @@ class ColourButton(QPushButton):
     def set_colour(self, colour) -> None:
         self.colour = tuple(int(c) for c in colour)[:3]
         red, green, blue = self.colour
-        self.setStyleSheet(f"QPushButton {{ background-color: rgb({red}, {green}, {blue}); "
+        # Named by the swatch's object name, not every QPushButton: a style
+        # set on a widget reaches the widgets inside it, and the color
+        # window's buttons (Pick Screen Color, OK, Cancel) took the swatch's
+        # color (Zodi's screenshot, 19 October).
+        self.setStyleSheet(f"QPushButton#{SWATCH} {{ background-color: rgb({red}, {green}, {blue}); "
                            f"border: 1px solid palette(mid); border-radius: 3px; min-height: 20px; }}")
         self.setToolTip(f"{self.title}: {red}, {green}, {blue}")
 
     def choose(self) -> None:
-        picked = QColorDialog.getColor(QColor(*self.colour), self, self.title)
+        # The window the swatch is in, not the swatch, as the color window's
+        # owner: nothing of the swatch's own style is passed down to it.
+        picked = QColorDialog.getColor(QColor(*self.colour), self.window(), self.title)
         if picked.isValid():
             self.set_colour((picked.red(), picked.green(), picked.blue()))
 
@@ -95,7 +126,7 @@ def _spin(low: int, high: int, value: float, suffix: str = "") -> QSpinBox:
 class LightDialog(QDialog):
     """The light for the map shown on `page` (a `MapEditorPage`), and what to make with it."""
 
-    LAMP_COLUMNS = ("X", "Z", "Height", "Colour", "Strength", "Reach")
+    LAMP_COLUMNS = ("X", "Z", "Height", "Color", "Strength", "Reach")
 
     def __init__(self, page):
         super().__init__(page)
@@ -119,20 +150,20 @@ class LightDialog(QDialog):
         self.sun_turn.setToolTip("Where the sun shines from: 0 north, 90 east, 180 south, 270 west.")
         self.sun_height = _spin(0, 90, light.sun_height, " degrees")
         self.sun_height.setToolTip("How high the sun is: 0 on the horizon, 90 straight above.")
-        self.sun_colour = ColourButton(light.sun_colour, "The sun's colour")
+        self.sun_colour = ColourButton(light.sun_colour, "The sun's color")
         self.sun_strength = _spin(0, 300, light.sun_strength * 100, "%")
         form.addRow("From", self.sun_turn)
         form.addRow("Height", self.sun_height)
-        form.addRow("Colour", self.sun_colour)
+        form.addRow("Color", self.sun_colour)
         form.addRow("Strength", self.sun_strength)
 
         sky = QGroupBox("Sky")
         form = QFormLayout(sky)
-        self.sky_colour = ColourButton(light.sky_colour, "The sky's colour")
+        self.sky_colour = ColourButton(light.sky_colour, "The sky's color")
         self.sky_strength = _spin(0, 300, light.sky_strength * 100, "%")
         self.corner_shade = _spin(0, 100, light.corner_shade * 100, "%")
         self.corner_shade.setToolTip("How much darker corners and creases are, hidden from the sky.")
-        form.addRow("Colour", self.sky_colour)
+        form.addRow("Color", self.sky_colour)
         form.addRow("Strength", self.sky_strength)
         form.addRow("Shade in corners", self.corner_shade)
 
@@ -183,7 +214,7 @@ class LightDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         self.make_border = QCheckBox("The border's texture, in")
         self.make_border.setChecked(True)
-        self.border_colour = ColourButton(self._ground_colour(), "The border's colour")
+        self.border_colour = ColourButton(saved_border(self.number) or self._ground_colour(), "The border's color")
         row.addWidget(self.make_border)
         row.addWidget(self.border_colour)
         row.addStretch(1)
@@ -196,7 +227,9 @@ class LightDialog(QDialog):
             from .map_editor import lighting_words
             for index, word in enumerate(lighting_words(scene.lightings)):
                 self.which.addItem(word, index)
-        self.which.setToolTip("Every lighting the map has (its story and random battles), or one of them.")
+        self.which.setToolTip("Every lighting the map has (its story and random battles) gets this light, "
+                              "all its rows naming the same textures, so it is lit one way in every battle "
+                              "until Put back the game's look; or one of them gets it alone.")
         form.addRow(self.make_lighting)
         form.addRow(border_row)
         form.addRow(self.make_units)
@@ -241,7 +274,7 @@ class LightDialog(QDialog):
         self.lamps.setCellWidget(row, 0, _spin(-4, 40, lamp.x - 0.5))
         self.lamps.setCellWidget(row, 1, _spin(-4, 40, lamp.z - 0.5))
         self.lamps.setCellWidget(row, 2, _spin(0, 60, lamp.height))
-        self.lamps.setCellWidget(row, 3, ColourButton(lamp.colour, "The lamp's colour"))
+        self.lamps.setCellWidget(row, 3, ColourButton(lamp.colour, "The lamp's color"))
         self.lamps.setCellWidget(row, 4, _spin(0, 500, lamp.strength * 100, "%"))
         self.lamps.setCellWidget(row, 5, _spin(1, 20, lamp.reach))
 
@@ -313,7 +346,7 @@ class LightDialog(QDialog):
             self.page.set_light_preview(self.number, files, made.rows, which)
             self.note.setText(f"Preview drawn: {len(files)} textures. Make puts them in your mod.")
         else:
-            save_light(self.number, self.light())
+            save_light(self.number, self.light(), self.border_colour.colour)
             self.page.put_light(self.number, made, files, which)
             self.note.setText(f"Made {len(files)} textures" + (f" and {sum(len(f) for f in made.rows.values())} "
                                                               f"table rows" if made.rows else "")

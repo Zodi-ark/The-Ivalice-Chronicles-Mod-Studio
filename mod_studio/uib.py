@@ -103,11 +103,11 @@ COMPONENT_KINDS = {
 }
 
 #: A component's blend mode, as FF16Tools names them. In the game's files:
-#: normal 2,075 components, colour dodge 109, linear dodge 107, multiply 44,
+#: normal 2,075 components, color dodge 109, linear dodge 107, multiply 44,
 #: overlay 20 (the screen filters), screen 7.
 BLEND_MODES = {
-    0: "normal", 1: "darken", 2: "multiply", 3: "colour burn", 4: "linear burn",
-    5: "lighten", 6: "screen", 7: "colour dodge", 8: "linear dodge", 9: "overlay",
+    0: "normal", 1: "darken", 2: "multiply", 3: "color burn", 4: "linear burn",
+    5: "lighten", 6: "screen", 7: "color dodge", 8: "linear dodge", 9: "overlay",
     10: "soft light", 11: "hard light", 12: "vivid light", 13: "linear light",
 }
 
@@ -684,7 +684,7 @@ def _as_colour(value) -> tuple:
     if isinstance(value, (list, tuple)) and len(value) == 4 \
             and all(_is_whole(c) and 0 <= c <= 255 for c in value):
         return tuple(value)
-    raise _Unwritable(f"{value!r} is not a colour, which is four whole numbers "
+    raise _Unwritable(f"{value!r} is not a color, which is four whole numbers "
                       f"from 0 to 255: red, green, blue and alpha")
 
 

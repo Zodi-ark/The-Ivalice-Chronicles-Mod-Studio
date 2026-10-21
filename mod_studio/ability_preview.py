@@ -28,6 +28,12 @@ monster that uses it, from `MonsterJobCommandData`.
   instructions that move a unit do (`opcodeParameters.txt`,
   `unit_animation_manager.gd`): up, down, forward and back one or two
   units, or by an amount.
+- **Where it holds while the effect plays**: an animation waits at
+  WaitForInput, WeaponSheatheCheck1 or 2 (`WAITS`), looping the frames just
+  before it (its one argument, signed, says how many bytes of them) until
+  the game goes on; the effect plays at its last wait. A spell's cast (44)
+  holds the arms up there, then lowers them (Zodi, 18 October: "the units
+  arms should be fully extended in the air as the effect plays out").
 - **Two jobs of one name** (the game has two Bombs) are told apart in
   Shown by by their job numbers.
 - **Which tiles**: its range (tiles counted along the grid, or in straight
@@ -77,6 +83,9 @@ MOVES = {0xCB: (0, 2), 0xCC: (0, 1), 0xCD: (-2, 0), 0xCE: (-1, 0), 0xCF: (0, -2)
          0xD1: (2, 0), 0xD2: (1, 0)}
 #: Moves by an amount: MoveUnitFB, MoveUnitDU (down is positive), MoveUnitRL.
 MOVE_FORWARD_BY, MOVE_DOWN_BY, MOVE_RIGHT_BY, MOVE_ALL_BY = 0xEE, 0xEF, 0xF0, 0xFA
+#: The instructions an animation waits at, looping the frames before them:
+#: WaitForInput, WeaponSheatheCheck1 and WeaponSheatheCheck2.
+WAITS = (0xC6, 0xD3, 0xD6)
 
 #: Where a facing points on the grid: 0 south (lower Y), 1 west (lower X),
 #: 2 north, 3 east, as ENTD names them (measured for the Encounters page:
@@ -181,12 +190,15 @@ def entd_job_sprites(tables, jobs: dict) -> dict:
 @dataclass
 class Step:
     """One frame of a unit's animation: shown for `delay` 60ths of a second,
-    the unit moved `forward` and `up` from where it stands (world units)."""
+    the unit moved `forward` and `up` from where it stands (world units).
+    `held`: one of the frames looped at the animation's last wait, where
+    it holds while the effect plays."""
     frame: int
     delay: int
     forward: int
     up: int
     right: int = 0
+    held: bool = False
 
 
 def _signed(value: int) -> int:
@@ -194,12 +206,29 @@ def _signed(value: int) -> int:
 
 
 def animation_steps(animation) -> list:
-    """An animation's frames with the moves its instructions make (`read_sequences` steps)."""
+    """An animation's frames with the moves its instructions make (`read_sequences` steps),
+    the ones it loops at its last wait marked `held`."""
     steps = []
     forward = up = right = 0
+    #: Each step read so far: its length in bytes, and its frame's place in `steps`.
+    read = []
+    held = ()
     for step in animation or ():
         if step[0] == "op":
             code, args = step[1], step[2]
+            if code in WAITS and args:
+                # The bytes before it that it loops: whole steps, back from it.
+                wanted, looped = abs(_signed(args[0])), []
+                for length, place in reversed(read):
+                    if wanted <= 0:
+                        break
+                    wanted -= length
+                    if place is not None:
+                        looped.append(place)
+                # One that loops no frame (only where an item is held, say)
+                # holds the frame on screen.
+                held = looped or ([len(steps) - 1] if steps else held)
+            read.append((2 + len(args), None))
             if code in MOVES:
                 df, du = MOVES[code]
                 forward, up = forward + df, up + du
@@ -215,7 +244,10 @@ def animation_steps(animation) -> list:
                 forward += _signed(args[2])
             continue
         frame, delay = step
+        read.append((2, len(steps)))
         steps.append(Step(frame, max(1, delay), forward, up, right))
+    for place in held:
+        steps[place].held = True
     return steps
 
 

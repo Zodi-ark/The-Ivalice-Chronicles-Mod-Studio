@@ -27,6 +27,15 @@ at Zodi's request). A track replaced in an archive a mod already replaces
 goes into that file, not the game's, or everything else the mod did to it
 would be lost - so the tracks listed are the ones in the file that ships.
 
+**An archive of many tracks** (`sound/common/sound.sab` holds 810; Zodi, 19
+October: "There are many tracks to look through ... I could not find
+FID_SOUND_VFX_00100001"): each row of the track list names its track's
+in-game use (`track_users_short`), and a find row over the list keeps the
+tracks whose number, file name or in-game names have every word typed
+(`find_tracks`). An effect's recording is named by the effects that play it
+too (`effects_by_resource`, `effect_sound.vfx_name`): track 668 is Fire's
+(effect 16; Zodi, 20 October: "Yes, that's Fire"), so typing Fire finds it.
+
 **AudioMog is a Windows binary.** Browsing, searching and classifying the
 tree all work anywhere. Opening an archive to see its tracks does not, and
 the page says so instead of showing an empty track list that looks like an
@@ -45,7 +54,9 @@ there is no Windows, and no cold start, in this environment.
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
+import struct
 import tempfile
 
 from pathlib import Path
@@ -59,6 +70,8 @@ from PySide6.QtWidgets import (
 )
 
 from ... import audiomog, pzd_data
+from ... import effect_files as ef
+from ... import reference_names
 from ... import sound_data as sd
 from ... import paths
 from .. import export_dialogs
@@ -192,6 +205,97 @@ TRACK_USER_LIMIT = 12
 #: printing. `parse_track_users` reads with `errors="replace"`, so a track
 #: whose entry is binary comes back as thousands of U+FFFD.
 TRACK_USER_GARBAGE_SHARE = 0.3
+
+#: An archive with this many tracks or more has a find row over its list:
+#: more than the list's six rows show at once.
+TRACK_FIND_FROM = 7
+FIND_TRACK_HINT = "Find a track by its number or in-game name"
+
+
+def track_users_readable(users: str) -> list:
+    """The in-game names in a track's users list, or [] for none or unreadable bytes."""
+    text = (users or "").strip()
+    if not text or text.count("\ufffd") + text.count("?") > len(text) * TRACK_USER_GARBAGE_SHARE:
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def track_users_short(users: str) -> str:
+    """
+    A track's in-game use for its row in the list: its first name, and how
+    many more there are; "" for none.
+
+    Zodi, 19 October: "There are many tracks to look through ... I could not
+    find FID_SOUND_VFX_00100001". `sound/common/sound.sab` holds 810 tracks,
+    the list shows six at a time, and a track's in-game name was only in the
+    facts of the one selected, so finding a name meant clicking through
+    them. It was track 326.
+    """
+    names = track_users_readable(users)
+    if not names:
+        return ""
+    return names[0] if len(names) == 1 else f"{names[0]} and {len(names) - 1} more"
+
+
+#: How many of a track's effects its row names (the find looks in them all).
+TRACK_EFFECTS_NAMED = 2
+#: A recording an effect's sound plays: its name's resource (`effect_sound.VFX_NAME`).
+VFX_NAME = re.compile(r"FID_SOUND_VFX_([0-9A-F]{4})[0-9A-F]{4}_WAV")
+
+
+def effects_by_resource(game_dir) -> dict:
+    """
+    `{resource: [effect number]}`: the effects whose sounds each resource's
+    recordings are (`effect_sound.vfx_resource`), read from the unpacked
+    game's effect files (each one's header and the start of its sound
+    section); `{}` without them.
+    """
+    out = {}
+    if not game_dir:
+        return out
+    try:
+        # Here, not at the top: the engine's sound module needs numpy, and
+        # the window builds without it (`test_qt_map_editor`).
+        from ... import effect_sound as es
+    except ImportError:
+        return out
+    for number in ef.effect_numbers(game_dir):
+        try:
+            with open(ef.effect_path(game_dir, number), "rb") as handle:
+                header = handle.read(40)
+                if len(header) < 40:
+                    continue
+                sound_at = struct.unpack_from("<10I", header, 0)[8]
+                if not sound_at:
+                    continue
+                handle.seek(sound_at)
+                resource = es.vfx_resource(handle.read(0x18))
+        except OSError:
+            continue
+        if resource is not None:
+            out.setdefault(resource, []).append(number)
+    return out
+
+
+def track_effects(users: str, by_resource: dict, names: dict) -> list:
+    """The effects a track's recording is played by (its users' VFX names), as "Fire (effect 16)"."""
+    out = []
+    for user in track_users_readable(users):
+        found = VFX_NAME.fullmatch(user)
+        if not found:
+            continue
+        for number in by_resource.get(int(found.group(1), 16), []):
+            name = str(names.get(number) or "").strip()
+            words = f"{name} (effect {number})" if name else f"Effect {number}"
+            if words not in out:
+                out.append(words)
+    return out
+
+
+def track_count_text(shown: int, total: int) -> str:
+    """How many of an archive's tracks the find leaves: "810 tracks", "1 of 810 tracks"."""
+    noun = "track" if total == 1 else "tracks"
+    return f"{total} {noun}" if shown == total else f"{shown} of {total} {noun}"
 
 
 def describe_track_users(users: str) -> str:
@@ -357,6 +461,27 @@ class SoundsPage(QWidget):
         self.detail = StatusLine()
         header.addWidget(self.detail)
         right.addLayout(header)
+
+        # An archive of many tracks (`sound/common/sound.sab` holds 810) has
+        # a find row over its list: the track's number, its file's name or
+        # its in-game name, the list keeping what has it (`find_tracks`).
+        self.track_find_row = QWidget()
+        find_row = QHBoxLayout(self.track_find_row)
+        find_row.setContentsMargins(0, 0, 0, 0)
+        find_row.setSpacing(10)
+        self.track_find = QLineEdit()
+        self.track_find.setPlaceholderText(FIND_TRACK_HINT)
+        self.track_find.setClearButtonEnabled(True)
+        self.track_find.textChanged.connect(self.find_tracks)
+        find_row.addWidget(self.track_find, 1)
+        #: How many tracks the find leaves ("1 of 810 tracks"), beside it.
+        self.track_find_count = QLabel("")
+        self.track_find_count.setProperty("role", "muted")
+        self.track_find_count.setMinimumWidth(
+            self.track_find_count.fontMetrics().horizontalAdvance("0000 of 0000 tracks") + 8)
+        find_row.addWidget(self.track_find_count)
+        self.track_find_row.setVisible(False)
+        right.addWidget(self.track_find_row)
 
         # No "Open this archive's tracks" button - selecting an archive
         # opens it. It existed because only the first selection opened
@@ -683,9 +808,13 @@ class SoundsPage(QWidget):
         if self.current_node is None or not self.current_node.is_file:
             return
         # Cleared first, so a failure shows an empty list rather than the
-        # previous archive's tracks under a new name.
+        # previous archive's tracks under a new name. The find too: it was
+        # for the archive before.
         self.tracks = []
         self.current_track = None
+        blocked = self.track_find.blockSignals(True)
+        self.track_find.clear()
+        self.track_find.blockSignals(blocked)
         self._show_track_info(None)
         self._show_list_message("Opening the archive...")
         self._load_waveform()
@@ -709,6 +838,8 @@ class SoundsPage(QWidget):
         item.setToolTip(text)
         self.track_list.addItem(item)
         self._fit_track_list(1)
+        # Nothing to find in a message.
+        self.track_find_row.setVisible(False)
 
     def _fit_track_list(self, rows: int) -> None:
         """As tall as `rows` rows, up to six."""
@@ -754,6 +885,20 @@ class SoundsPage(QWidget):
                 return False
         self.tree.setCurrentIndex(mapped)
         self.tree.scrollTo(mapped)
+        return True
+
+    def show_tracks(self, relative_path, words: str) -> bool:
+        """
+        Selects an archive and finds `words` in its tracks (`find_tracks`),
+        the first found chosen: what the Abilities page's Open in Sounds
+        arrives with, an effect's recordings by the start of their names
+        (Zodi, 20 October: "we should have a button to jump to the abilities
+        sound track"). An archive still being opened keeps the words for its
+        tracks (`set_tracks`). False when the archive isn't there.
+        """
+        if not self.select_record(relative_path):
+            return False
+        self.track_find.setText(words)
         return True
 
     def _on_selection(self, current, _previous) -> None:
@@ -1154,6 +1299,7 @@ class SoundsPage(QWidget):
             self.detail.clear()
             self.track_list_message = ""
             self.track_list.setVisible(False)
+            self.track_find_row.setVisible(False)
             self._show_track_info(None)
             self.actions_box.setVisible(False)
             self.loop_box.setVisible(False)
@@ -1280,11 +1426,80 @@ class SoundsPage(QWidget):
             self.track_list.blockSignals(blocked)
         self.track_list_message = ""
         self.track_list.setVisible(True)
+        self.track_find_row.setVisible(len(self.tracks) >= TRACK_FIND_FROM)
         # As tall as its rows, up to six. Most archives hold one track, and
         # a 160px box for one line was height the waveform needed.
         self._fit_track_list(len(self.tracks))
         self.current_track = None
-        self.track_list.setCurrentRow(0)
+        # What the find leaves, the first of it chosen. The find keeps its
+        # words when the list is rebuilt to relabel a track
+        # (`_after_track_change`); a new archive clears it.
+        self._hide_unfound()
+        first = self._first_found()
+        if first is not None:
+            self.track_list.setCurrentRow(first)
+
+    def _find_text(self, track) -> str:
+        """What the find looks in for `track`: its number, its file's name, its in-game names and
+        the effects that play it."""
+        return " ".join([f"{track.index:03d}", str(track.index), track.stem]
+                        + track_users_readable(track.users) + self._track_effects(track)).lower()
+
+    def _track_effects(self, track) -> list:
+        """The effects whose sounds a track of `sound/common/sound.sab` is (`track_effects`)."""
+        node = self.current_node
+        try:
+            from ... import effect_sound as es             # needs numpy: see `effects_by_resource`
+        except ImportError:
+            return []
+        if node is None or str(node.relative_path or "").replace("\\", "/") != es.SOUND_ARCHIVE:
+            return []
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        if not game:
+            return []
+        if getattr(self, "_effects_for", None) != game:
+            self._effects = effects_by_resource(Path(game))
+            self._effects_for = game
+        return track_effects(track.users, self._effects, reference_names.effect_names())
+
+    def _hide_unfound(self) -> None:
+        """Hides the rows without every one of the find's words; says how many are left."""
+        words = self.track_find.text().lower().split()
+        by_index = {track.index: track for track in self.tracks}
+        shown = 0
+        for row in range(self.track_list.count()):
+            item = self.track_list.item(row)
+            track = by_index.get(item.data(Qt.UserRole))
+            found = not words or (track is not None and all(word in self._find_text(track) for word in words))
+            item.setHidden(not found)
+            shown += found
+        self.track_find_count.setText(track_count_text(shown, len(self.tracks)))
+
+    def _first_found(self):
+        """The first row the find leaves, or None."""
+        return next((row for row in range(self.track_list.count())
+                     if not self.track_list.item(row).isHidden()), None)
+
+    def find_tracks(self, _text: str = "") -> None:
+        """
+        The find row's words changed: the list keeps the tracks that have
+        them (`_hide_unfound`). The track chosen stays chosen while it is
+        kept; else the first kept is chosen, or none when nothing is.
+        """
+        if self.track_list_message or not self.tracks:
+            return
+        self._hide_unfound()
+        current = self.track_list.currentItem()
+        if current is not None and not current.isHidden():
+            return
+        first = self._first_found()
+        if first is not None:
+            self.track_list.setCurrentRow(first)
+            return
+        self.track_list.setCurrentRow(-1)
+        self.current_track = None
+        self._stop_playback()
+        self._refresh_track_detail()
 
     def _archive_opened(self, tracks) -> None:
         self.set_tracks(tracks)
@@ -1756,7 +1971,15 @@ class SoundsPage(QWidget):
             marker = "  (replaced)"
         else:
             marker = ""
-        return f"{track.index:03d} - {track.stem}{marker}"
+        # With its in-game name, so a track can be found by it in the list
+        # (`track_users_short`).
+        use = track_users_short(track.users)
+        effects = self._track_effects(track)
+        if effects:
+            more = len(effects) - TRACK_EFFECTS_NAMED
+            use += ", " + ", ".join(effects[:TRACK_EFFECTS_NAMED]) + (
+                f" and {more} more effect{'s' if more != 1 else ''}" if more > 0 else "")
+        return f"{track.index:03d}  {track.stem}" + (f"   used by {use}" if use else "") + marker
 
     def _on_waveform_loop(self, start, end) -> None:
         self._set_loop(start, end)

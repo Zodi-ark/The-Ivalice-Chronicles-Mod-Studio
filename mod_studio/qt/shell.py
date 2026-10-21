@@ -93,6 +93,9 @@ EDIT_TABS = [
     # page that draws the game's own files, and whose pictures are textures
     # the Textures page replaces.
     "Map Editor",
+    # After the Map Editor, where the mock-up Zodi approved put it (13 and
+    # 19 October): the events played on the maps it draws.
+    "Event Editor",
     "Sounds",
 
     # Last, and one entry rather than 550. The tables above have hand-built

@@ -12,10 +12,14 @@ timing, camera, and sound as well as everything else that is possible".
 Agreed from a mock-up the same day.
 
 - **The loop**: the unit charging (when the ability has a charge time),
-  its animation for the ability, the effect, a short pause; then again.
-  The chips under the map say which part is playing.
-- **Who**: the unit stands on tile 2, 5 facing east, and is whoever "Shown
-  by" picks: every job and monster whose commands hold the ability
+  its animation for the ability up to where it waits, the effect while it
+  holds there (the arms up, for a spell), the rest of its animation and a
+  short pause; then again. The chips under the map say which part is
+  playing.
+- **Who**: the unit stands on tile 2, 5 facing east, seen from the front
+  at first (Zodi, 18 October: "we can see the front of the sprite doing
+  the ability instead of their back"), and is whoever "Shown by" picks:
+  every job and monster whose commands hold the ability
   (`ability_preview.ability_users`), Previous and Next stepping through
   them. An ability nobody has is used by a stand-in.
 - **Where**: its range in blue, its effect area in gold, aimed as far as it
@@ -23,13 +27,36 @@ Agreed from a mock-up the same day.
   the tiles it hits, which flinch (or raise their hands, for a heal) when
   the effect says it hits them.
 - **The effect** (`effect_player`, `effect_drawing`): its particles, the
-  backdrop's colours, the map's, the user's and the targets' colours, its
-  camera ("Effect camera") and its sounds ("Sound", `effect_sound`).
+  backdrop's colours, the map's, the user's and the targets' colours, and
+  its camera ("Effect camera", starting where the map's is at first,
+  remembered between sessions).
+- **The sound** ("Sound", off at first and remembered): the game's own
+  recordings, `sound/common/sound.sab`'s `FID_SOUND_VFX_` ones, each when
+  the effect's timeline starts its sound (`ability_sounds`; the names are
+  the effect's sound section's resource and the sound less one,
+  `effect_sound.vfx_name`: Fire's is track 668, Zodi, 20 October: "Yes,
+  that's Fire"). From 19 October's third look until then it had none (Zodi:
+  "the sounds for the abilities should not be using the PSX instruments"):
+  it played the PlayStation's own sequence on its samples, which
+  `effect_sound` still can. "Open in Sounds" beside it opens the archive on
+  the Sounds page at the effect's recordings (Zodi, 20 October: "we should
+  have a button to jump to the abilities sound track").
+- **In time** (Zodi, 20 October: "the sound track for the ability should
+  potentially load before the animations play that way there is no lag
+  while they are doing their animations ... All I want on my end if for it
+  to load fast smooth with no desync"): the loop waits at its top until
+  what it plays is ready (`readying`: the unit's pictures, the effect and,
+  with Sound, its recordings mixed), so nothing is read or mixed while it
+  plays. With Sound, each round's sound starts with the round, silent
+  through the charge and the cast (`round_sound`), so the sound device is
+  open and playing before the effect begins; and the loop keeps to what the
+  device says it has played (`_follow_sound`). Before, the sound began as
+  the effect did, on a device opened there and then, so it was heard a
+  little after what it went with, hit after hit.
 
 The page supplies what the ability is (`AbilityShow`), its pending edits
 included. Everything else is read from the unpacked game: map 116 and the
-unit sprites with the Textures unpack, the effects from `fftpack/effect`,
-the sounds from `system/ffto/fftpack.en.bin`.
+unit sprites with the Textures unpack, and the effects from `fftpack/effect`.
 """
 from __future__ import annotations
 
@@ -40,7 +67,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF, QVector3D,
 )
@@ -55,6 +82,7 @@ from ... import effect_player as ep
 from ... import entd
 from ... import map_classic as mc
 from ... import map_enhanced as me
+from ... import ui_settings
 from ... import unit_sprites as us
 from .. import effect_drawing as ed
 from .. import map_scene as ms
@@ -64,6 +92,7 @@ from ..widgets import map_view as mv
 from ..widgets.flow_layout import FlowLayout
 from ..widgets.map_view import MapView
 from ..workers import Worker, run_in_thread
+from . import ability_sounds as asnd
 from . import map_editor as me_page
 from .encounter_map import (
     FLY_BOB, FLY_HEIGHT, FLY_SECONDS, RING_H, RING_W, TEAM_COLOURS, WORLD_PER_HD_PIXEL,
@@ -72,6 +101,13 @@ from .encounter_map import (
 #: The map abilities are played out on, where the unit stands and which way it faces.
 MAP_NUMBER = 116
 CASTER_TILE, CASTER_FACING = (2, 5), 3
+#: The corner the map is seen from at first: the one a unit facing east
+#: shows its front to (the view's yaw; 225 is the south-west corner).
+FRONT_YAW = 315.0
+#: Where the effect's camera starts: the game's usual pose, turned to that
+#: corner (pitch, yaw, roll; 4096 a turn), so the effect moves the camera
+#: from the map's own view as the game's moves it from the battle's.
+EFFECT_ANGLES = (ep.DEFAULT_ANGLES[0], (FRONT_YAW + 90.0) % 360.0 * 4096.0 / 360.0, 0.0)
 #: Who stands in: for an ability nobody has, and on the tiles it hits.
 STAND_IN_CASTER = (96, 0)
 STAND_IN_TARGET = (96, 3)
@@ -85,11 +121,33 @@ LEAST_CAST_SECONDS = 0.4
 #: The parts of the loop.
 CHARGING, CASTING, EFFECT, PAUSE = "Charging", "Casting", "Effect", "Pause"
 STAGES = (CHARGING, CASTING, EFFECT, PAUSE)
+#: The parts of the unit's animation for the ability (`_parts`): up to where
+#: it holds, what it holds while the effect plays, and the rest after.
+LEAD, HOLD, REST = 0, 1, 2
 #: How often the loop moves on, in milliseconds.
 TICK = 33
-#: The least the map and the Shown by box take, so the page fits the window
-#: at its narrowest (`shell.MIN_WIDTH`) beside the list and the fields.
-MAP_LEAST, SHOWN_BY_LEAST = 140, 130
+#: With Sound, the loop is moved to what the sound device has played when it
+#: is further from it than half an effect frame (`_follow_sound`), by no more
+#: than `MOST_FOLLOWED` seconds a round: a device that stops counting is let be.
+SYNC_SLACK = 0.5 / ep.FPS
+MOST_FOLLOWED = 1.0
+#: What the loop waits for at its top (`readying`).
+READY_PICTURES, READY_EFFECT, READY_SOUNDS = "pictures", "effect", "sounds"
+#: "Open in Sounds": the effect's recordings on the Sounds page.
+OPEN_IN_SOUNDS = "Open in Sounds"
+OPEN_SOUNDS_TIP = ("Open the effect's recordings on the Sounds page, to listen to them or replace them "
+                   "(sound/common/sound.sab, the tracks named {})")
+NO_SOUNDS_TIP = "This ability's effect plays no sounds."
+NOT_READ_TIP = "The effect's sounds can be found once the effect is read."
+NO_EFFECT_TIP = "This ability has no effect, so no sounds."
+NO_ARCHIVE_TIP = "The game's sounds aren't in your unpacked game (sound/common/sound.sab)."
+#: Said, after the Sounds page's opening words, while the loop waits for them.
+WAITS_FOR_SOUNDS = "The loop starts once they are ready, so they play in time with it."
+#: The least the map and the Shown by box take: the row over the map, at
+#: its least, is the least the map's column can be, and the page has to fit
+#: the window at its narrowest (`shell.MIN_WIDTH`) with the list and the
+#: fields beside it.
+MAP_LEAST, SHOWN_BY_LEAST = 140, 100
 #: The PlayStation camera at the usual zoom (4096) shows this many world
 #: units above and below the middle of the screen.
 PSX_HALF_HEIGHT = 176.4
@@ -115,9 +173,9 @@ NO_NUMPY = ("Effects are drawn with numpy, which isn't installed ({}), so only t
             "animation plays.")
 CALLBACKS = ("Effect {:03d} also draws shapes the game makes in code (rings, beams and the like), "
              "which aren't drawn here.")
-SOUND_GAPS = ("Some of its sounds play on {} instrument{} The Ivalice Chronicles' copy of the "
-              "PlayStation sounds has no sample for, so they are quieter or silent here.")
-NO_SOUND = "Its sounds can't be played: {}"
+NO_SOUND = "Its sounds can't be played: {}."
+SILENT = ("The game's sounds have no recording named for effect {:03d}'s ({}), so it is silent here, "
+          "as it is in the game.")
 NO_SPRITES = "Units are drawn as rings: their sprites need the Textures unpack ({})."
 NO_CAST = "The unit's sprite has no animation {} ({}), so it stands still for it."
 NO_TILE = "Map 116 has no tile 2, 5 for the unit to stand on, so the ability can't be played out on it."
@@ -165,13 +223,14 @@ def classic_lights(game_dir, number: int) -> Optional[mc.Lights]:
         return None
 
 
-def psx_camera(renderer, angles, position, zoom: float, width: int, height: int) -> Camera:
+def psx_camera(renderer, angles, position, zoom: float, width: int, height: int,
+               half: Optional[float] = None) -> Camera:
     """
     The map view's camera for the PlayStation's: `angles` (pitch, yaw, roll;
     4096 a turn), looking at `position` (PlayStation units, y down) at
     `zoom` (4096 usual). The game's yaw 3584 is the view's 225, its usual
-    south-west corner; its zoom 4096 shows `PSX_HALF_HEIGHT` world units
-    above and below the middle.
+    south-west corner; its zoom 4096 shows `half` world units above and
+    below the middle (`PSX_HALF_HEIGHT` when not given).
     """
     # A turn and a bit (effect 242 reaches 4398), or below the ground (452,
     # 453): wrapped into a half turn either way, then kept where the view goes.
@@ -180,7 +239,7 @@ def psx_camera(renderer, angles, position, zoom: float, width: int, height: int)
     yaw = (angles[1] * 360.0 / 4096.0 - 90.0) % 360.0
     camera = Camera(yaw, pitch, 1.0, (0.0, 0.0))
     fit = renderer.half_height(camera, width / max(1, height))
-    wanted = PSX_HALF_HEIGHT * ep.DEFAULT_ZOOM / max(1.0, float(zoom))
+    wanted = (PSX_HALF_HEIGHT if half is None else half) * ep.DEFAULT_ZOOM / max(1.0, float(zoom))
     camera.zoom = min(mv.ZOOM_MAX, max(mv.ZOOM_MIN, fit / wanted))
     _proj, view = renderer.matrices(camera, width, height)
     seen = view.map(QVector3D(-position[0], -position[1], position[2]))
@@ -227,46 +286,22 @@ class SpritesJob(Worker):
         return made, self.sprites.problem
 
 
-class SoundBank:
-    """The PlayStation sample bank of one unpacked game, read when first asked for."""
-
-    def __init__(self, game_dir):
-        self.game_dir = game_dir
-        self._instruments = None
-
-    def instruments(self) -> list:
-        if self._instruments is None:
-            from ... import effect_sound as es
-            self._instruments = es.read_waveset(es.waveset_bytes(self.game_dir))
-        return self._instruments
-
-
 class EffectJob(Worker):
-    """Plays an effect for the targets, and mixes its sounds:
-    `(token, effect or None, Playback, EffectSounds or None, what went wrong)`."""
+    """Plays an effect for the targets: `(token, effect or None, Playback, what went wrong)`."""
 
-    def __init__(self, token, game_dir, number, targets, caster_place, map_size, bank):
+    def __init__(self, token, game_dir, number, targets, caster_place, map_size):
         super().__init__()
         self.token, self.game_dir, self.number = token, game_dir, number
         self.targets, self.caster_place, self.map_size = targets, caster_place, map_size
-        self.bank = bank
 
     def run(self):
         try:
             effect = ef.load_effect(self.game_dir, self.number)
         except (OSError, ef.EffectError) as exc:
-            return (self.token, None, None, None, str(exc) or exc.__class__.__name__)
+            return (self.token, None, None, str(exc) or exc.__class__.__name__)
         playback = ep.play(effect, targets=self.targets, seed=1, caster_place=self.caster_place,
-                           map_size=self.map_size)
-        sounds, problem = None, ""
-        if playback.sounds:
-            try:
-                from ... import effect_sound as es
-                sounds = es.render_effect(effect.feds, self.bank.instruments(), playback.sounds,
-                                          [frame.seconds for frame in playback.frames])
-            except Exception as exc:                          # noqa: BLE001
-                problem = str(exc) or exc.__class__.__name__
-        return (self.token, effect, playback, sounds, problem)
+                           map_size=self.map_size, camera_angles=EFFECT_ANGLES)
+        return (self.token, effect, playback, "")
 
 
 # =============================================================================
@@ -284,6 +319,9 @@ class Moment:
 class AbilityMap(QWidget):
     """The map column of the Abilities page (see the module's notes)."""
 
+    #: "Open in Sounds": `(the archive under the game, the words its tracks are found by)`.
+    open_sounds = Signal(str, str)
+
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.state = state
@@ -291,39 +329,40 @@ class AbilityMap(QWidget):
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(6)
 
-        # The controls and the chips wrap (`FlowLayout`) and the map can be
-        # small, so the page fits the window at its narrowest beside the
-        # list and the fields' column: in one row each, the map alone came
-        # to 514 wide at least, and the page to 1,470 (the window's least
-        # is 1,345 with the sidebar).
+        # One row: the ability's name at the left, Shown by and the buttons
+        # at the right, as the mock-up had it. Zodi, 18 October: "The ability
+        # name, shown by box, previous button, next button, and pause button
+        # are not in the correct position". They had been made to wrap (13
+        # October) so the page fit the window at its narrowest, and with the
+        # wrapping's last-pixel fault Pause dropped to a line of its own at
+        # every width. The row never wraps now: the map's column is never
+        # narrower than it (the page's dividers stop there), and Shown by
+        # gives up width first, down to `SHOWN_BY_LEAST`.
         head = QHBoxLayout()
         head.setSpacing(8)
         self.title = QLabel("")
         self.title.setStyleSheet("font-weight: 600; font-size: 12pt;")
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         head.addWidget(self.title, 1)
-        controls = QWidget()
-        flow = FlowLayout(controls, spacing=8)
         self.shown_by_label = QLabel("Shown by")
-        flow.addWidget(self.shown_by_label)
+        head.addWidget(self.shown_by_label)
         self.shown_by = QComboBox()
         self.shown_by.setMinimumWidth(SHOWN_BY_LEAST)
         self.shown_by.setToolTip("Who uses the ability: every job and monster whose commands have it.")
         self.shown_by.activated.connect(self._user_chosen)
-        flow.addWidget(self.shown_by)
+        head.addWidget(self.shown_by)
         self.previous_button = QPushButton("Previous")
         self.previous_button.setToolTip("The one before in Shown by")
         self.previous_button.clicked.connect(lambda: self.step_user(-1))
-        flow.addWidget(self.previous_button)
+        head.addWidget(self.previous_button)
         self.next_button = QPushButton("Next")
         self.next_button.setToolTip("The next one in Shown by")
         self.next_button.clicked.connect(lambda: self.step_user(1))
-        flow.addWidget(self.next_button)
+        head.addWidget(self.next_button)
         self.pause_button = QPushButton("Pause")
         self.pause_button.setToolTip("Stop the loop where it is, or play it on")
         self.pause_button.clicked.connect(self.toggle_pause)
-        flow.addWidget(self.pause_button)
-        head.addWidget(controls)
+        head.addWidget(self.pause_button)
         column.addLayout(head)
 
         self.view = MapView()
@@ -332,31 +371,45 @@ class AbilityMap(QWidget):
         self.view.overlay = self.paint_frame
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.view.setMinimumSize(MAP_LEAST, MAP_LEAST)
+        # Seen from the corner the unit faces, so its front shows.
+        self.view.camera = Camera(FRONT_YAW)
         self.view.camera_changed.connect(self._camera_moved)
         column.addWidget(self.view, 1)
 
-        # One wrapping row: the chips, then the two switches. Kept apart
-        # (the switches at the right), the row could be no narrower than a
-        # chip and a switch side by side, and the page then came 32 over.
-        row = QWidget()
-        chips = FlowLayout(row, spacing=6)
+        # The chips at the left and the two switches at the right, as the
+        # mock-up had them: the chips' box takes the row's spare width, its
+        # chips packed to its left. Only the chips wrap, when the column is
+        # too narrow for the row (`FlowLayout`).
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        chip_box = QWidget()
+        chips = FlowLayout(chip_box, spacing=6)
         self.chips = {}
         for number, stage in enumerate(STAGES, 1):
             chip = QLabel(f"{number} {stage}")
             chip.setAlignment(Qt.AlignCenter)
             self.chips[stage] = chip
             chips.addWidget(chip)
+        row.addWidget(chip_box, 1)
+        # Remembered between sessions, as Hide field notes is (Zodi, 18
+        # October), and Sound off until it is turned on.
+        saved = ui_settings.load()
         self.sound_box = QCheckBox("Sound")
-        self.sound_box.setChecked(True)
-        self.sound_box.setToolTip("Play the effect's sounds")
+        self.sound_box.setChecked(bool(saved.get("ability_map_sound", False)))
+        self.sound_box.setToolTip("Play the effect's sounds, as the game's recordings")
         self.sound_box.toggled.connect(self._sound_toggled)
-        chips.addWidget(self.sound_box)
+        row.addWidget(self.sound_box)
+        self.sounds_button = QPushButton(OPEN_IN_SOUNDS)
+        self.sounds_button.setEnabled(False)
+        self.sounds_button.setToolTip(NO_EFFECT_TIP)
+        self.sounds_button.clicked.connect(self.open_in_sounds)
+        row.addWidget(self.sounds_button)
         self.camera_box = QCheckBox("Effect camera")
-        self.camera_box.setChecked(True)
+        self.camera_box.setChecked(bool(saved.get("ability_map_effect_camera", True)))
         self.camera_box.setToolTip("Let the effect move the camera, as it does in the game")
         self.camera_box.toggled.connect(self._camera_toggled)
-        chips.addWidget(self.camera_box)
-        column.addWidget(row)
+        row.addWidget(self.camera_box)
+        column.addLayout(row)
 
         self.legend = QLabel("")
         self.legend.setTextFormat(Qt.RichText)
@@ -389,15 +442,30 @@ class AbilityMap(QWidget):
         self._sprites_key = None
         self._job_sprites = None
         self._job_sprites_key = None
-        self._bank = None
         #: `{(sprite, palette): {"animations": {id: sides}, "flying": bool, "asked": set}}`.
         self._pictures: dict = {}
         self._pending: dict = {}
         self._sprite_job = None
         self.sprite_problem = ""
-        #: The effect: `{"key", "effect", "playback", "sounds", "pictures", "times", "hits",
-        #: "problem"}`, the one asked for, and whether one is being played.
+        #: The effect: `{"key", "effect", "playback", "pictures", "times", "hits", "problem",
+        #: "sounds", "sound_problem"}`, the one asked for, and whether one is being played.
         self.effect = None
+        #: Its sounds: the game's recordings (`ability_sounds`), the mixing asked for, and
+        #: what plays them.
+        self.recordings = asnd.AbilitySounds(state, self)
+        self.recordings.ready.connect(self._want_sounds)
+        self._mix_token = 0
+        self._mix_busy = False
+        self._player = None
+        #: What the player was last given (`round_sound`), and the round of the loop it is for.
+        self._sounding = None
+        self._sound_round: Optional[int] = None
+        #: How far the loop has been moved this round to keep to the sound (`_follow_sound`).
+        self._followed = 0.0
+        #: `(the effect's sounds, frames of silence first, sound_data.Pcm16)`: `round_sound`'s last.
+        self._round_pcm = None
+        #: Why the sound device wouldn't play (in use by something else, none found), or "".
+        self.device_problem = ""
         self._effect_wanted = None
         self._effect_token = 0
         self._effect_busy = False
@@ -421,8 +489,6 @@ class AbilityMap(QWidget):
         #: The person turned or zoomed the map while the effect moved the
         #: camera: theirs until the next effect.
         self._camera_taken = False
-        self._player = None
-        self._sounding = None
         self._refresh_chips()
         self._update_buttons()
 
@@ -451,14 +517,6 @@ class AbilityMap(QWidget):
             tables = entd.EntdTables.from_folder(game) if game is not None else None
             self._job_sprites, self._job_sprites_key = ap.entd_job_sprites(tables, jobs), key
         return self._job_sprites or {}
-
-    def bank(self) -> Optional[SoundBank]:
-        game = self.game_dir()
-        if game is None:
-            return None
-        if self._bank is None or self._bank.game_dir != game:
-            self._bank = SoundBank(game)
-        return self._bank
 
     # -- who uses it ------------------------------------------------------------------
 
@@ -637,7 +695,6 @@ class AbilityMap(QWidget):
         self.places = None
         self.view.set_scene(None)
         self.view.set_message(message)
-        self._stop_sound()
         self._update_ticker()
         self._update_legend()
         self._say_note()
@@ -789,31 +846,31 @@ class AbilityMap(QWidget):
         missing = ed.numpy_missing()
         if missing:
             # The window builds without numpy; the effect can't be drawn.
-            self.effect = {"key": key, "effect": None, "playback": None, "sounds": None,
+            self.effect = {"key": key, "effect": None, "playback": None,
                            "problem": NO_NUMPY.format(missing)}
             return
         if self._effect_busy:
             return
         game = self.game_dir()
         if not ef.effect_path(game, key[1]).is_file():
-            self.effect = {"key": key, "effect": None, "playback": None, "sounds": None,
+            self.effect = {"key": key, "effect": None, "playback": None,
                            "problem": MISSING_EFFECT.format(key[1])}
             return
         self._effect_busy = True
         self._effect_token += 1
         self._effect_asked = key
-        job = EffectJob(self._effect_token, game, key[1], list(key[2]), key[3], key[4], self.bank())
+        job = EffectJob(self._effect_token, game, key[1], list(key[2]), key[3], key[4])
         run_in_thread(job, on_finished=self._effect_ready, on_failed=self._effect_failed)
 
     def _effect_ready(self, result) -> None:
         self._effect_busy = False
-        token, effect, playback, sounds, problem = result
+        token, effect, playback, problem = result
         key = self._effect_asked
         if key != self._effect_wanted:
             self._want_effect()
             return
         if effect is None:
-            self.effect = {"key": key, "effect": None, "playback": None, "sounds": None,
+            self.effect = {"key": key, "effect": None, "playback": None,
                            "problem": BAD_EFFECT.format(key[1], problem)}
         else:
             times = [0.0]
@@ -827,10 +884,11 @@ class AbilityMap(QWidget):
             if not hits and playback.length:
                 hits = {i: [times[min(playback.after_start, playback.length - 1)]]
                         for i in range(len(key[2]))}
-            self.effect = {"key": key, "effect": effect, "playback": playback, "sounds": sounds,
+            self.effect = {"key": key, "effect": effect, "playback": playback,
                            "pictures": ed.EffectPictures(effect), "times": times, "hits": hits,
-                           "problem": "", "sound_problem": problem}
-        self._stop_sound()
+                           "problem": "", "sounds": None, "sound_problem": ""}
+            self._stop_sound()
+            self._want_sounds()
         self._say_note()
         self._update_legend()
         self.view.update()
@@ -841,7 +899,7 @@ class AbilityMap(QWidget):
         if key != self._effect_wanted:
             self._want_effect()
             return
-        self.effect = {"key": key, "effect": None, "playback": None, "sounds": None,
+        self.effect = {"key": key, "effect": None, "playback": None,
                        "problem": BAD_EFFECT.format(key[1], message)}
         self._say_note()
 
@@ -851,17 +909,19 @@ class AbilityMap(QWidget):
     # -- the loop ---------------------------------------------------------------------
 
     def durations(self) -> dict:
-        """How long each part of the loop lasts, in seconds."""
+        """How long each part of the loop lasts, in seconds: the cast up to where
+        the unit holds, and the pause after the rest of its animation."""
         show = self.show_data
         charge = CHARGE_SECONDS if show is not None and show.charge_time > 0 else 0.0
-        cast = NO_ANIMATION_SECONDS
+        cast, rest = NO_ANIMATION_SECONDS, 0.0
         if show is not None:
             frames = self.frames_of(self.caster_sprite(), self.cast_id())
             if frames and frames.get("front"):
-                cast = max(LEAST_CAST_SECONDS, _seconds(frames))
+                cast = max(LEAST_CAST_SECONDS, _seconds(frames, LEAD))
+                rest = _seconds(frames, REST)
         playback = self.playback()
         effect = playback.seconds if playback is not None else 0.0
-        return {CHARGING: charge, CASTING: cast, EFFECT: effect, PAUSE: PAUSE_SECONDS}
+        return {CHARGING: charge, CASTING: cast, EFFECT: effect, PAUSE: rest + PAUSE_SECONDS}
 
     def loop_seconds(self) -> float:
         now = self._paused_at if self._paused_at is not None else self.clock()
@@ -885,11 +945,14 @@ class AbilityMap(QWidget):
 
     def restart(self) -> None:
         """The loop from its top."""
+        self._to_top()
+        self._stop_sound()
+        self._give_camera_back()
+
+    def _to_top(self) -> None:
         self._loop_started = self.clock()
         if self._paused_at is not None:
             self._paused_at = self._loop_started
-        self._stop_sound()
-        self._give_camera_back()
 
     def toggle_pause(self) -> None:
         if self._paused_at is None:
@@ -898,8 +961,7 @@ class AbilityMap(QWidget):
         else:
             self._loop_started += self.clock() - self._paused_at
             self._paused_at = None
-            if self.moment.stage == EFFECT:
-                self._play_sound(self.moment.seconds)
+            self._follow_sound()                 # from where the loop is
         self._update_buttons()
         self._update_ticker()
 
@@ -907,23 +969,49 @@ class AbilityMap(QWidget):
     def paused(self) -> bool:
         return self._paused_at is not None
 
+    def readying(self) -> str:
+        """
+        What the loop waits for at its top before it plays, or "" for
+        nothing: the unit's pictures, the effect and, with Sound, its
+        recordings mixed (each a moment; the game's sounds, the first time,
+        AudioMog's opening of them). So nothing is read or mixed while it
+        plays, and the round's sound is there from the round's top (Zodi, 20
+        October: "the sound track for the ability should potentially load
+        before the animations play that way there is no lag while they are
+        doing their animations").
+        """
+        if self.show_data is None or self.places is None:
+            return ""
+        if self._sprite_job is not None or self._pending:
+            return READY_PICTURES
+        key, effect = self._effect_key(), self.effect
+        if key is not None and (effect is None or effect.get("key") != key):
+            return READY_EFFECT
+        if (self.sound_box.isChecked() and effect is not None and effect.get("playback") is not None
+                and effect.get("sounds") is None and not effect.get("sound_problem")):
+            return READY_SOUNDS
+        return ""
+
     def tick(self) -> None:
         """Moves the loop on: its part, the effect's camera and sound, and a new picture."""
         window = self.window()
         if not self.isVisible() or (window is not None and window.isMinimized()):
             return
         before = self.moment
+        if self.readying():
+            # Held at the top until what it plays is ready.
+            self._to_top()
+            if self._sounding is not None:
+                self._stop_sound()
+        else:
+            self._follow_sound()
         self.moment = self.moment_at(self.loop_seconds())
         if self.moment.stage != before.stage:
             self._refresh_chips()
             if self.moment.stage == EFFECT:
                 self._camera_taken = False
-                if not self.paused:
-                    self._play_sound(self.moment.seconds)
             if before.stage == EFFECT:
                 self._give_camera_back()
-        if before.stage == EFFECT and self.moment.stage == EFFECT and self.moment.seconds < before.seconds:
-            self._play_sound(self.moment.seconds)        # the loop came round in one tick
         if self._follow_camera():
             return                                         # drawn with the camera moved
         self.view.update()
@@ -939,6 +1027,11 @@ class AbilityMap(QWidget):
     def showEvent(self, event):                                   # noqa: N802
         super().showEvent(event)
         self._update_ticker()
+        # Back from another page: a recording replaced on the Sounds page is
+        # heard, the effect's sounds mixed again (a moment, on a worker).
+        if self.effect is not None and self.effect.get("playback") is not None and not self._mix_busy:
+            self.effect["sounds"], self.effect["sound_problem"] = None, ""
+            self._want_sounds()
 
     def hideEvent(self, event):                                   # noqa: N802
         super().hideEvent(event)
@@ -1012,40 +1105,10 @@ class AbilityMap(QWidget):
                 self._camera_taken = True
 
     def _camera_toggled(self, on: bool) -> None:
+        ui_settings.save(ability_map_effect_camera=on)
         if not on:
             self._give_camera_back()
             self.view.update()
-
-    # -- sound ----------------------------------------------------------------------------
-
-    def sounds(self):
-        return self.effect.get("sounds") if self.effect else None
-
-    def _play_sound(self, seconds: float) -> None:
-        sounds = self.sounds()
-        if not self.sound_box.isChecked() or sounds is None or not sounds.frames:
-            return
-        from ... import effect_sound as es
-        from ...sound_data import Pcm16
-        start = int(seconds * es.RATE)
-        if start >= sounds.frames:
-            return
-        if self._player is None:
-            from ..audio_output import LoopPlayer
-            self._player = LoopPlayer(self)
-        self._player.play(Pcm16(es.RATE, 2, sounds.pcm), start)
-        self._sounding = sounds
-
-    def _stop_sound(self) -> None:
-        if self._player is not None:
-            self._player.stop()
-        self._sounding = None
-
-    def _sound_toggled(self, on: bool) -> None:
-        if not on:
-            self._stop_sound()
-        elif self.moment.stage == EFFECT and not self.paused:
-            self._play_sound(self.moment.seconds)
 
     # -- what is said under the map ---------------------------------------------------------
 
@@ -1083,6 +1146,161 @@ class AbilityMap(QWidget):
         self.legend.setVisible(True)
         self._refresh_chips()
 
+    # -- sound ----------------------------------------------------------------------------
+
+    def sounds(self):
+        return self.effect.get("sounds") if self.effect else None
+
+    def _want_sounds(self) -> None:
+        """
+        With Sound ticked, the effect's recordings mixed (`ability_sounds.MixJob`),
+        once the game's sounds are unpacked; played when the loop is in the
+        effect.
+        """
+        effect = self.effect
+        if not self.sound_box.isChecked() or effect is None or effect.get("playback") is None:
+            return
+        if effect.get("sounds") is not None or effect.get("sound_problem") or self._mix_busy:
+            return
+        playback = effect["playback"]
+        # The engine's sound module needs numpy, as the effect played does:
+        # imported here, so the window builds without it.
+        from ... import effect_sound as es_
+        resource = es_.vfx_resource(effect["effect"].feds) if effect.get("effect") is not None else None
+        names = es_.names_played(resource, playback.sounds)
+        effect["sound_names"] = names
+        if not names:
+            effect["sounds"] = es_.EffectSounds(b"", 0, [])
+            return
+        files = self.recordings.paths_for(names)
+        if files is None:
+            self._say_note()                    # opening the game's sounds
+            return
+        if not files and self.recordings.problem:
+            effect["sound_problem"] = self.recordings.problem
+            self._say_note()
+            return
+        self._mix_busy = True
+        self._mix_token += 1
+        self._mix_for = effect["key"]
+        job = asnd.MixJob(self._mix_token, playback.sounds, [frame.seconds for frame in playback.frames],
+                          resource, files)
+        run_in_thread(job, on_finished=self._sounds_ready, on_failed=self._sounds_failed)
+
+    def _sounds_ready(self, result) -> None:
+        self._mix_busy = False
+        _token, mixed, problem = result
+        effect = self.effect
+        if effect is None or effect.get("key") != self._mix_for:
+            self._want_sounds()
+            return
+        effect["sounds"], effect["sound_problem"] = mixed, problem
+        self._stop_sound()                  # the next tick plays them, from where the loop is
+        self._say_note()
+
+    def _sounds_failed(self, message: str) -> None:
+        self._mix_busy = False
+        if self.effect is not None and self.effect.get("key") == self._mix_for:
+            self.effect["sound_problem"] = message
+            self._say_note()
+        else:
+            self._want_sounds()
+
+    def round_sound(self):
+        """
+        The sound of a round of the loop (a `sound_data.Pcm16`, or None
+        without any): silence through the charge and the cast, then the
+        effect's sounds, so a round's sound starts with the round and the
+        device is playing before the effect begins.
+        """
+        sounds = self.sounds()
+        if sounds is None or not sounds.frames:
+            return None
+        durations = self.durations()
+        lead = int(round((durations[CHARGING] + durations[CASTING]) * sounds.rate))
+        made = self._round_pcm
+        if made is not None and made[0] is sounds and made[1] == lead:
+            return made[2]
+        from ...sound_data import Pcm16
+        pcm = Pcm16(sounds.rate, 2, bytes(lead * 4) + sounds.pcm)
+        self._round_pcm = (sounds, lead, pcm)
+        return pcm
+
+    def _follow_sound(self) -> None:
+        """
+        With Sound ticked: each round's sound played (`round_sound`), from
+        where the loop is in the round; and the loop kept where the sound is,
+        by what the device says it has played (`LoopPlayer.current_frame`):
+        moved to it whenever it is further from it than half an effect frame
+        (a device that started late, a window that was held up), until the
+        effect ends, by no more than `MOST_FOLLOWED` a round. Zodi, 20
+        October: "All I want on my end if for it to load fast smooth with no
+        desync".
+        """
+        if not self.sound_box.isChecked() or self.paused:
+            return
+        pcm = self.round_sound()
+        if pcm is None:
+            return
+        durations = self.durations()
+        total = sum(durations.values())
+        if total <= 0:
+            return
+        loop_round, into = divmod(self.loop_seconds(), total)
+        loop_round = int(loop_round)
+        if self._sound_round != loop_round:
+            self._sound_round, self._followed = loop_round, 0.0
+            start = int(into * pcm.sample_rate)
+            if start < pcm.frames:
+                if self._player is None:
+                    from ..audio_output import LoopPlayer
+                    self._player = LoopPlayer(self)
+                try:
+                    self._player.play(pcm, start)
+                except OSError as exc:
+                    # The device in use by something else, or none: said, and tried
+                    # again next round; the loop plays on without it.
+                    self._said_device(str(exc).rstrip(".") or exc.__class__.__name__)
+                    return
+                self._sounding = pcm
+                if self.device_problem:
+                    self._said_device("")
+            return
+        player = self._player
+        if player is None or self._sounding is not pcm or not player.playing:
+            return
+        try:
+            heard = player.current_frame()
+        except OSError:
+            return                                  # no count from the device: the clock goes on
+        if heard is None:
+            return
+        heard_at = heard / pcm.sample_rate
+        if heard_at >= durations[CHARGING] + durations[CASTING] + durations[EFFECT]:
+            return                                  # the effect is over: its sounds' ends play on
+        ahead = into - heard_at
+        if abs(ahead) > SYNC_SLACK and abs(self._followed + ahead) <= MOST_FOLLOWED:
+            self._loop_started += ahead
+            self._followed += ahead
+
+    def _said_device(self, problem: str) -> None:
+        self.device_problem = problem
+        self._say_note()
+
+    def _stop_sound(self) -> None:
+        if self._player is not None:
+            self._player.stop()
+        self._sounding = None
+        self._sound_round = None
+
+    def _sound_toggled(self, on: bool) -> None:
+        ui_settings.save(ability_map_sound=on)
+        self._stop_sound()
+        if on:
+            self._want_sounds()
+            self._follow_sound()                 # from where the loop is, when they are ready
+        self._say_note()
+
     def notes(self) -> list:
         show = self.show_data
         if show is None or self.view.scene is None:
@@ -1098,12 +1316,17 @@ class AbilityMap(QWidget):
             playback = self.effect.get("playback")
             if playback is not None and playback.callbacks:
                 notes.append(CALLBACKS.format(show.effect))
-            sounds = self.effect.get("sounds")
-            if self.effect.get("sound_problem"):
-                notes.append(NO_SOUND.format(self.effect["sound_problem"]))
-            elif sounds is not None and sounds.missing:
-                count = len(sounds.missing)
-                notes.append(SOUND_GAPS.format(count, "" if count == 1 else "s"))
+            if self.sound_box.isChecked():
+                sounds = self.effect.get("sounds")
+                if self.effect.get("sound_problem"):
+                    notes.append(NO_SOUND.format(self.effect["sound_problem"]))
+                elif self.device_problem:
+                    notes.append(NO_SOUND.format(self.device_problem))
+                elif sounds is not None and self.effect.get("sound_names") and \
+                        set(self.effect["sound_names"]) <= set(sounds.missing):
+                    notes.append(SILENT.format(show.effect, ", ".join(self.effect["sound_names"])))
+                elif self.recordings.opening:
+                    notes.append(asnd.OPENING + " " + WAITS_FOR_SOUNDS)
         entry = self._pictures.get(self.caster_sprite())
         cast = self.cast_id()
         if entry is not None and cast in entry["asked"] and \
@@ -1117,6 +1340,48 @@ class AbilityMap(QWidget):
         notes = self.notes()
         self.note.setText(" ".join(notes))
         self.note.setVisible(bool(notes))
+        self._update_sounds_button()
+
+    # -- Open in Sounds -------------------------------------------------------------------
+
+    def sound_words(self) -> str:
+        """
+        What the effect's recordings are found by on the Sounds page: the
+        start of their names, `FID_SOUND_VFX_` and the effect's sound
+        resource (`effect_sound.vfx_name`: Fire's `FID_SOUND_VFX_001A`, track
+        668); "" when the effect isn't read or has no sounds.
+        """
+        effect = self.effect
+        if not effect or effect.get("effect") is None:
+            return ""
+        from ... import effect_sound as es_
+        resource = es_.vfx_resource(effect["effect"].feds)
+        if resource is None:
+            return ""
+        return es_.VFX_NAME[:es_.VFX_NAME.index("{")] + f"{resource & 0xFFFF:04X}"
+
+    def _update_sounds_button(self) -> None:
+        show, effect = self.show_data, self.effect
+        words = self.sound_words()
+        if show is None or show.effect < 0:
+            tip = NO_EFFECT_TIP
+        elif not effect or effect.get("effect") is None:
+            tip = NOT_READ_TIP
+        elif not words:
+            tip = NO_SOUNDS_TIP
+        elif self.recordings.source() is None:
+            tip, words = NO_ARCHIVE_TIP, ""
+        else:
+            tip = OPEN_SOUNDS_TIP.format(words + "...")
+        self.sounds_button.setEnabled(bool(words))
+        self.sounds_button.setToolTip(tip)
+
+    def open_in_sounds(self) -> None:
+        """Opens the game's sounds on the Sounds page at the effect's recordings (`open_sounds`)."""
+        words = self.sound_words()
+        if words:
+            from ... import effect_sound as es_
+            self.open_sounds.emit(es_.SOUND_ARCHIVE, words)
 
     # -- drawing --------------------------------------------------------------------------
 
@@ -1266,7 +1531,9 @@ class AbilityMap(QWidget):
         return out
 
     def _caster_pose(self, moment: Moment) -> tuple:
-        """`(animation id, seconds into it, loops)` the user shows at `moment`."""
+        """`(animation id, seconds into it, loops, part or None for all of it)` the user
+        shows at `moment`: its animation for the ability up to where it holds, held
+        there while the effect plays, then the rest of it and a wait (`_parts`)."""
         show = self.show_data
         key = self.caster_sprite()
         if moment.stage == CHARGING:
@@ -1275,14 +1542,17 @@ class AbilityMap(QWidget):
                 first = self.frames_of(key, ids[0])
                 lasting = _seconds(first)
                 if moment.seconds < lasting:
-                    return (ids[0], moment.seconds, False)
-                return (ids[1], moment.seconds - lasting, True)
-            return (ids[0], moment.seconds, True)
+                    return (ids[0], moment.seconds, False, None)
+                return (ids[1], moment.seconds - lasting, True, None)
+            return (ids[0], moment.seconds, True, None)
         if moment.stage == CASTING:
-            return (self.cast_id(), moment.seconds, False)
+            return (self.cast_id(), moment.seconds, False, LEAD)
         if moment.stage == EFFECT:
-            return (self.cast_id(), 1e9, False)
-        return (ap.WALK, moment.seconds, True)
+            return (self.cast_id(), moment.seconds, True, HOLD)
+        rest = _seconds(self.frames_of(key, self.cast_id()), REST)
+        if moment.seconds < rest:
+            return (self.cast_id(), moment.seconds, False, REST)
+        return (ap.WALK, moment.seconds - rest, True, None)
 
     def _target_pose(self, moment: Moment, index: int) -> tuple:
         show = self.show_data
@@ -1292,8 +1562,8 @@ class AbilityMap(QWidget):
             lasting = _seconds(frames)
             for at in self.effect.get("hits", {}).get(index, []):
                 if at <= moment.seconds < at + max(lasting, 0.3):
-                    return (reaction, moment.seconds - at, False)
-        return (ap.WALK, self.loop_seconds() + 0.37 * index, True)
+                    return (reaction, moment.seconds - at, False, None)
+        return (ap.WALK, self.loop_seconds() + 0.37 * index, True, None)
 
     def _unit_drawer(self, unit: dict, projection: ed.Projection, frame: Optional[int]):
         def draw(canvas: ed.Canvas) -> None:
@@ -1302,12 +1572,16 @@ class AbilityMap(QWidget):
 
     def _paint_unit(self, p: QPainter, unit: dict, projection: ed.Projection,
                     frame: Optional[int]) -> None:
-        animation_id, seconds, loops = unit["pose"]
-        frames = self.frames_of(unit["key"], animation_id) or self.frames_of(unit["key"], ap.WALK)
+        animation_id, seconds, loops, part = unit["pose"]
+        frames = self.frames_of(unit["key"], animation_id)
+        if not frames:
+            frames, part = self.frames_of(unit["key"], ap.WALK), None
         if not frames:
             return
         side, mirrored = self._view_of(unit["facing"], unit["world"], projection)
         pictures = frames.get(side) or frames.get("front") or frames.get("back")
+        if pictures and part is not None:
+            pictures = _parts(pictures)[part]
         if not pictures:
             return
         image, stand_x, stand_y, step = _picture_at(pictures, seconds, loops)
@@ -1346,10 +1620,26 @@ def _same_camera(a: Camera, b: Camera) -> bool:
             and abs(a.pan[0] - b.pan[0]) < 1e-6 and abs(a.pan[1] - b.pan[1]) < 1e-6)
 
 
-def _seconds(frames: Optional[dict]) -> float:
+def _parts(pictures: list) -> tuple:
+    """
+    `(up to the hold, the hold, after it)`: an animation's pictures, split
+    where it holds while the effect plays (`ability_preview.Step.held`, the
+    frames it loops at its last wait). The first part ends with the held
+    frames' first showing. Without a wait: all of it, its last picture held,
+    and nothing after.
+    """
+    held = [n for n, picture in enumerate(pictures) if picture[3].held]
+    if not held:
+        return pictures, pictures[-1:], []
+    return pictures[:held[-1] + 1], pictures[held[0]:held[-1] + 1], pictures[held[-1] + 1:]
+
+
+def _seconds(frames: Optional[dict], part: Optional[int] = None) -> float:
+    """How long an animation (seen from the front) takes, or one of its `_parts`."""
     if not frames or not frames.get("front"):
         return 0.0
-    return sum(step.delay for _i, _x, _y, step in frames["front"]) / 60.0
+    pictures = frames["front"] if part is None else _parts(frames["front"])[part]
+    return sum(step.delay for _i, _x, _y, step in pictures) / 60.0
 
 
 def _picture_at(pictures: list, seconds: float, loops: bool) -> tuple:

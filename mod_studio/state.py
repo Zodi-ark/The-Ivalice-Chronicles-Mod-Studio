@@ -176,6 +176,7 @@ class WizardState:
         self.uib_edits = {}
         self.utexpt_edits = {}
         self.map_edits = {}
+        self.script_edits = {}
         self.sound_file_replacements = {}
         self.other_file_replacements = {}
         self.mod_own_files = {}
@@ -710,6 +711,25 @@ class WizardState:
 
     def has_any_map_edits(self) -> bool:
         return self.edited_map_tile_count() > 0
+
+    # -- Event scripts (see event_scripts.py) -----------------------------------
+    #: Changed event scripts: `{relative path: the whole script's bytes}`,
+    #: keyed by where the script goes under the mod's `FFTIVC/data/<mode>/`,
+    #: e.g. `{"script/enhanced/event538.e": b"..."}` (approved 19 October:
+    #: "a store for changed scripts, forgotten when another mod is opened").
+    #:
+    #: Whole scripts, unlike the stores above, because a script is a stream
+    #: of instructions: adding or taking out a node moves every byte after
+    #: it, so there are no fields to keep apart. The bytes after the
+    #: script's end are kept as the game's file had them. Their words are
+    #: lines of the scene's text, kept in `pzd_edits`.
+    script_edits: dict = field(default_factory=dict)
+
+    def edited_script_count(self) -> int:
+        return sum(1 for data in self.script_edits.values() if data is not None)
+
+    def has_any_script_edits(self) -> bool:
+        return self.edited_script_count() > 0
 
     # -- Sounds (.sab, via AudioMog - see sound_data.py) --------------------
     # Same unpacked_game_dir as Textures above - sound archives are real

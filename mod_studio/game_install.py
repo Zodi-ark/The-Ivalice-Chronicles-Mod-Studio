@@ -369,9 +369,14 @@ CONTENT_GROUPS: tuple[ContentGroup, ...] = (
         # who needs it.
         detail=(
             "Jobs, Job Commands, Abilities, Items, Encounters, Poaching, Treasure Hunter, "
-            "everything that becomes the editable database."
+            "Event Editor, everything that becomes the editable database."
         ),
-        folders=("nxd",),
+        # The game's event scripts come with it, for the Event Editor (Zodi,
+        # 19 October: "Put them in Game data", when the Event Editor's list
+        # was empty because no tick unpacked them). `script/` is 1,075 small
+        # files, about 6 MB, and only the top folder's name holds "script/",
+        # so its filter takes nothing else (his unpacked game's listing).
+        folders=("nxd", "script"),
         default_on=True,
     ),
     ContentGroup(

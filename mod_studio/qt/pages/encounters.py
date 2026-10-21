@@ -79,7 +79,7 @@ from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow)
 from ..widgets.form_scroll import FormScrollArea
 from ..widgets.visible_refresh import RefreshesWhenVisible
-from .encounter_map import EncounterMap, MapUnit
+from .encounter_map import EncounterMap, MapUnit, drawn_palette
 from .poaching import BoolFieldRow, TextFieldRow
 # The list pane's width, from the page Zodi asked this one to match.
 # Imported rather than repeated: two copies of 340 drift, and the reason
@@ -1148,14 +1148,16 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
                 continue
             sprite_set, job = values.get("sprite_set", 0), values.get("main_job", 0)
             graphic, monster_palette = self._monster_look(job)
-            palette = (monster_palette if sprite_set == unit_sprites.GENERIC_MONSTER
-                       else values.get("palette", 0))
+            sprite = unit_sprites.sprite_number(sprite_set, job, graphic)
+            # As the game draws it: a story character in its first palette,
+            # whatever the slot says (`drawn_palette`).
+            palette = drawn_palette(sprite, sprite_set, int(values.get("palette", 0) or 0), monster_palette)
             origin = self._origin_at.get(address)
             units.append(MapUnit(
                 address=tuple(address), editable=origin is not None,
                 x=int(values.get("x", 0)), y=int(values.get("y", 0)),
                 upper=bool(values.get("upper_level")), facing=int(values.get("facing", 0)),
-                sprite=unit_sprites.sprite_number(sprite_set, job, graphic), palette=palette,
+                sprite=sprite, palette=palette,
                 team=int(values.get("team", 0)), randomly_present=bool(values.get("randomly_present")),
                 disabled=bool(values.get("disabled")),
                 label=self.slot_label(address, records.get(origin) if origin else None),

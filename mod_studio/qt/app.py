@@ -42,6 +42,7 @@ from .pages.setup import SetupPage
 from .pages.sounds import SoundsPage
 from . import wheel_guard
 from .pages.map_editor import MapEditorPage
+from .pages.event_editor import EventEditorPage
 from .pages.textures import TexturesPage
 from .pages.ui_layouts import UiLayoutsPage
 from .shell import MainWindow, application_icon
@@ -191,11 +192,12 @@ def load_table_tabs(state: WizardState) -> list:
         if (spec.root_tag, spec.entry_tag) in declared_shapes:
             continue                    # a curated tab already owns it
         if filename in c.XML_HANDLED_ELSEWHERE:
-            # JobData and JobCommandData have curated tabs too, but they go
-            # through `xml_io` rather than `ALL_SPECS`, so the shape check
-            # above does not see them. Without this they would be offered
-            # twice - once with real controls, once as a raw grid - and the
-            # raw one would write a competing diff for the same file.
+            # JobData, JobCommandData and MonsterJobCommandData have curated
+            # tabs too, but they go through `xml_io` rather than
+            # `ALL_SPECS`, so the shape check above does not see them.
+            # Without this they would be offered twice - once with real
+            # controls, once as a raw grid - and the raw one would write a
+            # competing diff for the same file.
             continue
         try:
             records, version = item_xml_io.load_table(data_dir / filename, spec)
@@ -361,6 +363,7 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     pages["Sounds"] = SoundsPage(state)
     pages["UI Layouts"] = UiLayoutsPage(state)
     pages["Map Editor"] = MapEditorPage(state)
+    pages["Event Editor"] = EventEditorPage(state)
     pages["Unit Names"] = UnitNamesPage(state)
     pages["All Game Data"] = DataBrowserPage(state)
     # Built unconditionally like the rest, for the reason recorded above:
@@ -595,6 +598,29 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
             if voice:
                 sounds_page.select_subtitle(voice, language)
         find_page.locate_text_requested.connect(_locate_text)
+
+    # ...and the Event Editor's Speak nodes on Sounds, at their line's
+    # recording (Zodi, 19 October: "a jump button to the correlating sound
+    # track in case a modder wanted to edit it as well").
+    events_page = pages.get("Event Editor")
+    if events_page is not None and sounds_page is not None:
+        def _open_sound(voice, language):
+            window.open_tab("Sounds")
+            sounds_page.select_subtitle(voice, language)
+        events_page.open_sound.connect(_open_sound)
+        # ...and its music nodes at their piece's archive (Zodi, 20 October: "a
+        # jump button to go to it in the Sounds page").
+        events_page.open_music.connect(lambda relative: window.open_tab("Sounds", relative))
+
+    # ...and the Abilities map's Open in Sounds at the effect's recordings
+    # (Zodi, 20 October: "we should have a button to jump to the abilities
+    # sound track").
+    abilities_for_sounds = pages.get("Abilities")
+    if abilities_for_sounds is not None and sounds_page is not None:
+        def _open_effect_sounds(relative, words):
+            window.open_tab("Sounds")
+            sounds_page.show_tracks(relative, words)
+        abilities_for_sounds.open_sounds.connect(_open_effect_sounds)
 
     # Items' two jumps go through the same shell call. They are separate
     # signals rather than one `navigate_requested` because their payloads
