@@ -182,6 +182,64 @@ def read_gns(folder: Path, number: int) -> MapIndex:
     return MapIndex(number, folder, resources)
 
 
+#: The GNS's command rows, after its file rows and a row of kind 0x80 (the
+#: decompilation's `battle_map_gns_command_type_e`): the map is indoors
+#: (0x85: no weather falls there; `BATTLE_MAP_WEATHER_FLAG_IGNORE_WEATHER`)
+#: or out (0x86), its weather snow (0x89: rain falls as snow there;
+#: `BATTLE_MAP_WEATHER_FLAG_SNOW`) or not (0x88). Each row is for the
+#: states its condition names: a script variable (0x22 the weather and time,
+#: 0x30 the arrangement), the state's weather in bits 12 to 14 and night in
+#: bit 15 over the variable's own low bits, compared equal (1), less (2) or
+#: greater (3). A row is 20 bytes, or the 28 its byte 8 says.
+GNS_COMMAND_SEPARATOR = 0x80
+GNS_INDOOR, GNS_OUTDOOR, GNS_NO_SNOW, GNS_SNOW = 0x85, 0x86, 0x88, 0x89
+GNS_ARRANGEMENT_VARIABLE = 0x30
+
+
+def gns_commands(folder: Path, number: int) -> list:
+    """Map `number`'s GNS command rows: `[(kind, variable, state, comparison)]` in order (see `GNS_INDOOR`)."""
+    data = (Path(folder) / gns_name(number)).read_bytes()
+    out, at, commands = [], 0, False
+    while at + 20 <= len(data):
+        variable, state, comparison, kind = struct.unpack_from("<HhBB", data, at)
+        if not commands:
+            if kind == GNS_COMMAND_SEPARATOR:
+                commands = True
+            elif not (variable or state or comparison or kind):
+                break
+            at += 20
+            continue
+        if not (comparison or kind):
+            break
+        out.append((kind, variable, state & 0xFFFF, comparison))
+        at += data[at + 8] if data[at + 8] in (20, 28) else 20
+    return out
+
+
+def weather_flags(folder: Path, number: int, state: State = State()) -> tuple:
+    """
+    `(indoors, snow)`: whether map `number` in `state` is indoors, where no
+    weather falls, and whether its weather falls as snow (`gns_commands`;
+    out of doors and rain without a row saying).
+    """
+    try:
+        rows = gns_commands(folder, number)
+    except (OSError, struct.error):
+        return (False, False)
+    indoors = snow = False
+    for kind, variable, wanted, comparison in rows:
+        low = state.arrangement if variable == GNS_ARRANGEMENT_VARIABLE else 0
+        asked = (low & 0xFFF) | ((state.weather & 7) << 12) | (0x8000 if state.night else 0)
+        if not ((comparison == 1 and asked == wanted) or (comparison == 2 and asked < wanted)
+                or (comparison == 3 and asked > wanted)):
+            continue
+        if kind in (GNS_INDOOR, GNS_OUTDOOR):
+            indoors = kind == GNS_INDOOR
+        elif kind in (GNS_SNOW, GNS_NO_SNOW):
+            snow = kind == GNS_SNOW
+    return (indoors, snow)
+
+
 def revised_name(file_name: str) -> str:
     """`map_map048_9.bin` -> `new_map_new_map048_9.bin`, its revised copy's name."""
     return "new_map_new_" + file_name[len("map_"):]
@@ -264,6 +322,9 @@ class Lights:
 
 TILE_BYTES = 8
 TERRAIN_LEVEL_BYTES = 256 * TILE_BYTES
+#: A whole terrain part: its 2 bytes of size and both levels, whatever the
+#: map's size. A grid copied to another map goes as one (`with_terrain`).
+TERRAIN_BYTES = 2 + 2 * TERRAIN_LEVEL_BYTES
 
 #: A tile's fields: (byte, first bit, bits). Measured against the documents'
 #: table, which lists each byte's fields from its highest bit down.
@@ -283,6 +344,31 @@ TILE_FIELDS = {
 BOOL_FIELDS = ("no_cursor", "no_walk", "pass_through")
 #: An upper level place with no tile: only "no cursor" set (`Tile.is_placeholder`).
 PLACEHOLDER_TILE = bytes([0, 0, 0, 0, 0, 0, 1, 0])
+#: A new upper level tile (`upper_tile_fields`): how many height steps over
+#: the ground under it it starts, and how far down it reaches. The game's
+#: own upper level tiles the cursor can stop on (259 on 47 maps' grids)
+#: stand 4 to 17 steps over the ground but one (8 for 87 of them, 7 to 10
+#: for 183), and reach 1 to 5 steps down (2 for most).
+UPPER_STEPS, UPPER_THICKNESS = 8, 2
+#: The surface a new upper level tile over water has (its depth more than
+#: 0): Bridge, the game's `Land` row 35, which 22 of its own upper level
+#: tiles have; over anything else, the ground's own.
+BRIDGE_SURFACE = 35
+#: The room a unit needs under a tile of the upper level, in half height
+#: steps: 6, three steps (a chicken or a frog 4). The battle's movement
+#: (the PlayStation game's, read for facts in adamrt's fft_decomp:
+#: `src/battle/map/move_range.c`, its `unit_size` and the ceiling checks of
+#: `spread_destination_propagate`) takes a tile's underside as twice its
+#: height and its slope, less twice its thickness (the decompilation's
+#: "ceiling depth"), and lets a unit onto the ground under it only when the
+#: underside is at least this far over that ground and over the ground the
+#: unit steps in from. All 242 of the game's own upper level tiles the
+#: cursor can stop on, over ground units can stand on, leave at least that
+#: over their ground (033's (5, 4) exactly). Zodi's test 11 (22 October):
+#: a bridge 4 high and 2 thick over Gariland's canal left 4 over the canal
+#: and none over the squares beside it, 2 high, and no unit could go under
+#: it, though units stood on it.
+UNIT_ROOM = 6
 
 #: Slope types: the corners each raises by the slope's height, in the order
 #: (x0,z0), (x1,z0), (x1,z1), (x0,z1); north is +z, east is +x. The names
@@ -401,6 +487,62 @@ def _palettes(data: bytes, offset: int) -> list:
     return [list(struct.unpack_from("<16H", data, offset + 32 * p)) for p in range(16)]
 
 
+def _read_terrain(data: bytes, o: int) -> Terrain:
+    """The terrain part at `o` of `data`; MapError when it doesn't fit."""
+    size_x, size_z = data[o], data[o + 1]
+    if size_x * size_z > 256 or o + TERRAIN_BYTES > len(data):
+        raise MapError("its terrain does not fit")
+    tiles = []
+    for level in range(2):
+        for z in range(size_z):
+            for x in range(size_x):
+                at = o + 2 + level * TERRAIN_LEVEL_BYTES + TILE_BYTES * (z * size_x + x)
+                tiles.append(Tile(x, z, level, bytes(data[at:at + TILE_BYTES])))
+    return Terrain(o, size_x, size_z, tiles)
+
+
+def read_terrain(part: bytes) -> Terrain:
+    """
+    A bare terrain part's grid (`terrain_part`'s bytes, `TERRAIN_BYTES`), its
+    tiles' offsets within the part. MapError for bytes that aren't one.
+    """
+    if len(part) != TERRAIN_BYTES:
+        raise MapError(f"a terrain part is {TERRAIN_BYTES} bytes, not {len(part)}")
+    return _read_terrain(part, 0)
+
+
+def terrain_part(data: bytes) -> bytes:
+    """
+    A map file's whole terrain part, `TERRAIN_BYTES`: its size and both
+    levels, as a look copied to another map number takes its source's grid.
+    MapError for a file with none.
+    """
+    mesh = read_mesh(data)
+    if mesh.terrain is None:
+        raise MapError("it has no terrain")
+    return _terrain_bytes(data, mesh)
+
+
+def with_terrain(data: bytes, part: bytes) -> bytes:
+    """
+    The file with its terrain part replaced whole by `part` (another map's
+    grid: a look copied to another number stands on its source's), every
+    other byte kept and the file its own length. Whole, as a tile's place in
+    the part depends on the grid's width (the (z x width + x)th of its
+    level's 256), so one map's grid can't be laid into another's file tile
+    by tile when their sizes differ. MapError for a file with no terrain or
+    a part that isn't one.
+    """
+    read_terrain(part)
+    mesh = read_mesh(data)
+    if mesh.terrain is None:
+        raise MapError("it has no terrain")
+    o = mesh.terrain.offset
+    out = bytearray(data)
+    out[o:o + TERRAIN_BYTES] = part
+    return bytes(out)
+
+
 def read_mesh(data: bytes) -> Mesh:
     """
     Reads every part of a mesh file this editor uses. Raises `MapError` for
@@ -443,17 +585,7 @@ def read_mesh(data: bytes) -> Mesh:
                 tuple(data[o + 36:o + 39]), tuple(data[o + 39:o + 42]),
                 tuple(data[o + 42:o + 45]))
         if "terrain" in pointers:
-            o = pointers["terrain"]
-            size_x, size_z = data[o], data[o + 1]
-            if size_x * size_z > 256 or o + 2 + 2 * TERRAIN_LEVEL_BYTES > len(data):
-                raise MapError("its terrain does not fit")
-            tiles = []
-            for level in range(2):
-                for z in range(size_z):
-                    for x in range(size_x):
-                        at = o + 2 + level * TERRAIN_LEVEL_BYTES + TILE_BYTES * (z * size_x + x)
-                        tiles.append(Tile(x, z, level, bytes(data[at:at + TILE_BYTES])))
-            mesh.terrain = Terrain(o, size_x, size_z, tiles)
+            mesh.terrain = _read_terrain(data, pointers["terrain"])
         if "texture_animations" in pointers:
             o = pointers["texture_animations"]
             mesh.texture_animations = bytes(data[o:o + 640])
@@ -561,6 +693,77 @@ def tile_with(raw: bytes, changes: dict) -> bytes:
         mask = ((1 << bits) - 1) << bit
         out[byte] = (out[byte] & ~mask & 0xFF) | (value << bit)
     return bytes(out)
+
+
+def has_no_tile(tile: Tile) -> bool:
+    """An upper level place with no tile: all eight bytes zero, or the game's placeholder."""
+    return tile.level == 1 and (tile.is_blank or tile.is_placeholder)
+
+
+def underside(tile: Tile) -> int:
+    """
+    A tile's underside, in half height steps: twice its lowest corner's
+    height less twice its thickness (see `UNIT_ROOM`).
+    """
+    return 2 * min(tile.corner_heights()) - 2 * tile.get("thickness")
+
+
+def _below(ground: Tile, beside) -> int:
+    """Twice the highest corner of `ground` and of the tiles `beside` it, in half height steps."""
+    return max(2 * max(t.corner_heights()) for t in (ground, *beside))
+
+
+def room_under(upper: Tile, ground: Tile, beside=()) -> int:
+    """
+    Half height steps between `upper`'s underside and the highest corner of
+    the ground under it and of the ground tiles `beside` it (where units
+    step in from). A unit fits where it is `UNIT_ROOM` or more.
+    """
+    return underside(upper) - _below(ground, beside)
+
+
+def can_go_under(upper: Tile, ground: Tile, beside=()) -> bool:
+    """
+    Whether units can get onto `ground` under the upper level tile `upper`:
+    room over the ground itself, and from at least one of the ground tiles
+    `beside` it units can stand on (with none beside, the ground's room
+    alone). 241 of the game's 242 upper level tiles the cursor can stop on,
+    over ground units stand on, can be gone under so; 033's (5, 4) has room
+    over its ground and both its walkable sides 5 and 6 steps higher.
+    """
+    if room_under(upper, ground) < UNIT_ROOM:
+        return False
+    return not beside or any(room_under(upper, ground, [b]) >= UNIT_ROOM for b in beside)
+
+
+def least_upper_height(ground: Tile, beside=(), thickness: int = UPPER_THICKNESS) -> int:
+    """
+    The least height, in whole steps, a flat upper level tile `thickness`
+    steps thick over `ground` must have for units to get under it
+    (`can_go_under`): over the ground, and over the lowest of the tiles
+    `beside` it.
+    """
+    lowest = min(beside, key=lambda t: max(t.corner_heights()), default=None)
+    return -(-(_below(ground, [lowest] if lowest is not None else []) + UNIT_ROOM) // 2) + int(thickness)
+
+
+def upper_tile_fields(ground: Tile, steps: int = UPPER_STEPS) -> dict:
+    """
+    `{field: value}`: a new tile on the upper level over `ground` (Zodi's
+    list after shaping, "an upper level where a map has none": a bridge or a
+    floor a model has over the ground), `steps` height steps over its
+    highest corner, with its surface (`BRIDGE_SURFACE` over water), flat,
+    `UPPER_THICKNESS` steps thick, units able to stand there and the cursor
+    to stop; every other field 0, as the game's own have them mostly. Every
+    one of `TILE_FIELDS`, so written over a placeholder or a blank place it
+    makes the same tile. With the defaults it leaves units room to get under
+    it from ground up to 3 steps higher beside it (`room_under`).
+    """
+    _low, high = field_range("height")
+    surface = BRIDGE_SURFACE if ground.get("depth") else ground.get("surface")
+    return {"surface": surface, "height": min(high, max(ground.corner_heights()) + steps),
+            "slope_height": 0, "depth": 0, "slope": 0, "thickness": UPPER_THICKNESS, "no_cursor": False,
+            "no_walk": False, "shading": 0, "pass_through": False, "camera": 0}
 
 
 def tile_key(x: int, z: int, level: int) -> tuple:
@@ -693,7 +896,67 @@ def grid_files(folder: Path, number: int, source: str) -> list:
 
 def _terrain_bytes(data: bytes, mesh: Mesh) -> bytes:
     o = mesh.terrain.offset
-    return bytes(data[o:o + 2 + 2 * TERRAIN_LEVEL_BYTES])
+    return bytes(data[o:o + TERRAIN_BYTES])
+
+
+#: A map's texture animation records (`Mesh.texture_animations`): 32 of 20
+#: bytes at the 0x6C pointer (the decompilation's
+#: `battle_map_texture_animation_t`). An event opens a door by starting one
+#: (instruction 0x55, "A ground object's state"), and the remaster's look
+#: plays its door with it: Zodi's test 12 (22 October) put 062's over
+#: 097's in the files a look copied there stands on, and the chapel door
+#: opened on the copy, where with 097's own it hadn't.
+ANIMATION_RECORDS_BYTES = 640
+
+
+def _records_at(data: bytes, mesh: Mesh) -> int:
+    at = mesh.pointers.get("texture_animations")
+    if not at:
+        raise MapError("it has no texture animation records")
+    after = [v for v in mesh.pointers.values() if v > at]
+    if (min(after) if after else len(data)) - at < ANIMATION_RECORDS_BYTES:
+        raise MapError("its texture animation records have less than 640 bytes")
+    return at
+
+
+#: The record modes an event starts (`USE_FIELD_OBJECT`, 0x55), which play
+#: once when started: 5 to 12 a UV animation's frames forward, 13 to 20 a
+#: palette's, 21 to 28 a UV animation's backward (the decompilation's
+#: `battle_map_texture_animation_mode_e`; the eight of a kind alike). 1 to
+#: 4 loop from the start, 29 cycles colors.
+ONCE_FORWARD, ONCE_PALETTE, ONCE_BACKWARD = range(5, 13), range(13, 21), range(21, 29)
+
+
+def started_records(records: bytes) -> list:
+    """The records (`animation_records`' 32) an event can start, as `[(index, mode)]`: its doors and such."""
+    out = []
+    for i in range(min(32, len(records) // 20)):
+        mode = records[20 * i + 14]
+        if ONCE_FORWARD.start <= mode < ONCE_BACKWARD.stop:
+            out.append((i, mode))
+    return out
+
+
+def animation_records(data: bytes) -> bytes:
+    """A map file's texture animation records, all 640 bytes (`ANIMATION_RECORDS_BYTES`); MapError for a file
+    with none, or with less room."""
+    at = _records_at(data, read_mesh(data))
+    return bytes(data[at:at + ANIMATION_RECORDS_BYTES])
+
+
+def with_animation_records(data: bytes, records: bytes) -> bytes:
+    """
+    The file with its texture animation records replaced by `records`
+    (another map's: a look copied to another map number takes its doors'
+    with it), every other byte kept and the file its own length. MapError
+    for a file with no records, or records that aren't 640 bytes.
+    """
+    if len(records) != ANIMATION_RECORDS_BYTES:
+        raise MapError(f"texture animation records are {ANIMATION_RECORDS_BYTES} bytes, these are {len(records)}")
+    at = _records_at(data, read_mesh(data))
+    out = bytearray(data)
+    out[at:at + ANIMATION_RECORDS_BYTES] = records
+    return bytes(out)
 
 
 def file_order(name: str) -> tuple:

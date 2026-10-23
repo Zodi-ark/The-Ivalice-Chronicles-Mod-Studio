@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mod Studio Event Setup, a Reloaded-II mod. Part of The Ivalice
+       Chronicles Mod Studio, GPL-3.0. Built for .NET 8, which the game's
+       Reloaded-II (running the mod loader, a .NET 9 mod) loads. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>ModStudioEventSetup</AssemblyName>
+    <RootNamespace>ModStudioEventSetup</RootNamespace>
+    <Version>1.0.2</Version>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <!-- The same source makes the same program, wherever it is built. -->
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <PathMap>$(MSBuildProjectDirectory)=ModStudioEventSetup</PathMap>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <!-- Reloaded-II's interfaces (GPL-3.0), at 2.4.0: what Reloaded-II
+       shipped before 1.30, and what WotL Restoration asks for, so the
+       helper loads in those too. Online, 2.4.0 from NuGet; offline, the DLL
+       helper/build.py gives -p:ReloadedInterfaces=<path> (2.5.0's out of
+       reloaded.mod.interfaces.2.5.0.nupkg, as a copy whose version reads
+       2.4.0). Either way not copied beside the mod: Reloaded-II brings its
+       own. -->
+  <ItemGroup Condition="'$(ReloadedInterfaces)' == ''">
+    <PackageReference Include="Reloaded.Mod.Interfaces" Version="2.4.0" ExcludeAssets="runtime" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ReloadedInterfaces)' != ''">
+    <Reference Include="Reloaded.Mod.Interfaces">
+      <HintPath>$(ReloadedInterfaces)</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="ModConfig.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\assets\icon_256.png" Link="Preview.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

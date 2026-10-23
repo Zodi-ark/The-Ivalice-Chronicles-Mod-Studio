@@ -185,7 +185,7 @@ def battle_tiles(game_dir, number: int, entry_records=None, entry_edits=None, en
     return used
 
 
-def _runs(numbers, most: int = 6) -> str:
+def runs(numbers, most: int = 6) -> str:
     """
     Numbers said shortly: runs of three or more as "157 to 168", the rest
     listed, "and" before the last; past `most` pieces, "and N more".
@@ -225,12 +225,12 @@ def uses_lines(uses) -> list:
     roads = sorted({u.road for u in uses if u.kind == SQUARE and u.road is not None})
     words = []
     if starts:
-        words.append(f"a unit starts here in battle{'s' if len(starts) != 1 else ''} {_runs(starts)}")
+        words.append(f"a unit starts here in battle{'s' if len(starts) != 1 else ''} {runs(starts)}")
     places = []
     if scenarios:
-        places.append(f"scenario{'s' if len(scenarios) != 1 else ''} {_runs(scenarios)}")
+        places.append(f"scenario{'s' if len(scenarios) != 1 else ''} {runs(scenarios)}")
     if roads:
-        places.append(f"random battles (road{'s' if len(roads) != 1 else ''} {_runs(roads)})")
+        places.append(f"random battles (road{'s' if len(roads) != 1 else ''} {runs(roads)})")
     if places:
         words.append("the player places units here in " + " and ".join(places))
     return words

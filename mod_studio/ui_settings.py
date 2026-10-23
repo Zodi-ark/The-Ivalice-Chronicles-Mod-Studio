@@ -48,6 +48,11 @@ DEFAULTS = {
     "map_show_tiles": True,
     "map_show_tile_info": True,
     "map_show_battles": False,
+    # Map Editor: N, E, S and W round the grid and the camera's corner
+    # ("Seen from the SW corner"), off at first (Zodi, 21 October: "a toggle
+    # that saves between sessions for the North South West East direction
+    # indicators ... for first time users it should start disabled").
+    "map_show_compass": False,
     # Abilities: the map's Sound and Effect camera switches. Sound starts
     # off (Zodi, 18 October: "have the sound toggle disabled by default"),
     # Effect camera on.

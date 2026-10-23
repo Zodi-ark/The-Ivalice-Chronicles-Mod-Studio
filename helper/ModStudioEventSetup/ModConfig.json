@@ -1,0 +1,41 @@
+{
+  "ModId": "fftivc.utility.modstudio.eventsetup",
+  "ModName": "Mod Studio Event Setup",
+  "ModAuthor": "Mod Studio",
+  "ModVersion": "1.0.2",
+  "ModDescription": "Applies the event setup changes that mods made with The Ivalice Chronicles Mod Studio list: an event's map, weather, time of day, music, enemy battle, deploy areas, what follows it and its battle rules. Install it with any mod that needs it.",
+  "ModDll": "ModStudioEventSetup.dll",
+  "ModIcon": "Preview.png",
+  "ModR2RManagedDll32": "",
+  "ModR2RManagedDll64": "",
+  "ModNativeDll32": "",
+  "ModNativeDll64": "",
+  "Tags": [],
+  "CanUnload": false,
+  "HasExports": false,
+  "IsLibrary": false,
+  "ReleaseMetadataFileName": "fftivc.utility.modstudio.eventsetup.ReleaseMetadata.json",
+  "IgnoreRegexes": [
+    ".*\\.json"
+  ],
+  "IncludeRegexes": [
+    "\\.deps\\.json",
+    "\\.runtimeconfig\\.json",
+    "ModConfig\\.json"
+  ],
+  "PluginData": {
+    "GitHubRelease": {
+      "UserName": "Zodi-ark",
+      "RepositoryName": "Mod-Studio-Event-Setup",
+      "UseReleaseTag": true,
+      "AssetFileName": "Mod.zip"
+    }
+  },
+  "IsUniversalMod": false,
+  "ModDependencies": [],
+  "OptionalDependencies": [],
+  "SupportedAppId": [
+    "fft_enhanced.exe"
+  ],
+  "ProjectUrl": ""
+}

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import constants as c
+from . import event_setup
 
 
 # The FFT mod loader itself - every mod this tool produces is a set of
@@ -86,6 +87,10 @@ class ModMetadata:
     built_against_game_version: str = ""
     built_against_table_versions: dict = field(default_factory=dict)
     built_against_clean_unpack: Optional[bool] = None
+    # Whether the mod changes events' setup records (`state.setup_edits`),
+    # which the helper mod, Mod Studio Event Setup, applies: it is then
+    # among the mod's dependencies, with where Reloaded-II fetches it.
+    event_setup: bool = False
 
     @property
     def resolved_app_ids(self) -> list:
@@ -95,9 +100,13 @@ class ModMetadata:
 
     @property
     def resolved_dependencies(self) -> list:
-        """The mod loader is always required, and always listed first."""
+        """The mod loader is always required, and always listed first; then
+        the event setup helper exactly when the mod changes events' setup."""
         deps = [MOD_LOADER_ID]
-        deps.extend(d for d in self.dependencies if d and d != MOD_LOADER_ID)
+        if self.event_setup:
+            deps.append(event_setup.HELPER_ID)
+        deps.extend(d for d in self.dependencies
+                    if d and d != MOD_LOADER_ID and d.lower() != event_setup.HELPER_ID)
         return deps
 
     def github_update_enabled(self) -> bool:
@@ -175,7 +184,36 @@ def _apply_update_settings(config: dict, meta: ModMetadata) -> None:
     else:
         plugin_data.pop(GITHUB_UPDATE_PLUGIN_KEY, None)
     config["PluginData"] = plugin_data
+    _apply_helper_source(config, meta.event_setup)
     _apply_build_stamp(config, meta)
+
+
+#: Where Reloaded-II reads how to fetch a mod's dependencies (WotL
+#: Restoration's ModConfig.json names its three there): `{"IdToConfigMap":
+#: {mod id: {"Config": a GitHub release, "ReleaseMetadataName": ...}}}`.
+GITHUB_DEPENDENCIES_KEY = "GitHubDependencies"
+
+
+def _apply_helper_source(config: dict, needed: bool) -> None:
+    """
+    Names where Reloaded-II fetches the event setup helper (its own GitHub
+    release, `event_setup.HELPER_RELEASE`) among the mod's dependencies'
+    sources when the mod needs it, and takes that one entry out when it
+    doesn't; every other dependency's entry, and every other key, is left
+    as it was.
+    """
+    plugin_data = dict(config.get("PluginData") or {})
+    sources = dict(plugin_data.get(GITHUB_DEPENDENCIES_KEY) or {})
+    by_id = dict(sources.get("IdToConfigMap") or {})
+    if needed:
+        by_id[event_setup.HELPER_ID] = json.loads(json.dumps(event_setup.HELPER_RELEASE))
+    elif event_setup.HELPER_ID not in by_id:
+        return
+    else:
+        by_id.pop(event_setup.HELPER_ID)
+    sources["IdToConfigMap"] = by_id
+    plugin_data[GITHUB_DEPENDENCIES_KEY] = sources
+    config["PluginData"] = plugin_data
 
 
 def _apply_build_stamp(config: dict, meta: ModMetadata) -> None:
@@ -728,7 +766,9 @@ def recover_own_files(mod_root: Path, config: Optional[dict] = None) -> dict:
     across as they are; Mod Studio can't change code, and doesn't try.
     """
     mod_root = Path(mod_root)
-    written_by_export = {"modconfig.json"}
+    # The event setup helper's file too: an opened mod's changes are read
+    # from it into `state.setup_edits`, and export writes it from those.
+    written_by_export = {"modconfig.json", event_setup.FILE_NAME.lower()}
     icon = str((config or {}).get("ModIcon") or "").strip().replace("\\", "/").lower()
     if icon:
         written_by_export.add(icon)

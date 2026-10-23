@@ -143,6 +143,28 @@ WINDOWS = {0: "where the game puts it", 1: "above the speaker", 2: "below the sp
 FACING_WHERE = "above or below as the speaker faces the camera"
 #: The colour screen's change: the PlayStation's notes don't name its modes, so they are numbers.
 SECONDS_NAMES = {}
+#: The weathers an event asks for (Weather, 0x3C; `event_scripts.weather_at`).
+WEATHER_NAMES = {0: "Clear", 1: "Clear", 2: "Light rain", 3: "Rain", 4: "Heavy rain"}
+WEATHER_SNOW = ", snow on a snowy map"
+WEATHER_SAME = "No change"
+#: A map animation that plays a door on the map shown (`Scene.door`).
+DOOR_OPENS, DOOR_SHUTS = "Opens a door", "Shuts a door"
+#: What a node's fields say of bytes no layout names: the game doesn't read
+#: them (`event_scripts.UNREAD`), the instruction is the remaster's own and
+#: not in the PlayStation game the decompilation is of (`NEW_LENGTHS`), or
+#: the game has no use for it.
+BYTES_UNREAD = "Its {count} bytes (the game doesn't read them)"
+BYTES_REMASTER = "Its {count} bytes (an instruction the remaster added: what they mean isn't known yet)"
+BYTES_UNUSED = "Its {count} bytes (the game ends the event at this instruction)"
+
+
+def bytes_words(opcode: int, count: int) -> str:
+    """The label of a node's bytes no layout names (`BYTES_UNREAD`...)."""
+    if opcode in es.UNREAD:
+        return BYTES_UNREAD.format(count=count)
+    if opcode in es.NEW_LENGTHS:
+        return BYTES_REMASTER.format(count=count)
+    return BYTES_UNUSED.format(count=count)
 
 
 def seconds(frames: float) -> str:
@@ -191,13 +213,16 @@ class Scene:
     """What the words name things by: the scene's units, its lines, its maps,
     and the music: the piece a music instruction starts as the event plays
     (`music(instruction)`, an `event_scripts.MusicPlayed` or None) and the
-    pieces' names (`event_scripts.music_titles`)."""
+    pieces' names (`event_scripts.music_titles`); and whether a map
+    animation opens a door on the map shown (`door(opcode, number, state)`,
+    `map_doors.opens`: True, False shutting one, None for no door)."""
     unit_names: dict = field(default_factory=dict)          # {unit id: name}
     words: Callable[[int], Optional[str]] = lambda line: None
     speaker: Callable[[int], Optional[str]] = lambda line: None
     map_names: dict = field(default_factory=dict)
     music: Callable = lambda item: None
     music_titles: dict = field(default_factory=dict)
+    door: Callable = lambda opcode, number, state: None
 
     def piece(self, item) -> str:
         """The piece a music instruction starts, named: "Hall of Worship (music 51)", or ""."""
@@ -351,11 +376,53 @@ def instruction_words(item: es.Instruction, scene: Scene, mode: str = "enhanced"
     if op == 0x1B:
         return "Map light", seconds(v["frames"])
     if op == 0x2E:
-        return "Background colors", ""
+        fade = es.background_frames(v["frames"] or 0)
+        return "Background colors", f"Over {seconds(fade)}" if fade > 1 else "At once"
     if op == 0x4F:
         return "Time of day", f"Kind {v['time']}"
     if op == 0x3C:
-        return "Weather", f"Kind {v['weather'] & 0xF}"
+        # Its low four bits, when bits 8 to 11 say to (`event_scripts.weather_at`).
+        if not (v["weather"] or 0) & 0xF00:
+            return "Weather", WEATHER_SAME
+        kind = v["weather"] & 0xF
+        name = WEATHER_NAMES.get(kind, f"Kind {kind}")
+        return "Weather", name + (WEATHER_SNOW if kind in WEATHER_NAMES and kind >= es.WEATHER_LIGHT else "")
+    if op == 0x55:
+        door = scene.door(op, v["animation"], v["value"])
+        return "Map animation", (DOOR_OPENS if door else DOOR_SHUTS if door is not None
+                                 else f"Animation {v['animation']}")
+    if op == 0x57:
+        return "Until the map animation ends", ""
+    if op == 0x54:
+        door = scene.door(op, v["object"], v["state"])
+        return "A map part moves", (DOOR_OPENS if door else DOOR_SHUTS if door is not None
+                                    else f"Part {v['object']}, to state {v['state']}")
+    if op == 0x56:
+        return "Until the map part has moved", ""
+    if op == 0x40:
+        return "A tile's height", f"Tile {v['x']}, {v['y']}: height {v['tile_height']}"
+    if op == 0x3F:
+        return "A tile the camera can't see through", f"Tile {v['x']}, {v['y']}"
+    if op == 0x6B:
+        return "A background sound", f"Sound {v['sound']}, over {seconds(v['frames'] or 0)}"
+    if op == 0x6A:
+        return "A background sound changes", f"Sound {v['sound']}, over {seconds(v['frames'] or 0)}"
+    if op == 0x71:
+        return f"{u()} first among the units", ""
+    if op == 0x7A:
+        return "A unit leaves the party", f"Sprite set {v['sprite_set']}"
+    if op == 0x7B:
+        return "Until a button is held", f"Buttons {v['buttons']}"
+    if op == 0x7D:
+        return "A picture on the screen", f"Picture {v['graphic']}"
+    if op == 0x85:
+        return "A date unlocked", f"Date {v['date'] - 1}" if v["date"] else "None"
+    if op == 0x8F:
+        return "Menus locked", f"Lock {v['lock']}"
+    if op == 0x90:
+        return "A tutorial's cursor", f"Tile {v['x']}, {v['y']}"
+    if op == 0x93:
+        return "Days pass", f"{v['days']} day{'s' if v['days'] != 1 else ''}"
     if op == 0x18:
         return "Effect", f"Effect {v['effect']} on {scene.unit(v['target'])}"
     if op == 0x91:
@@ -439,18 +506,13 @@ def instruction_words(item: es.Instruction, scene: Scene, mode: str = "enhanced"
         0x6C: "Units' colors follow the light again", 0x6D: "Units' colors held",
         0x7F: "A unit in the event's pictures", 0x4E: "A unit's shadow", 0x8A: "The effect starts",
         0x8B: "The effect plays", 0x88: "The map moves again", 0x89: "The map held still",
-        0x76: "The screen darkens", 0x77: "The dark screen goes", 0x7D: "A picture on the screen",
-        0x8E: "Until the picture is shown", 0x8F: "Menus locked", 0x93: "Days pass",
+        0x76: "The screen darkens", 0x77: "The dark screen goes", 0x8E: "Until the picture is shown",
         0x96: "The map's next state", 0x97: "A unit's own colors again", 0x27: "The map as it was",
         0x50: "Portraits read", 0x25: "Two speakers", 0x26: "A box waiting goes on",
         0x37: "The portrait turned", 0x31: "The background's color", 0x33: "The ground's color",
-        0x66: "The map's colors kept", 0x6A: "A background sound changes", 0x6B: "A background sound",
-        0x54: "A 3D object's state", 0x55: "A ground object's state", 0x56: "Until the 3D object is done",
-        0x57: "Until the ground object is done", 0x71: "The first unit", 0x72: "Pause for debugging",
-        0x7A: "A unit leaves the party", 0x7B: "Until a button is held", 0x81: "Units' move effects",
-        0x85: "A date unlocked", 0x90: "A tutorial's cursor", 0x95: "Nothing",
-        0x3A: "Until the files are read", 0x3F: "A tile the camera can't see through",
-        0x40: "A tile's height", 0x62: "A battle unit placed", 0xC0: "A camera turned off",
+        0x66: "The map's colors kept", 0x72: "Pause for debugging", 0x81: "Units' move effects",
+        0x95: "Nothing",
+        0x3A: "Until the files are read", 0x62: "A battle unit placed", 0xC0: "A camera turned off",
         0xD8: "Nothing", 0xD9: "Marks before this aren't gone back to", 0xDA: "Nothing", 0xDC: "Nothing",
         0xE0: "Nothing", 0x17: "Nothing", 0x23: "Nothing", 0x24: "Nothing", 0x61: "Nothing",
         0x74: "Nothing", 0x75: "Nothing",
@@ -552,11 +614,17 @@ FIELD_LABELS = {
     "angle_z": "Angle z", "scale_x": "Scale x", "scale_y": "Scale y", "scale_z": "Scale z",
     "top_red": "Top red", "top_green": "Top green", "top_blue": "Top blue", "bottom_red": "Bottom red",
     "bottom_green": "Bottom green", "bottom_blue": "Bottom blue", "target_x": "Target x",
+    "object": "Part", "mask": "Camera mask", "tile_height": "Height", "untargetable": "Can't be targeted",
+    "from_level": "Volume from", "to_level": "Volume to", "find": "Find a channel", "burst": "Burst",
+    "divisor": "Delay divisor", "angle_step": "Angle step", "radius_step": "Radius step",
+    "sprite_set": "Sprite set", "buttons": "Buttons", "graphic": "Picture", "date": "Date", "lock": "Lock",
+    "days": "Days",
 }
 #: Field labels where one instruction needs its own.
 OWN_LABELS = {(0x51, "box"): "Which box", (0x19, "x"): "Look at across", (0x19, "y"): "Look at along",
               (0x19, "height"): "Look at height", (0x73, "x"): "Across", (0x2D, "facing"): "To face",
-              (0x8C, "facing"): "Facing", (0xEB, "line"): "This page"}
+              (0x8C, "facing"): "Facing", (0xEB, "line"): "This page", (0x55, "animation"): "Map animation",
+              (0x54, "state"): "To state", (0x62, "slot"): "Battle unit"}
 
 
 def field_label(opcode: int, name: str) -> str:
@@ -715,10 +783,66 @@ def entry_by_key(key: str) -> Optional[Entry]:
     return next((e for e in ENTRIES if e.key == key), None)
 
 
+# -- An event's setup (its record in the game's program, `event_setup`) -------
+
+#: The setup card's fields, by `event_setup.FIELDS`' names, in the order shown.
+SETUP_LABELS = {
+    "Map": "Map",
+    "Weather": "Weather",
+    "Arrangement": "The map's arrangement",
+    "Night": "Time of day",
+    "Music1": "Music 1, as the event starts",
+    "Music2": "Music 2, switched to",
+    "EnemyBattle": "Enemy battle",
+    "SceneUnits": "The scene's own units",
+    "DeployArea1": "Deploy area 1",
+    "DeployArea2": "Deploy area 2",
+    "RamzaRequired": "Ramza must be placed",
+    "AfterEvent": "What follows",
+    "NextEvent": "Next event",
+    "BattleRules": "Battle rules",
+    "Portrait": "Portrait",
+    "PortraitUnit": "Portrait's unit",
+}
+#: What follows an event (`event_setup.WORLD_MAP` and the rest; 0 sets nothing).
+AFTER_EVENT = {0: "Nothing set here", 0x80: "The world map", 0x81: "The next event",
+               0x82: "A reset, to the title screen"}
+TIMES_OF_DAY = {0: "Day", 1: "Night"}
+SETUP_BAND = "SETUP"
+SETUP_TITLE = "Event {number:03d} as it starts"
+SETUP_BLURB = ("What the game sets up as the event starts: its map, weather and time of day, music, battle, "
+               "where the player's units go and what follows. The game keeps these in its program; your mod "
+               "changes them through Mod Studio Event Setup, which Export adds for you.")
+SETUP_NO_PROGRAM = ("Your game's program ({program}) wasn't found beside the folder of .pac files chosen on "
+                    "General Setup, so this is the PlayStation's copy of the event's setup, and can't be "
+                    "changed here.")
+SETUP_UNREADABLE = ("Your game's program can't be read ({problem}), so this is the PlayStation's copy of the "
+                    "event's setup, and can't be changed here.")
+SETUP_NONE = "Neither your game's program nor the PlayStation's copy holds this event's setup."
+SETUP_CHANGED = "Changed in this mod: {fields}."
+SETUP_AS_GAME = "As your game has it."
+SETUP_BACK = "Back to the game's"
+SETUP_BUTTON = "Setup"
+SETUP_BUTTON_TIP = "The event's setup: its map, music, battle and what follows"
+SETUP_NO_SQUAD = "None"
+SETUP_SQUAD = "Area {number}: {place}, up to {most} units"
+SETUP_NO_BATTLE = "None"
+
+
+def setup_sentences() -> list:
+    """The setup card's fixed words, for the dash check."""
+    return (list(SETUP_LABELS.values()) + list(AFTER_EVENT.values()) + list(TIMES_OF_DAY.values())
+            + [SETUP_BAND, SETUP_TITLE, SETUP_BLURB, SETUP_NO_PROGRAM, SETUP_UNREADABLE, SETUP_NONE,
+               SETUP_CHANGED, SETUP_AS_GAME, SETUP_BACK, SETUP_BUTTON, SETUP_BUTTON_TIP, SETUP_NO_SQUAD,
+               SETUP_SQUAD, SETUP_NO_BATTLE])
+
+
 def all_sentences() -> list:
     """Every fixed sentence the page shows from here, for the dash check."""
     out = [k for k in KIND_NAMES.values()] + list(TASKS.values()) + list(WINDOWS.values())
-    out += list(FIELD_LABELS.values()) + list(OWN_LABELS.values())
+    out += list(FIELD_LABELS.values()) + list(OWN_LABELS.values()) + setup_sentences()
+    out += list(WEATHER_NAMES.values()) + [WEATHER_SNOW, WEATHER_SAME, BYTES_UNREAD, BYTES_REMASTER, BYTES_UNUSED,
+                                          DOOR_OPENS, DOOR_SHUTS]
     for entry in ENTRIES:
         out += [entry.title, entry.blurb]
     for ready in READY_MADE:

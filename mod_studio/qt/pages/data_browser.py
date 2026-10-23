@@ -63,6 +63,7 @@ from ..widgets.actions import (
 from ..widgets.field_rows import (
     CollapsibleSection, NumericFieldRow, TextFieldRow)
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.layout_settle import retire
 from ..widgets.visible_refresh import RefreshesWhenVisible
 
 # Rows are loaded on demand, but a table with tens of thousands of rows
@@ -565,7 +566,8 @@ class DataBrowserPage(RefreshesWhenVisible, QWidget):
             item = self.fields_column.takeAt(0)
             widget = item.widget()
             if widget is not None:
-                # `setParent(None)` FIRST, then schedule the delete.
+                # Out of the page FIRST (`retire`: hidden, no parent), then
+                # the delete scheduled.
                 #
                 # `takeAt` removes a widget from the layout but leaves it a
                 # visible child of the same parent, and `deleteLater` only
@@ -580,8 +582,7 @@ class DataBrowserPage(RefreshesWhenVisible, QWidget):
                 # exactly the kind of fault a screenshot catches and an
                 # assertion does not, so `dev/test_qt_data_browser.py` now
                 # asserts no orphans survive a table switch.
-                widget.setParent(None)
-                widget.deleteLater()
+                retire(widget)
         self.field_rows = {}
         # Computed once per table, not once per row - see `_long_text_columns`
         # for why the current row is the wrong thing to measure.

@@ -54,6 +54,18 @@ from ..widgets.actions import reveal_in_file_manager, zip_folder
 CATEGORY_SUGGESTIONS = ["gameplay", "graphics", "audio", "characters",
                         "balance", "other"]
 
+#: The Event Editor's setup changes and their helper mod, Mod Studio Event
+#: Setup (Zodi, 21 October: "One shared helper mod", shipped "in Mod Studio").
+SETUP_REMOVED = "Removed {file}: no event's setup is changed in this mod now."
+HELPER_PUT = ("Put {name} beside your mod, in {folder}: it applies your mod's event setup as the game "
+              "starts, and Reloaded-II loads it with your mod.")
+HELPER_UPDATED = "Updated {name} beside your mod, in {folder}, to version {version}."
+HELPER_NOT_PUT = ("{name} couldn't be put beside your mod ({problem}). Your mod needs it to change events' "
+                  "setup: copy Mod Studio's {folder} folder into Reloaded-II's mods.")
+HELPER_NOTE = ("{name} ({helper}) is added for you too when the mod changes an event's setup on the Event "
+               "Editor: it applies those changes as the game starts.")
+SETUP_FILE_LINE = "{file}, the events' setup this mod changes, which {name} applies"
+
 
 def copy_into(source, destination) -> None:
     """
@@ -117,8 +129,18 @@ class AssetExportWorker(Worker):
                  cli_path, audiomog_path, game_dir, pzd_edits=None,
                  sound_file_replacements=None, other_file_replacements=None,
                  uib_edits=None, utexpt_edits=None, map_edits=None,
-                 own_files=None, script_edits=None):
+                 own_files=None, script_edits=None, map_terrains=None, map_copies=None,
+                 map_animations=None):
         super().__init__()
+        # Grids replaced whole (`state.map_terrains`: a look copied to another
+        # map number brought its source's), written before the tile edits,
+        # the texture animation records a copy brought its doors' with
+        # (`state.map_animations`), and the copies (`state.map_copies`,
+        # `{target: source}`).
+        self.map_terrains = {name: bytes(part) for name, part in (map_terrains or {}).items() if part}
+        self.map_animations = {name: bytes(records) for name, records in (map_animations or {}).items()
+                               if records}
+        self.map_copies = {int(target): int(source) for target, source in (map_copies or {}).items()}
         # The Event Editor's scripts, whole: `{relative path: bytes}`.
         self.script_edits = {rel: bytes(data) for rel, data in (script_edits or {}).items()
                              if data is not None}
@@ -237,7 +259,7 @@ class AssetExportWorker(Worker):
         # where they sit (`map_classic.apply_tile_edits`), into every file of
         # the map holding that grid (`map_classic.grid_files`) - which of them
         # a battle reads is not known. Needs only the unpacked game.
-        if self.map_edits:
+        if self.map_edits or self.map_terrains or self.map_animations:
             self._write_maps(dest_root, result)
 
         # Event scripts: written whole where the game reads them
@@ -412,9 +434,19 @@ class AssetExportWorker(Worker):
 
         # After the files carried through: a mesh the mod carries (a map
         # package's) gets its panels moved in the mod, not the game's.
-        if self.map_edits and self.game_dir is not None and self.mode != "classic":
+        if self.game_dir is not None and self.mode != "classic" and (
+                self.map_edits or self.map_terrains or self._carried_meshes()):
             self._write_panels(dest_root, result)
         return result
+
+    def _carried_meshes(self) -> dict:
+        """`{map number: relative path}` of the enhanced meshes this mod carries (a look of its own)."""
+        out = {}
+        for rel in self.other_file_replacements:
+            found = re.fullmatch(r"bg/meshes/map_(\d{3})_mesh\.bin", str(rel).replace("\\", "/"), re.IGNORECASE)
+            if found:
+                out[int(found.group(1))] = rel
+        return out
 
     def _write_panels(self, dest_root: Path, result: dict) -> None:
         """
@@ -427,34 +459,50 @@ class AssetExportWorker(Worker):
         enhanced_grid_file`) has edits that move a panel gets its mesh with
         the panels on the tiles as edited - the mod's own mesh when it
         carries one, else the game's. Maps with no panels (33 of 108) or no
-        panel moved get no file.
+        panel moved get no file. A look the mod gave panels of Mod Studio's
+        own (`map_enhanced.with_grid_panels`, the Map Editor's Add highlight
+        panels) has them made again from its tiles, edited or not, so they
+        are where its battles' units stand.
+
+        A look copied to another map number (`map_copies`) has no mesh of the
+        game's there: its panels follow its tiles from where they lie on the
+        grid that came with it (`map_terrains`), or are made again from them
+        when its source's look had none in the game (`map_package.
+        panels_for_tiles`' `copy`). A grid replaced whole moves a look's
+        panels as tile edits do.
         """
         folder = self.game_dir / mc.MAP_FOLDER
-        numbers = {}
-        for name in self.map_edits:
+        numbers = set(self._carried_meshes())
+        for name in list(self.map_edits) + list(self.map_terrains):
             try:
-                numbers.setdefault(int(name.lower().split("map_map")[1][:3]), []).append(name)
+                numbers.add(int(name.lower().split("map_map")[1][:3]))
             except (IndexError, ValueError):
                 continue
         for number in sorted(numbers):
             relative_path = mpk.mesh_relative_path(number)
             try:
-                if not me.mesh_path(self.game_dir, number).is_file():
+                own = me.mesh_path(self.game_dir, number).is_file()
+                if not own and number not in self.map_copies:
                     continue
                 grid = mpk.enhanced_grid_file(self.game_dir, number)
                 if grid is None:
                     continue
-                edits = self.map_edits.get(mc.grid_key(folder, number, grid))
-                if not edits:
-                    continue
-                terrain = mc.read_mesh((folder / grid).read_bytes()).terrain
-                tiles = {(t.x, t.z, t.level): mc.Tile(t.x, t.z, t.level,
-                                                     mc.tile_with(t.raw, edits.get((t.x, t.z, t.level), {})))
-                         for t in terrain.tiles}
+                key = mc.grid_key(folder, number, grid)
                 destination = dest_root / relative_path
-                base = (destination.read_bytes() if relative_path in self.other_file_replacements
-                        and destination.is_file() else me.mesh_path(self.game_dir, number).read_bytes())
-                data, moved = mpk.panels_for_tiles(base, self.game_dir, number, tiles)
+                carried = relative_path in self.other_file_replacements and destination.is_file()
+                edits = self.map_edits.get(key)
+                copy = None
+                if not own:
+                    if not carried or key not in self.map_terrains:
+                        continue
+                    copy = (self.map_copies[number], self.map_terrains[key])
+                if not edits and not carried and key not in self.map_terrains:
+                    continue
+                tiles = mpk.grid_tiles(self.game_dir, number, self.map_edits, self.other_file_replacements,
+                                       self.map_terrains)
+                base = (destination.read_bytes() if carried
+                        else me.mesh_path(self.game_dir, number).read_bytes())
+                data, moved = mpk.panels_for_tiles(base, self.game_dir, number, tiles, copy=copy)
                 if not moved:
                     continue
                 result["map_total"] += 1
@@ -467,14 +515,20 @@ class AssetExportWorker(Worker):
                 result["errors"].append(f"{relative_path}: {exc}")
 
     def _write_maps(self, dest_root: Path, result: dict) -> None:
+        names = sorted(set(self.map_edits) | set(self.map_terrains) | set(self.map_animations))
         if self.game_dir is None:
-            result["map_total"] += len(self.map_edits)
+            result["map_total"] += len(names)
             result["errors"].append(
                 "The unpacked game folder isn't set, and writing a battle map "
                 "needs the game's own copy to start from.")
             return
         folder = self.game_dir / mc.MAP_FOLDER
-        for name, tiles in sorted(self.map_edits.items()):
+        for name in names:
+            tiles = self.map_edits.get(name) or {}
+            # A grid replaced whole goes in first, and the tiles changed on it
+            # are written over it; a copy's door records beside it.
+            part = self.map_terrains.get(name)
+            records = self.map_animations.get(name)
             try:
                 number = int(name.lower().split("map_map")[1][:3])
                 files = mc.grid_files(folder, number, name)
@@ -492,7 +546,12 @@ class AssetExportWorker(Worker):
                 try:
                     # Read NOW: every byte this mod does not change should be
                     # the game's current one.
-                    data, problems = mc.apply_tile_edits((folder / file_name).read_bytes(), tiles)
+                    data = (folder / file_name).read_bytes()
+                    if part is not None:
+                        data = mc.with_terrain(data, part)
+                    if records is not None:
+                        data = mc.with_animation_records(data, records)
+                    data, problems = mc.apply_tile_edits(data, tiles)
                     destination = dest_root / relative_path
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     destination.write_bytes(data)
@@ -540,6 +599,8 @@ class ExportPage(QWidget):
         self._last_mode = None
         self._asset_detail = None
         self._said_trouble = False
+        # What putting the event setup helper beside the mod did (`_write_setup`).
+        self._setup_said = []
 
         # The whole page scrolls.
         #
@@ -889,9 +950,13 @@ class ExportPage(QWidget):
             # Restoration's code needs two Reloaded-II libraries loaded
             # before it (13 October), so they are kept, ticked, whether or
             # not they are installed on this computer.
+            # The event setup helper isn't carried: export adds it exactly
+            # when the mod changes an event's setup.
+            from ... import event_setup as su
             self._carried_dependencies = [
                 str(mod_id).strip() for mod_id in (config.get("ModDependencies") or [])
-                if str(mod_id).strip() and str(mod_id).strip() != c.MODLOADER_REPO]
+                if str(mod_id).strip() and str(mod_id).strip() != c.MODLOADER_REPO
+                and str(mod_id).strip().lower() != su.HELPER_ID]
             self.refresh_dependencies()
             for mod_id in self._carried_dependencies:
                 box = self._dependency_box(mod_id)
@@ -1007,10 +1072,12 @@ class ExportPage(QWidget):
         # -- dependencies -------------------------------------------------------
         column.addSpacing(6)
         column.addWidget(self._bold("Requires these mods"))
+        from ... import event_setup as su
         dep_note = QLabel(
             f"{c.MODLOADER_REPO} is always required and is added for you. "
             "Anything else you tick is listed so Reloaded-II can warn people "
-            "who don't have it.")
+            "who don't have it. "
+            + HELPER_NOTE.format(name=su.HELPER_NAME, helper=su.HELPER_ID))
         dep_note.setProperty("role", "muted")
         dep_note.setWordWrap(True)
         column.addWidget(dep_note)
@@ -1094,8 +1161,10 @@ class ExportPage(QWidget):
         except Exception:                                     # noqa: BLE001
             installed = []
         # The mod loader is added by the engine, so offering it here would
-        # let somebody untick a dependency that is not optional.
-        installed = [m for m in installed if m != c.MODLOADER_REPO]
+        # let somebody untick a dependency that is not optional; so is the
+        # event setup helper, exactly when the mod changes an event's setup.
+        from ... import event_setup as su
+        installed = [m for m in installed if m != c.MODLOADER_REPO and m.lower() != su.HELPER_ID]
         # An opened mod's dependencies that aren't installed here are still
         # its dependencies: Reloaded-II reads them from the mod, on whichever
         # computer plays it.
@@ -1305,7 +1374,7 @@ class ExportPage(QWidget):
             ("UI Layouts", state.edited_uib_file_count(), "screen"),
             ("Texture parts", state.edited_utexpt_file_count(), "part list"),
             ("Map Editor", len(set(state.edited_map_numbers()) | set(self._map_looks())), "map"),
-            ("Event Editor", state.edited_script_count(), "event"),
+            ("Event Editor", self._event_editor_count(), "event"),
             ("Subtitles", state.edited_pzd_line_count(), "line"),
             ("Game data (no tab)", self._merged_table_count(), "merged table"),
             ("Carried through", len(self._carried_files()), "file"),
@@ -1316,6 +1385,14 @@ class ExportPage(QWidget):
             [("Mod's own files", len(state.mod_own_files), "file")]
             if getattr(state, "mod_own_files", None) else [])
 
+    def _event_editor_count(self) -> int:
+        """The events the Event Editor changes: their scripts, their setup, or both."""
+        from ... import event_scripts as es
+        numbers = {es.script_number(rel) for rel, data in (self.state.script_edits or {}).items()
+                   if data is not None}
+        numbers |= {number for number, changes in (self.state.setup_edits or {}).items() if changes}
+        return len(numbers)
+
     def _map_looks(self) -> dict:
         """The maps' models, textures and rows from the Map Editor (`map_editor.map_looks`)."""
         from .map_editor import map_looks
@@ -1325,8 +1402,15 @@ class ExportPage(QWidget):
         """The tables with edits besides a map's look rows, which the Map Editor counts."""
         from .map_editor import look_rows
         theirs = look_rows(self.state)
+
+        def own(table, key, fields) -> bool:
+            # A row's columns a look has aren't counted: a `Map` row whose
+            # names a copied look changed counts for its other columns.
+            look = theirs.get(table, {}).get(key)
+            return bool(fields) and (look is None or bool(set(fields) - set(look) - {mpk.ADDED_ROW}))
+
         return sum(1 for table, rows in (self.state.unmodelled_table_edits or {}).items()
-                   if any(fields and key not in theirs.get(table, {}) for key, fields in rows.items()))
+                   if any(own(table, key, fields) for key, fields in rows.items()))
 
     def _carried_files(self) -> list:
         """Files carried through whole, less the maps' models and anim files, which the Map Editor counts."""
@@ -1374,6 +1458,7 @@ class ExportPage(QWidget):
                              or self.state.utexpt_edits
                              or self.state.has_any_map_edits()
                              or self.state.has_any_script_edits()
+                             or self.state.has_any_setup_edits()
                              or self.state.sound_edits
                              or self.state.sound_file_replacements
                              or self.state.other_file_replacements
@@ -1388,7 +1473,7 @@ class ExportPage(QWidget):
             if nxd_only:
                 lines.append("Everything edited so far lives in .nxd files, "
                              "and the tools to")
-                lines.append("write those aren't set up - so this mod would "
+                lines.append("write those aren't set up, so this mod would "
                              "contain only its")
                 lines.append("ModConfig.json. What you have edited:")
             else:
@@ -1452,6 +1537,9 @@ class ExportPage(QWidget):
             names.append("Map anim files, the frames that move (bg/anims)")
         if self.state.has_any_script_edits():
             names.append("Event scripts (script/)")
+        if self.state.has_any_setup_edits():
+            from ... import event_setup as su
+            names.append(SETUP_FILE_LINE.format(file=su.FILE_NAME, name=su.HELPER_NAME))
         if self._carried_files():
             names.append("Carried-through files")
         if getattr(self.state, "mod_own_files", None):
@@ -1480,6 +1568,39 @@ class ExportPage(QWidget):
                      if key in c.TABLE_FILENAMES)
         names.update(ix.discover_specs(paths.bundled_data_dir()))
         return names
+
+    def _write_setup(self, root: Path) -> list:
+        """
+        The Event Editor's setup changes: `EventSetup.json` beside the mod's
+        ModConfig.json, which Mod Studio Event Setup applies as the game
+        starts, and that helper put beside the mod (in Reloaded-II's mods
+        when the mod goes there), never over a newer copy. With no changes
+        left, a file an earlier export wrote is taken out. Returns the
+        file's name when written, for the log's list.
+        """
+        from ... import event_setup as su
+        #: What it did, for the log after the files written (`export`).
+        self._setup_said = []
+        path = root / su.FILE_NAME
+        edits = {number: changes for number, changes in (self.state.setup_edits or {}).items() if changes}
+        if not edits:
+            if path.is_file():
+                try:
+                    path.unlink()
+                    self._setup_said.append(SETUP_REMOVED.format(file=su.FILE_NAME))
+                except OSError as exc:
+                    self._setup_said.append(f"{su.FILE_NAME} couldn't be removed: {exc}")
+            return []
+        path.write_text(su.file_text(edits), encoding="utf-8")
+        try:
+            done = su.install_helper(paths.bundled_root(), root.parent)
+        except (OSError, ValueError) as exc:
+            self._setup_said.append(HELPER_NOT_PUT.format(name=su.HELPER_NAME, problem=exc, folder=su.HELPER_FOLDER))
+        else:
+            if done != "kept":
+                self._setup_said.append((HELPER_PUT if done == "installed" else HELPER_UPDATED).format(
+                    name=su.HELPER_NAME, folder=root.parent, version=su.HELPER_VERSION))
+        return [su.FILE_NAME]
 
     def _remove_unedited_tables(self, destination: Path, meta, written: set) -> list:
         """
@@ -1622,7 +1743,12 @@ class ExportPage(QWidget):
             return removed
         folder = Path(game) / mc.MAP_FOLDER
         still_written = set()
-        for name, tiles in (state.map_edits or {}).items():
+        # A grid replaced whole (a look copied to another map number), and
+        # the texture animation records it brought, are written as its tiles
+        # are.
+        for name, tiles in list((state.map_edits or {}).items()) + list(
+                (getattr(state, "map_terrains", None) or {}).items()) + list(
+                (getattr(state, "map_animations", None) or {}).items()):
             if not tiles:
                 continue
             try:
@@ -1676,12 +1802,11 @@ class ExportPage(QWidget):
                 if not me.panels_only(game_data, path.read_bytes()):
                     continue
                 grid = mpk.enhanced_grid_file(game, number)
-                edits = (self.state.map_edits or {}).get(mc.grid_key(folder, number, grid)) if grid else None
-                if edits:
-                    terrain = mc.read_mesh((folder / grid).read_bytes()).terrain
-                    tiles = {(t.x, t.z, t.level): mc.Tile(t.x, t.z, t.level,
-                                                         mc.tile_with(t.raw, edits.get((t.x, t.z, t.level), {})))
-                             for t in terrain.tiles}
+                key = mc.grid_key(folder, number, grid) if grid else None
+                terrains = getattr(self.state, "map_terrains", None) or {}
+                edits = (self.state.map_edits or {}).get(key) if key else None
+                if edits or (key and terrains.get(key)):
+                    tiles = mpk.grid_tiles(game, number, self.state.map_edits, None, terrains)
                     if mpk.panels_for_tiles(game_data, game, number, tiles)[1]:
                         continue                # written again, with them
                 path.unlink()
@@ -1915,12 +2040,12 @@ class ExportPage(QWidget):
 
     def job_diff_xml_text(self) -> str:
         return xml_io.build_diff_xml_text(
-            self.state.table_version, self._edited_jobs(),
+            self.state.table_version or "1", self._edited_jobs(),
             self.state.job_preserved)
 
     def job_command_diff_xml_text(self) -> str:
         return xml_io.build_job_command_diff_xml_text(
-            self.state.job_command_version, self._edited_commands(),
+            self.state.job_command_version or "1", self._edited_commands(),
             self.state.job_command_preserved)
 
     def monster_job_command_diff_xml_text(self) -> str:
@@ -2025,6 +2150,9 @@ class ExportPage(QWidget):
             },
             built_against_clean_unpack=bool(
                 getattr(self.state, "clean_unpack", False)),
+            # The Event Editor's setup changes need Mod Studio Event Setup:
+            # among the dependencies, with where Reloaded-II fetches it.
+            event_setup=self.state.has_any_setup_edits(),
         )
 
     def _extra_table_files(self) -> dict:
@@ -2104,8 +2232,9 @@ class ExportPage(QWidget):
         assets = self._has_asset_work()
         # A texture pack has no table edits at all, and this used to refuse
         # to export one - "there's nothing to export yet" for a mod whose
-        # entire content is textures.
-        if not (jobs or commands or monsters or extras or assets):
+        # entire content is textures. Nor has a mod that changes only an
+        # event's setup (the Event Editor's EventSetup.json).
+        if not (jobs or commands or monsters or extras or assets or self.state.has_any_setup_edits()):
             # Never write an empty mod and report success - but a mod whose
             # whole content is name and description edits is NOT empty.
             #
@@ -2120,7 +2249,7 @@ class ExportPage(QWidget):
                         is None):
                     self._say(
                         "Your edits are all name/description or override "
-                        "edits, which are written into .nxd files - and that "
+                        "edits, which are written into .nxd files, and that "
                         "needs a converted game database and FF16Tools, set "
                         "up under General Setup. Your edits are safe.",
                         "attention")
@@ -2128,7 +2257,7 @@ class ExportPage(QWidget):
                 # There IS work; it is all .nxd. Fall through and build.
             else:
                 self._say(
-                    "There's nothing to export yet - make some changes in "
+                    "There's nothing to export yet: make some changes in "
                     "Edit Game Data first.", "attention")
                 return
 
@@ -2140,11 +2269,14 @@ class ExportPage(QWidget):
             # file nothing could parse - so a mod that replaced one sound
             # track shipped a JobData.xml changing nothing (reported). One
             # left behind by an earlier export is removed below.
-            job_xml = (xml_io.build_diff_xml_text(
-                self.state.table_version or "1", jobs) if jobs else None)
-            command_xml = (xml_io.build_job_command_diff_xml_text(
-                self.state.job_command_version or "1", commands)
-                if commands else None)
+            #
+            # Through the same calls Mod Contents' preview makes. Built here
+            # without an opened mod's own elements (`job_preserved`,
+            # `job_command_preserved`), the two files lost every element
+            # this tool doesn't model while the preview showed them kept
+            # (found 20 October).
+            job_xml = self.job_diff_xml_text() if jobs else None
+            command_xml = self.job_command_diff_xml_text() if commands else None
             # Monster skillsets go to their own file, and only when there
             # are any. An empty MonsterJobCommandData.xml in every mod
             # would be one more file for the loader to read and one more
@@ -2173,6 +2305,7 @@ class ExportPage(QWidget):
         if command_xml:
             written.append("JobCommandData.xml")
         written.extend(sorted(extras))
+        written += self._write_setup(Path(root))
         removed = self._remove_unedited_tables(Path(destination), meta, set(written))
         self._removed_tables = removed
         for name in removed:
@@ -2188,6 +2321,9 @@ class ExportPage(QWidget):
         self._log(f"Building the mod in {root}")
         for name in written:
             self._log(f"   {name}")
+        # What putting the event setup helper beside the mod did, after the files.
+        for line in self._setup_said:
+            self._log(line)
         self.last_built = root
         # Which FFTIVC/tables/<mode>/ subfolder everything goes under. The
         # .nxd stage needs it too and runs after the asset stage, so it is
@@ -2218,7 +2354,10 @@ class ExportPage(QWidget):
                 utexpt_edits=self.state.utexpt_edits,
                 map_edits=self.state.map_edits,
                 own_files=getattr(self.state, "mod_own_files", None),
-                script_edits=getattr(self.state, "script_edits", None))
+                script_edits=getattr(self.state, "script_edits", None),
+                map_terrains=getattr(self.state, "map_terrains", None),
+                map_copies=getattr(self.state, "map_copies", None),
+                map_animations=getattr(self.state, "map_animations", None))
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -2279,7 +2418,7 @@ class ExportPage(QWidget):
     def _finish_export(self, nxd_detail: str | None = None) -> None:
         parts = [p for p in (getattr(self, "_asset_detail", None), nxd_detail)
                  if p]
-        suffix = f" - {' and '.join(parts)}." if parts else ""
+        suffix = f": {' and '.join(parts)}." if parts else ""
         if not self._said_trouble:
             self._say(f"Built your mod at {self.last_built}{suffix}", "ok")
         # The log's last line says it is over, whatever came before it.
@@ -2342,7 +2481,7 @@ class ExportPage(QWidget):
                  and result.get("own", 0) == result.get("own_total", 0))
         self._said_trouble = not clean
         if clean:
-            self._say(f"Built your mod at {self.last_built} - {detail}.", "ok")
+            self._say(f"Built your mod at {self.last_built}: {detail}.", "ok")
         else:
             trouble = []
             if result["skipped"]:
@@ -2351,7 +2490,7 @@ class ExportPage(QWidget):
                 trouble.append(f"{len(result['errors'])} failed")
             self._say(
                 f"Built your mod at {self.last_built}, but only {detail} "
-                f"({', '.join(trouble)} - see the log).", "attention")
+                f"({', '.join(trouble)}: see the log).", "attention")
         self._asset_detail = detail if clean else None
         self._start_nxd_stage()
 

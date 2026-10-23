@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..widgets.layout_settle import retire
 from ..models.comparison import ADDED, CHANGED, REMOVED, ComparisonModel
 from ..workers import CompareWorker, run_in_thread
 
@@ -181,8 +182,7 @@ class SavedVersionsDialog(QDialog):
                 # visible, and `deleteLater` only queues the destruction -
                 # so without this the old rows go on painting over the new
                 # ones. Same fault All Game Data had.
-                widget.setParent(None)
-                widget.deleteLater()
+                retire(widget)
         self._boxes = {}
 
         try:

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Mod Studio's checks of the helper, run by dev/test_event_setup.py: the
+       helper's own finding and changing code over a program's file laid out
+       as it lies in memory. Not shipped. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\ModStudioEventSetup\SetupTable.cs" Link="SetupTable.cs" />
+    <Compile Include="..\ModStudioEventSetup\SetupFile.cs" Link="SetupFile.cs" />
+  </ItemGroup>
+</Project>

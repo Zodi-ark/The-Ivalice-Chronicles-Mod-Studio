@@ -65,7 +65,9 @@ these.
   Polygons are in file order: textured quads, textured triangles, then the
   untextured ones, each polygon's corners in order around it. Block 0 is
   the map; the other blocks (10 maps have them) are the parts that move -
-  doors, windmills, flags - like the classic mesh's animated meshes.
+  windmills, gears, propellers, bells, two doors (006's) - one a block, on
+  038, 040, 073 and 103 the classic mesh's animated meshes one for one.
+  Most doors are texture frames in block 0 (`RefinedBgAnim` kind 2).
 
 **Highlight panels follow the grid** (`panels_following`). The game draws a
 tile's move and target highlights on the `panel_ui` polygons over it, not
@@ -308,6 +310,22 @@ def mesh_numbers(game_dir: Path) -> list:
 
 def mesh_path(game_dir: Path, number: int) -> Path:
     return Path(game_dir) / MESH_FOLDER / f"map_{number:03d}_mesh.bin"
+
+
+def renumbered(data: bytes, number: int) -> bytes:
+    """
+    A mesh or anim file (`FFTOMESH`, `FFTOANIM`) given map number `number`,
+    every other byte kept: a look copied to another map number. WotL
+    Restoration's `map_127_mesh.bin` is the game's 066 so, byte 8 its one
+    change. EnhancedMapError for anything else.
+    """
+    if data[:8] not in (MAGIC, ANIM_MAGIC) or len(data) < 12:
+        raise EnhancedMapError("not an FFTOMESH or FFTOANIM file")
+    if not 0 <= int(number) <= 0xFFFF:
+        raise EnhancedMapError(f"{number} isn't a map number")
+    out = bytearray(data)
+    struct.pack_into("<I", out, 8, int(number))
+    return bytes(out)
 
 
 def read_mesh(data: bytes) -> EnhancedMesh:
@@ -569,17 +587,25 @@ def panels_following(mesh: EnhancedMesh, game_mesh: EnhancedMesh, height_change)
 def panels_only(game_data: bytes, mod_data: bytes) -> bool:
     """
     Whether a mod's mesh is the game's with nothing changed but where its
-    highlight panels are: what an export makes from grid edits, and makes
-    again from them, so an opened mod's copy needn't be carried through.
+    highlight panels are, and panels added over tiles the game's has none
+    for (`with_added_panels`): what an export makes from grid edits, and
+    makes again from them, so an opened mod's copy needn't be carried
+    through.
     """
-    if len(game_data) != len(mod_data):
-        return False
     if game_data == mod_data:
         return True
     try:
         game, mod = read_mesh(game_data), read_mesh(mod_data)
     except EnhancedMapError:
         return False
+    if len(game_data) != len(mod_data):
+        try:
+            mod, _added = with_added_panels(mod, game, [])
+        except EnhancedMapError:
+            return False
+        mod_data = write_mesh(mod)
+        if len(mod_data) != len(game_data):
+            return False
     if len(game.blocks) != len(mod.blocks):
         return False
     blocks = []
@@ -618,6 +644,265 @@ def tile_rise(game_tiles: dict, edited_tiles: dict):
                 + u * w * deltas[2] + (1 - u) * w * deltas[3])
 
     return rise
+
+
+# =============================================================================
+# Highlight panels made from the grid, for a look that has none
+# =============================================================================
+#
+# 33 of the 108 looks have no panels, and on none of them does the game
+# fight a battle: every event with a deploy area, and every battle the
+# formation screen (`SortieConfirm`) names, is on one of the 75 looks with
+# panels; the 33 are scenes' (Orbonne Monastery's chapel, 062, where the
+# game opens; the battle is on 056, outside). WotL Restoration gave 045 a
+# panel part (`GT_5_panel_ui`) for a battle of its own there. So a battle a
+# mod puts on one of them needs panels, and these are made as the game's
+# are (measured on its 14,311, 21 October):
+#
+# - **Which tiles:** every tile the cursor can stop on, the upper level's
+#   too, whether units can walk there or not (on the game's 75 looks with
+#   panels, all 9,636 tiles the cursor can stop on have them, and 3 of the
+#   565 it can't). WotL's 045 leaves out the 5 tiles no unit can walk on.
+# - **Where:** 0.2 over the tile's surface at each corner (44,840 corners);
+#   corners on the tile's (14,097 of 14,311 panels).
+# - **The shape:** one textured quad, its corners (x0,z0), (x1,z0), (x1,z1),
+#   (x0,z1), anticlockwise seen from above; on a tile raised at one corner
+#   (convex) or three (concave), two triangles meeting on the diagonal that
+#   doesn't touch the odd corner (248 and 126 of the game's, against 105 and
+#   37 the other way), so each lies flat.
+# - **Its picture's corners:** u across the tile's x, v down its z (u = x,
+#   v = 1 - z within the tile: 14,036 of the game's), the whole picture.
+# - **Render properties 0x8001** (all 14,311; WotL's copy its classic
+#   ground's, camera corners and all), the game's markers, no source
+#   polygon (6,367 of the game's are new), normals the faces' own, UV pool
+#   extras 0 (zero on the 28 maps whose own are; a new face with zeros draws
+#   as the game's own on 085, whose aren't).
+# - **Its part:** `GT_<group>_panel_ui` in the next free name slot, every
+#   block listing it (all 10 moving meshes list the same parts in every
+#   block), its group the one after the last the polygons use, repeat 1 by 1.
+#   Its `RefinedBgMeshNode` row is `map_package.PANEL_ROW` (75 of the game's
+#   77 panel rows); a group that is the last needs no `RefinedBgTexture`
+#   rows (61 maps), and two empty ones when a later group is added
+#   (`map_package.gap_rows`, as on 16 of the game's).
+
+#: The render properties of every one of the game's 14,311 panels.
+PANEL_RENDER = 0x8001
+#: How far over its tile's surface a panel lies, in units.
+PANEL_LIFT = 0.2
+#: A part of highlight panels' name, for its texture group.
+PANEL_PART = "GT_{group}_panel_ui"
+#: The tile corners, in the order a panel goes round them: (x0,z0), (x1,z0),
+#: (x1,z1), (x0,z1), as `map_classic.SLOPES` lists their rises.
+_TILE_CORNERS = ((0, 0), (1, 0), (1, 1), (0, 1))
+
+
+def has_panels(mesh: EnhancedMesh) -> bool:
+    """Whether any of a mesh's polygons are highlight panels."""
+    return any(is_panel(p.part) for p in mesh.polygons())
+
+
+def panel_slot(mesh: EnhancedMesh) -> Optional[int]:
+    """The name slot of block 0's highlight panel part, or None."""
+    names = mesh.blocks[0].names if mesh.blocks else []
+    return next((i for i, name in enumerate(names) if is_panel(name)), None)
+
+
+def panel_tiles(tiles) -> list:
+    """
+    The tiles the game draws highlights over (`Tile`s, any order in): every
+    one the cursor can stop on, on the ground or the upper level, not an
+    empty place (all eight bytes zero, which says nothing of the cursor);
+    an upper level placeholder is a place the cursor can't stop on. By
+    level, then z, then x.
+    """
+    return sorted((t for t in tiles if not t.is_blank and not t.no_cursor), key=lambda t: (t.level, t.z, t.x))
+
+
+def tile_panels(tile, lift: float = PANEL_LIFT) -> list:
+    """
+    A tile's panels as the game makes them: `[(kind, [(x, y, z) in the
+    file's coordinates], [(u, v)])]`, one quad, or two triangles where one
+    corner of the tile is raised or lowered against the other three.
+    """
+    from . import map_classic as mc
+
+    heights = tile.corner_heights()
+    points = [((tile.x + dx) * mc.TILE_SIZE, -(h * mc.HEIGHT_STEP + lift), (tile.z + dz) * mc.TILE_SIZE)
+              for (dx, dz), h in zip(_TILE_CORNERS, heights)]
+    uvs = [(float(dx), float(1 - dz)) for dx, dz in _TILE_CORNERS]
+    raised = mc.SLOPES.get(tile.get("slope"), ("", (0, 0, 0, 0)))[1]
+    if sum(raised) in (1, 3) and tile.get("slope_height"):
+        odd = raised.index(1 if sum(raised) == 1 else 0)
+        first = [odd, (odd + 1) % 4, (odd + 3) % 4]
+        second = [(odd + 1) % 4, (odd + 2) % 4, (odd + 3) % 4]
+        return [("tt", [points[i] for i in corners], [uvs[i] for i in corners]) for corners in (first, second)]
+    return [("tq", points, uvs)]
+
+
+def _face_normal16(points: list) -> tuple:
+    """A face's normal as the file keeps it: (b - a) x (c - a), made 4096 long."""
+    (ax, ay, az), (bx, by, bz), (cx, cy, cz) = points[0], points[1], points[2]
+    ux, uy, uz = bx - ax, by - ay, bz - az
+    vx, vy, vz = cx - ax, cy - ay, cz - az
+    n = (uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx)
+    length = math.sqrt(sum(c * c for c in n)) or 1.0
+    return tuple(int(round(c / length * 4096)) for c in n)
+
+
+def _panel_words(kind: str, tile) -> list:
+    """A panel's corner words: its tile, no source polygon, the game's markers, `PANEL_RENDER`."""
+    words = [bytes([(tile.z << 1) | tile.level, tile.x]) + b"\xff\xff", b"\x00\x00\xff\xff"]
+    if kind == "tq":
+        words.append(b"\xbb\xbb\xff\xff")
+    words.append(struct.pack("<H", PANEL_RENDER) + b"\xff\xff")
+    return words
+
+
+def with_grid_panels(mesh: EnhancedMesh, tiles) -> tuple:
+    """
+    `(mesh, panels)`: `mesh` with highlight panels over `tiles` (`Tile`s:
+    the grid the look stands on, as edited) in a part of their own in block
+    0, made as the game makes its own (the notes above). For a look whose
+    panels aren't the game's: a look with none gets a new part
+    (`PANEL_PART`, the next name slot and texture group), and one whose part
+    is Mod Studio's has its panels made again, in the same part. Raises
+    `EnhancedMapError` when the look has no free name slot or group.
+    """
+    blocks = blocks_of(mesh)
+    if not blocks:
+        raise EnhancedMapError("a mesh with no blocks has nowhere for highlight panels")
+    names = blocks[0].names
+    slot = next((i for i, name in enumerate(names) if is_panel(name)), None)
+    if slot is None:
+        used = {p.group for block in blocks for p in block.polygons if p.kind in ("tq", "tt")}
+        group = max(used, default=-1) + 1
+        if group >= len(blocks[0].slot_values) or group >= 32:
+            raise EnhancedMapError("this look uses every texture group, so highlight panels have none")
+        if len(names) >= 32:
+            raise EnhancedMapError("this look has 32 parts, the most a look can have, so highlight "
+                                   "panels have no room")
+        name = PANEL_PART.format(group=group)
+        for block in blocks:
+            block.names.append(name)
+        slot = len(names) - 1
+    else:
+        found = _TRACK_GROUP.search(names[slot])
+        own = [p.group for p in blocks[0].polygons if p.part == slot and p.kind in ("tq", "tt")]
+        group = own[0] if own else int(found.group(1)) if found else None
+        if group is None:
+            raise EnhancedMapError(f"the panel part {names[slot]!r} names no texture group")
+    for block in blocks:
+        block.polygons = [p for p in block.polygons if not (p.part == slot and block is blocks[0])]
+        if group < len(block.slot_values):
+            block.slot_values[group] = (1.0, 1.0)
+    made = []
+    for tile in panel_tiles(tiles):
+        for kind, points, uvs in tile_panels(tile):
+            normal = _face_normal16(points)
+            made.append(PolygonData(kind, slot, [CornerData(point, word, normal, uv, bytes(16))
+                                                 for point, word, uv in zip(points, _panel_words(kind, tile), uvs)],
+                                    group))
+    blocks[0].polygons.extend(made)
+    return assemble(mesh.map_number, blocks), len(made)
+
+
+# =============================================================================
+# Highlight panels for tiles a mod adds to a look that has the game's
+# =============================================================================
+#
+# A tile the game's look has no panel for (a new upper level tile, Zodi's
+# list after shaping: "an upper level where a map has none"; or a tile the
+# cursor couldn't stop on before) gets panels made as the game makes its own
+# (`tile_panels`), in the look's own panel part and group, their UVs the
+# game's own entries of the UV pool (a panel's four corners are the
+# picture's four, which every look with panels has), so nothing else in the
+# file moves: block 0 gets the new polygons after the last of their kind,
+# and the pool and the other blocks are as they were. `panels_only` takes
+# them away again to tell a mod's mesh that only has panels moved and added.
+
+def _block_with(block: Block, number: int, keep, added: list) -> Block:
+    """
+    `block` (number `number` in its mesh) with the polygons `keep(polygon)`
+    says, in their order, and `added` (`[(kind, name slot, [(position, word,
+    normal, UV pool index, group)])]`, textured) after the last of their
+    kind; its UV pool as it is.
+    """
+    by_kind = {kind: [] for kind in KINDS}
+    for poly in block.polygons(number):
+        if not keep(poly):
+            continue
+        corners = []
+        for c in poly.corners:
+            if poly.textured:
+                corners.append((block.parts[c], block.positions[c], block.words[c], block.normals[c],
+                                block.uv_index[c], block.groups[c]))
+            else:
+                corners.append((block.parts[c], block.positions[c], block.words[c], None, None, None))
+        by_kind[poly.kind].append(corners)
+    for kind, slot, corners in added:
+        by_kind[kind].append([(slot, position, word, normal, uv, group)
+                              for position, word, normal, uv, group in corners])
+    parts, positions, words, normals, uv_index, groups = bytearray(), [], [], [], [], []
+    for kind in KINDS:
+        for corners in by_kind[kind]:
+            for slot, position, word, _normal, _uv, _group in corners:
+                parts.append(slot)
+                positions.append(tuple(position))
+                words.append(bytes(word))
+    for kind in ("tq", "tt"):
+        for corners in by_kind[kind]:
+            for _slot, _position, _word, normal, uv, group in corners:
+                normals.append(tuple(normal))
+                uv_index.append(uv)
+                groups.append(group)
+    counts = tuple(sum(len(corners) for corners in by_kind[kind]) for kind in KINDS)
+    return Block(block.offset, list(block.names), counts, block.pool_size, bytes(parts), positions, words,
+                 normals, uv_index, groups, list(block.pool), list(block.pool_extra), list(block.slot_values))
+
+
+def with_added_panels(mesh: EnhancedMesh, game_mesh: EnhancedMesh, tiles) -> tuple:
+    """
+    `(mesh, panels added)`: `mesh`, a look with the game's own highlight
+    panels (`game_mesh`, the game's mesh of that look), with panels made as
+    the game's are over each of `tiles` (the grid as edited) the cursor can
+    stop on that `game_mesh` has no panel for, and none over any other such
+    tile: panels added before are made again, from the tiles as they are
+    now. `mesh` as it is when its look has no panels or none are added or
+    taken away. Raises `EnhancedMapError` when the UV pool has none of the
+    panel group's entries for a corner a panel needs.
+    """
+    slot = panel_slot(mesh)
+    if slot is None or not mesh.blocks:
+        return mesh, 0
+    block = mesh.blocks[0]
+    polygons = block.polygons(0)
+    group = next((p.group for p in polygons if is_panel(p.part) and p.textured), None)
+    if group is None:
+        return mesh, 0
+    covered = {tuple(p.tile) for p in game_mesh.polygons() if is_panel(p.part) and p.tile is not None}
+
+    def stale(poly) -> bool:
+        return is_panel(poly.part) and poly.tile is not None and tuple(poly.tile) not in covered
+
+    entries = {}
+    for i, (entry_group, u, v) in enumerate(block.pool):
+        if entry_group == group:
+            entries.setdefault((round(u, 4), round(v, 4)), i)
+    added = []
+    for tile in panel_tiles(tiles):
+        if (tile.x, tile.z, tile.level) in covered:
+            continue
+        for kind, points, uvs in tile_panels(tile):
+            pool = [entries.get((round(u, 4), round(v, 4))) for u, v in uvs]
+            if None in pool:
+                raise EnhancedMapError(f"this look's highlight panels have no texture corner at {uvs}")
+            normal = _face_normal16(points)
+            added.append((kind, slot, [(point, word, normal, entry, group) for point, word, entry
+                                       in zip(points, _panel_words(kind, tile), pool)]))
+    if not added and not any(stale(p) for p in polygons):
+        return mesh, 0
+    first = _block_with(block, 0, lambda poly: not stale(poly), added)
+    return EnhancedMesh(mesh.map_number, [first] + list(mesh.blocks[1:])), len(added)
 
 
 # =============================================================================
@@ -662,6 +947,10 @@ class Lighting:
     index: int
     suffix: str
     pictures: dict                      # {group: GroupPictures}
+    #: Every `(kind, index)` of the table's lists drawn so, its own first: a
+    #: lighting two lists share is offered once (085's story lightings 0 and
+    #: 1 are both `_a`), and the battles of both use it (`map_variants`).
+    same: tuple = ()
 
 
 #: The `RefinedBgTexture` columns a lighting is read from, in `_table_rows`' order.
@@ -778,12 +1067,16 @@ def lightings_from_database(sqlite_path: Path, number: int, rows: Optional[dict]
     for index in range(randoms):
         pictures = random(index)
         found.append(Lighting("random", index, _lighting_suffix(first_lighting(pictures)), pictures))
-    out, seen = [], set()
+    out, seen = [], {}
     for lighting in found:
         key = tuple((g, tuple(p.colour), p.lighting) for g, p in sorted(lighting.pictures.items()))
-        if key not in seen:
-            seen.add(key)
-            out.append(lighting)
+        if key in seen:
+            kept = seen[key]
+            kept.same = kept.same + ((lighting.kind, lighting.index),)
+            continue
+        lighting.same = ((lighting.kind, lighting.index),)
+        seen[key] = lighting
+        out.append(lighting)
     return out
 
 
@@ -836,7 +1129,7 @@ def lightings(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,
     added = lightings_from_database(None, number, rows) if rows else []
     for group, entry in (added[0].pictures.items() if added else ()):
         named.setdefault(group, entry)
-    return [Lighting("story", 0, "", named)] if named else []
+    return [Lighting("story", 0, "", named, (("story", 0),))] if named else []
 
 
 def pictures(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,

@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import theme
+from ..widgets.layout_settle import retire
 from . import event_words as words
 
 #: A node carried by a drag from the list: its entry's key, or "ready:" and a ready-made's.
@@ -137,6 +138,10 @@ class NodeStrip(QWidget):
     def set_cards(self, cards: list) -> None:
         self.cards = list(cards)
         self.chosen = min(self.chosen, len(self.cards) - 1)
+        # As tall as its rows now, so the scroll area around it scrolls to
+        # its last card at once (Zodi, 22 October's afternoon: no scroll bar
+        # and no wheel until the nodes' pane was dragged to another size).
+        self._fit_height()
         self.updateGeometry()
         self.update()
 
@@ -173,6 +178,11 @@ class NodeStrip(QWidget):
 
     def resizeEvent(self, event):                                     # noqa: N802
         super().resizeEvent(event)
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """Its least height: its rows' at its width (`heightForWidth`), which the scroll area around it reads
+        for its scroll bar (it reads a widget's least size, not `heightForWidth`)."""
         wanted = self.heightForWidth(self.width())
         if self.minimumHeight() != wanted:
             self.setMinimumHeight(wanted)
@@ -685,8 +695,7 @@ class NodeList(QWidget):
         for card in cards:
             self._favourites_grid.removeWidget(card)
             self.cards.remove(card)
-            card.setParent(None)
-            card.deleteLater()
+            retire(card)
         cards.clear()
         for n, key in enumerate(self.favourites):
             entry = words.entry_by_key(key)

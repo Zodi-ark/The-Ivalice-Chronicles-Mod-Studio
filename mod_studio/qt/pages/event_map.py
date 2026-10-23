@@ -50,6 +50,22 @@ second mock-up he answered "Yes build it" to).
   as long as the voice speaks (`mouth_now`).
 - **A click on a tile** gives the page that tile, for the node picked (a
   walk's or a place's tile). A drag turns the map, as everywhere.
+- **The map as the event changes it** (Zodi, 22 October, event 004 beside
+  the game): its doors open and shut as the event plays them
+  (`map_doors`, read with the map: `EventSceneWorker`); the colors behind
+  it fade as its Background instructions say (`event_scripts.
+  background_at`), from the sky of its battle, tinted as the game tints
+  what is farthest (the variant's depth LUT, `map_variants.depth_far_tint`)
+  and spread down the game's screen as the game spreads it (`SKY_REACH`,
+  `sky_span`); and rain falls, or snow on a snowy map, as its battle's
+  weather and its Weather instructions say, none indoors
+  (`event_scripts.weather_at`, `map_classic.weather_flags`), drawn with
+  the game's weather pictures (`event_weather`, `paint_weather`: rain
+  splashing on the map's tiles behind its walls, snow over the picture).
+- **Units are drawn the farthest first** (Zodi, 22 October's afternoon:
+  a knight on lower ground behind Gaffgarion was drawn over him): by how
+  far each stands from the camera, as the game sorts its sprites, not by
+  how low on the screen its feet are.
 
 The units' pictures are the Abilities map's (`ability_map.SpritesJob`):
 an animation n is the sprite's sequences 2n and 2n + 1, the waiting walk in
@@ -77,7 +93,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPen
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QVector3D
 from PySide6.QtWidgets import (
     QBoxLayout, QCheckBox, QComboBox, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QVBoxLayout,
     QWidget,
@@ -86,7 +102,10 @@ from PySide6.QtWidgets import (
 from ... import event_scripts as es
 from ... import game_fonts as gf
 from ... import map_classic as mc
+from ... import map_doors as md
 from ... import map_enhanced as me
+from ... import map_package as mpk
+from ... import map_variants as mv
 from ... import paths
 from ... import unit_sprites as us
 from .. import map_scene as ms
@@ -98,6 +117,7 @@ from . import ability_map as am
 from . import encounter_map as em
 from . import event_balloon as eb
 from . import event_text as et
+from . import event_weather as wx
 from . import event_words as words_
 from . import map_editor as me_page
 
@@ -131,6 +151,62 @@ WAITING_FOR_VOICE = ", waiting for the voice to end"
 EVENT_HALF_HEIGHT = 120.0
 EVENT_POINT_BELOW = 40.0 / 240.0
 EVENT_STRETCH = 8.0 / 7.0
+#: Where the sky's bottom colour is on the game's screen in an event: its
+#: colours fade from the top colour at the screen's top to the bottom one
+#: at this share of its height, and go on past it as they went (event 004's
+#: sky in Zodi's screenshots, 22 October's afternoon: the same at two
+#: framings, its blue reaching the Background's at 640 of 1,080 lines and
+#: deeper below; 023's fits the same).
+SKY_REACH = 0.6
+
+
+class EventSceneWorker(ms.SceneWorker):
+    """
+    A map read for the Event Editor (`map_scene.SceneWorker`), with its doors
+    as events play them (`map_doors.read_doors`: `doors` its arguments, and
+    `animations` the copies' door records, `state.map_animations`, by grid),
+    their frames kept for it (`played`), and whether weather falls on it
+    (`map_classic.weather_flags`).
+    """
+
+    def __init__(self, *args, doors: Optional[dict] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.doors = dict(doors) if doors is not None else None
+
+    def _read_doors(self) -> Optional[md.Doors]:
+        if self.look != ms.ENHANCED or self.doors is None:
+            return None
+        args = dict(self.doors)
+        animations = args.pop("animations", None) or {}
+        folder = Path(self.game_dir) / mc.MAP_FOLDER
+        try:
+            grid = mc.read_gns(folder, self.number).sources(self.state).get("terrain")
+            key = mc.grid_key(folder, self.number, grid.file_name) if grid is not None else None
+            return md.read_doors(self.game_dir, self.number, state=self.state,
+                                 records=animations.get(key) if key else None, **args)
+        except Exception:                                      # noqa: BLE001
+            return None
+
+    def run(self):
+        doors = self._read_doors()
+        if doors is not None:
+            self.played = {g for door in doors.doors for g in door.solid + door.clear} | set(doors.objects)
+        token, scene, error = super().run()
+        if scene is None:
+            return (token, scene, error)
+        scene.weather_flags = mc.weather_flags(Path(self.game_dir) / mc.MAP_FOLDER, self.number, self.state)
+        scene.doors = doors
+        return (token, scene, error)
+
+
+def classic_of(state, number: int) -> int:
+    """The map whose classic files a look copied to `number` was made on (copies of copies followed); `number`."""
+    copies = getattr(state, "map_copies", None) or {}
+    seen = set()
+    while number in copies and number not in seen:
+        seen.add(number)
+        number = copies[number]
+    return int(number)
 
 
 def event_camera(renderer, camera: es.Camera, width: int, height: int):
@@ -487,6 +563,8 @@ class EventMap(QWidget):
         self.view.show_info = False
         # Units behind the map's walls are hidden as in the game (`_hidden`).
         self.view.want_depth = True
+        # The sky spread down the game's screen as the game spreads it (`sky_span`).
+        self.view.sky_span = self.sky_span
         self.view.overlay = self.paint
         self.view.tile_clicked.connect(self._tile_clicked)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -574,6 +652,29 @@ class EventMap(QWidget):
         self.node: Optional[int] = None
         self.direction = 0                   # 1 forward, -1 backward, 0 paused
         self.map_number: Optional[int] = None
+        #: The event's battle, `(event, night, weather, arrangement)` as its
+        #: setup has it, or None: the map is read in that state, with the
+        #: lighting and sky its `Map` variant names (`show_map`).
+        self.battle: Optional[tuple] = None
+        #: The battle's sky, `((r, g, b), (r, g, b))` or None (`_update_sky`),
+        #: and what the last paint let fall (`paint_weather`).
+        self.battle_sky: Optional[tuple] = None
+        self.weather_drawn = (0, False, 0)
+        #: What the last paint let fall, for the suites: `("drop", x, y)`,
+        #: `("splash", x, y, picture)` or `("flake", x, y, size)`, in the view's pixels;
+        #: and the drops and splashes the map stood in front of, all or part.
+        self.weather_parts: list = []
+        self.weather_hidden: list = []
+        #: The units in the order the last paint drew them, the farthest first (`paint`).
+        self.drawn_order: list = []
+        #: The weather pictures (`event_weather.Sheet`) and what they were read from.
+        self._sheet = None
+        self._sheet_from = None
+        #: The places rain falls on (`event_weather.surface_tops`), and the map they are for.
+        self._rain_tops: list = []
+        self._rain_for = None
+        #: What the game tints the sky by (`map_variants.depth_far_tint`).
+        self.sky_tint = (1.0, 1.0, 1.0)
         self._shown_map = None
         self._wanted_map = None
         self._token = 0
@@ -694,9 +795,17 @@ class EventMap(QWidget):
 
     # -- the map ----------------------------------------------------------------------
 
-    def show_map(self, number: Optional[int]) -> None:
-        """Reads map `number` if it isn't the one drawn (None: no map), then says `map_ready`."""
+    def show_map(self, number: Optional[int], battle: Optional[tuple] = None) -> None:
+        """
+        Reads map `number` if it isn't the one drawn (None: no map), then says
+        `map_ready`. `battle` is the event's `(event, night, weather,
+        arrangement)`: the map is read in that time, weather and arrangement,
+        with the lighting its `Map` variant names and that variant's sky
+        behind it, as the game draws the battle (Zodi, 22 October: "the event
+        editor is not using the sky colors"); None, as the map is by day.
+        """
         self.map_number = number
+        self.battle = battle
         game = self.game_dir()
         if game is None:
             self._no_map(NO_GAME)
@@ -712,7 +821,13 @@ class EventMap(QWidget):
             self._no_map(f"Map {number:03d} has no battle map in the game's files.")
             return
         look = self._look_of(number)
-        if (number, look) == self._shown_map and self.view.scene is not None:
+        if self._map_key(number, look) == self._shown_map and self.view.scene is not None:
+            # The map drawn is this one: a reading under way for an event
+            # shown since (its own state of this map, or another map) ends
+            # without drawing over it.
+            self._token += 1
+            self._wanted_map = None
+            self._update_sky()
             self.map_ready.emit()
             return
         self._token += 1
@@ -721,31 +836,132 @@ class EventMap(QWidget):
         if not self._reading:
             self._start_reading()
 
+    def _state_of(self) -> mc.State:
+        """The classic files' state the event's battle is in: its arrangement, time and weather."""
+        if self.battle is None:
+            return mc.State()
+        _event, night, weather, arrangement = self.battle
+        return mc.State(int(arrangement), bool(night), int(weather))
+
+    def variant(self, number: int):
+        """The variant of map `number` the event's battle meets (`map_variants.variant_of`), or None."""
+        variants = me_page.variants_of(self.state, number)
+        if self.battle is None or not variants:
+            return None
+        sets = mv.event_sets(getattr(self.state, "nxd_sqlite_path", None))
+        return mv.variant_of(variants, *self.battle, sets)
+
+    def _lighting_of(self, number: int, look: tuple) -> int:
+        """The lighting the event's battle draws map `number`'s enhanced look with (`me_page.lighting_of`)."""
+        game = self.game_dir()
+        if look[0] != ms.ENHANCED or self.battle is None or game is None:
+            return 0
+        rows = me_page.mod_rows(self.state, number).get(mpk.TEXTURE_TABLE)
+        lightings = me.lightings(game, number, getattr(self.state, "nxd_sqlite_path", None), rows)
+        return me_page.lighting_of(lightings, me_page.variants_of(self.state, number), self.variant(number))
+
+    def _map_key(self, number: int, look: tuple) -> tuple:
+        """What the map drawn was read from: its number, look, the battle's state and its lighting."""
+        state = self._state_of()
+        return (number, look, (state.arrangement, state.night, state.weather), self._lighting_of(number, look))
+
+    def _update_sky(self) -> None:
+        """
+        The sky behind the map drawn, as the game draws it behind the event's
+        battle: its variant's colors, else the map's classic look's for the
+        battle (`me_page.battle_sky`, as the Map Editor draws them). The
+        classic look, and an event with no setup, have the page's background.
+        """
+        scene, game = self.view.scene, self.game_dir()
+        sky = variant = None
+        if scene is not None and scene.look == ms.ENHANCED and self.battle is not None and game is not None:
+            try:
+                index = mc.read_gns(game / mc.MAP_FOLDER, scene.number)
+            except (OSError, mc.MapError):
+                index = None
+            variant = self.variant(scene.number)
+            sky = me_page.battle_sky(variant, index, self.battle[1:])
+        # An event's Background fades from it (`_show_sky`).
+        self.battle_sky = tuple(tuple(int(c) for c in rgb) for rgb in sky) if sky else None
+        # The game tints what is farthest, the sky, by the variant's depth LUT.
+        edits = (getattr(self.state, "unmodelled_table_edits", None) or {}).get(mv.DEPTH_TABLE)
+        self.sky_tint = (mv.depth_far_tint(getattr(self.state, "nxd_sqlite_path", None), variant.depth_lut, edits)
+                         if variant is not None else (1.0, 1.0, 1.0))
+        self._show_sky()
+
+    def _show_sky(self) -> None:
+        """
+        The sky drawn: the battle's, as the event's Background instructions
+        have faded it by now, tinted as the game tints it (`sky_tint`).
+        """
+        sky = self.battle_sky
+        if self.timeline is not None and self.view.scene is not None:
+            sky = es.background_at(self.timeline.backgrounds, self.frame, sky)
+        if sky:
+            sky = tuple(QColor(*(min(255, max(0, int(round(c * k)))) for c, k in zip(rgb, self.sky_tint)))
+                        for rgb in sky)
+        self.view.set_sky(sky if sky else None)
+
+    def sky_span(self) -> tuple:
+        """Where in the view the sky's top and bottom colours are: the game's screen's top, and `SKY_REACH`
+        of its height down."""
+        screen = self.screen()
+        return (screen.top(), screen.top() + SKY_REACH * screen.height())
+
+    def doors(self) -> Optional[md.Doors]:
+        """The doors of the map drawn, as events play them (`map_doors.read_doors`), or None."""
+        scene = self.view.scene
+        return scene.doors if scene is not None else None
+
+    def weather_now(self) -> tuple:
+        """
+        `(weather, snow)` at the frame shown: the battle's weather, then the
+        event's Weather instructions (`event_scripts.weather_at`), none on a
+        map indoors; whether it falls as snow there.
+        """
+        scene = self.view.scene
+        if self.timeline is None or scene is None:
+            return (0, False)
+        indoors, snow = scene.weather_flags
+        start = int(self.battle[2]) if self.battle is not None else 0
+        weather = es.weather_at(self.timeline.weathers, self.frame, start)
+        return (0 if indoors else weather, snow)
+
     def _look_of(self, number: int) -> tuple:
         game = self.game_dir()
-        enhanced = game is not None and me.mesh_path(game, number).is_file()
+        # A look copied there is the map's (`me_page.has_look`), and the grid
+        # that came with it what its tiles are read from.
+        enhanced = game is not None and me_page.has_look(self.state, game, number)
         mesh, pictures = me_page.mod_look(self.state, number) if enhanced else (None, {})
-        return (ms.ENHANCED if enhanced else ms.CLASSIC, mesh, tuple(sorted(pictures.items())))
+        return (ms.ENHANCED if enhanced else ms.CLASSIC, mesh, tuple(sorted(pictures.items())),
+                me_page.terrains_of(self.state, number))
 
     def _start_reading(self) -> None:
         number, token, game = self._wanted_map, self._token, self.game_dir()
         if number is None or game is None:
             return
         look = self._look_of(number)
+        key = self._map_key(number, look)
         mesh, pictures = me_page.mod_look(self.state, number)
         self._reading = True
-        self._reading_for = (number, token, look)
-        worker = ms.SceneWorker(token, game, number, look[0], mc.State(),
-                                getattr(self.state, "nxd_sqlite_path", None),
-                                mesh if look[0] == ms.ENHANCED else None,
-                                pictures if look[0] == ms.ENHANCED else {}, 0,
-                                me_page.mod_rows(self.state, number) if look[0] == ms.ENHANCED else {})
+        self._reading_for = (number, token, key)
+        sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
+        rows = me_page.mod_rows(self.state, number) if look[0] == ms.ENHANCED else {}
+        # A look copied there plays its doors by the records it brought, made
+        # for its source's classic files (`map_doors.read_doors`).
+        doors = {"sqlite_path": sqlite_path, "rows": rows, "mesh_file": mesh,
+                 "anim_file": me_page.mod_anim(self.state, number), "classic_number": classic_of(self.state, number),
+                 "animations": dict(getattr(self.state, "map_animations", None) or {})}
+        worker = EventSceneWorker(token, game, number, look[0], self._state_of(), sqlite_path,
+                                  mesh if look[0] == ms.ENHANCED else None,
+                                  pictures if look[0] == ms.ENHANCED else {}, key[3], rows,
+                                  terrains=me_page.map_terrains(self.state), doors=doors)
         run_in_thread(worker, on_finished=self._scene_ready, on_failed=self._scene_failed)
 
     def _scene_ready(self, result) -> None:
         self._reading = False
         token, scene, error = result
-        number, _asked, look = self._reading_for
+        number, _asked, key = self._reading_for
         if token != self._token or number != self._wanted_map:
             self._start_reading()
             return
@@ -755,9 +971,10 @@ class EventMap(QWidget):
         edits = (getattr(self.state, "map_edits", {}) or {}).get(scene.grid_key, {}) if scene.grid_key else {}
         tiles = ([me_page.as_edited(t, edits.get((t.x, t.z, t.level), {})) for t in scene.terrain.tiles]
                  if scene.terrain is not None else [])
-        self._shown_map = (number, look)
+        self._shown_map = key
         self.view.set_message(" ".join(scene.notes))
         self.view.set_scene(scene, tiles, ())
+        self._update_sky()
         self.map_ready.emit()
         self._show_frame()
 
@@ -768,7 +985,9 @@ class EventMap(QWidget):
     def _no_map(self, message: str) -> None:
         self._shown_map = None
         self._wanted_map = None
+        self.battle_sky = None
         self.view.set_scene(None)
+        self.view.set_sky(None)
         self.view.set_message(message)
         self.map_ready.emit()
 
@@ -1014,10 +1233,16 @@ class EventMap(QWidget):
         if timeline is None:
             self.counter.setText("")
             self.view.set_tint(None)
+            self.view.set_played({})
+            self._show_sky()
             self.view.update()
             return
-        # The map's colours as the event has changed them (ColorField).
+        # The map's colours as the event has changed them (ColorField), its
+        # doors as it has played them, the colors behind it.
         self.view.set_tint(timeline.at(self.frame).field)
+        doors = self.doors()
+        self.view.set_played(md.pictures_at(doors, timeline.objects, self.frame) if doors is not None else {})
+        self._show_sky()
         node = self.node if self.node is not None else timeline.node_at(self.frame)
         waiting = WAITING_FOR_VOICE if self.waiting_for_voice and self.direction > 0 else ""
         self.counter.setText(f"Node {node + 1} of {len(timeline.node_starts)}, at "
@@ -1258,6 +1483,7 @@ class EventMap(QWidget):
     def paint(self, p: QPainter) -> None:
         timeline = self.timeline
         self.drawn, self.boxes_drawn, self.balloons_drawn = {}, [], []
+        self.drawn_order = []
         #: Where each unit's box points, by unit (`_paint_unit`): kept for the suites.
         self.heads: dict = {}
         #: Each unit placed, drawn or hidden, as its box is placed by (`SpeakerAt`).
@@ -1270,6 +1496,7 @@ class EventMap(QWidget):
         across = ppu * self.view.camera.stretch
         heads = self.heads
         order = []
+        view = self.view
         for pose in shown.units:
             world = self.ground_view(pose.x, pose.y, pose.level)
             if world is None:
@@ -1282,9 +1509,14 @@ class EventMap(QWidget):
             self.speakers[pose.unit_id] = SpeakerAt(QPointF(ground.x(), ground.y() - 40 * ppu), ground, world,
                                                     pose.facing)
             if pose.shown and pose.alpha > 0.01:
-                order.append((ground.y(), pose, world, ground))
-        order.sort(key=lambda o: o[0])
-        for _y, pose, world, ground in order:
+                # The farthest first, as the game sorts its sprites: a unit on
+                # lower ground behind another has its feet lower on the screen.
+                far = view.renderer.depth_of(world, view.camera, view.width(), view.height())
+                order.append((-far, ground.y(), pose, world, ground))
+        order.sort(key=lambda o: (o[0], o[1]))
+        #: The units in the order they were drawn, for the suites.
+        self.drawn_order = [o[2].unit_id for o in order]
+        for _far, _y, pose, world, ground in order:
             painted = self._paint_unit(p, pose, world, ground, ppu)
             if painted is None:
                 p.setPen(QPen(QColor(235, 235, 235, 220), 1.6))
@@ -1298,6 +1530,8 @@ class EventMap(QWidget):
             self.drawn[pose.unit_id] = rect
             heads[pose.unit_id] = head
             self.speakers[pose.unit_id] = replace(self.speakers[pose.unit_id], head=head)
+        # Rain or snow falls over the map and its units, under the boxes.
+        self.paint_weather(p)
         for box in shown.boxes:
             if not et.is_text_only(box.box):
                 self._paint_box(p, box, self.speakers.get(box.unit))
@@ -1314,6 +1548,145 @@ class EventMap(QWidget):
             words = self.caption_words.get(shown.caption.key) or f"Caption {shown.caption.key}"
             self.caption_drawn = (words, et.draw_caption(p, self.screen(), self.screen_text, words,
                                                          shown.caption.since, shown.caption.left))
+
+    def paint_weather(self, p: QPainter) -> None:
+        """
+        Rain, or snow on a snowy map, as the event's clock runs
+        (`weather_now`), drawn with the game's weather pictures
+        (`event_weather`): rain falling onto the map's tiles and splashing,
+        hidden where the map stands in front of it; snow over the picture.
+        """
+        weather, snow = self.weather_now()
+        #: What the last paint let fall: `(weather, snow, how many)`, for the suites.
+        self.weather_drawn = (weather, snow, 0)
+        self.weather_parts, self.weather_hidden = [], []
+        if weather not in wx.DROPS:
+            return
+        sheet = self.weather_sheet()
+        seconds = self.frame / es.FRAMES_A_SECOND
+        p.save()
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        if snow:
+            self._paint_snow(p, sheet, weather, seconds)
+        else:
+            self._paint_rain(p, sheet, weather, seconds)
+        p.restore()
+        self.weather_drawn = (weather, snow, len(self.weather_parts))
+
+    def weather_sheet(self) -> wx.Sheet:
+        """The weather pictures: the mod's `weather.tga` (the Textures page), else the unpacked game's, else
+        plain shapes (`event_weather.Sheet`); a file that can't be read passed over, and read again when
+        it changes."""
+        places = []
+        for rel, info in (getattr(self.state, "texture_edits", None) or {}).items():
+            if str(rel).replace("\\", "/").lower() == wx.SHEET.lower():
+                source = info.get("source_path") if isinstance(info, dict) else info
+                if source:
+                    places.append(Path(source))
+        game = self.game_dir()
+        if game is not None:
+            places.append(Path(game) / wx.SHEET)
+        stamp = []
+        for path in places:
+            try:
+                if path.is_file():
+                    stamp.append((str(path), path.stat().st_mtime_ns))
+            except OSError:
+                continue
+        stamp = tuple(stamp)
+        if self._sheet is None or stamp != self._sheet_from:
+            self._sheet = wx.Sheet(None)
+            for path, _when in stamp:
+                sheet = wx.Sheet(QImage(path))
+                if sheet.from_file:
+                    self._sheet = sheet
+                    break
+            self._sheet_from = stamp
+        return self._sheet
+
+    def rain_tops(self) -> list:
+        """The places of the map drawn that rain falls on (`event_weather.surface_tops`), kept per map."""
+        key = (id(self.view.scene), id(self.view.tiles), len(self.view.tiles))
+        if key != self._rain_for:
+            self._rain_tops = wx.surface_tops(self.view.tiles)
+            self._rain_for = key
+        return self._rain_tops
+
+    def _paint_rain(self, p: QPainter, sheet: wx.Sheet, weather: int, seconds: float) -> None:
+        found = wx.drops(self.rain_tops(), weather, seconds)
+        if not found:
+            return
+        view = self.view
+        ratio = view.devicePixelRatioF()
+        depth = view.depth
+        width = int(round(view.width() * ratio))
+        height = int(round(view.height() * ratio))
+        if depth is not None:
+            height, width = depth.shape
+        camera, renderer = view.camera, view.renderer
+        proj, eye = renderer.matrices(camera, width, height)
+        whole = proj * eye
+        slack = HIDE_SLACK * renderer.depth_per_unit(camera)
+
+        def at(point) -> tuple:
+            v = whole.map(QVector3D(*point))
+            return ((v.x() + 1) / 2 * width, (1 - v.y()) / 2 * height, (v.z() + 1) / 2)
+
+        def seen(x: float, y: float, far: float) -> Optional[bool]:
+            """Whether the map leaves the point at depth `far` seen; None off the picture."""
+            ix, iy = int(x), int(y)
+            if not (0 <= ix < width and 0 <= iy < height):
+                return None
+            return depth is None or float(depth[iy, ix]) >= far - slack
+
+        lines = view.height() / wx.LINES
+        ppu = self.pixels_per_unit()
+        p.setCompositionMode(QPainter.CompositionMode_Plus)
+        left, right = wx.DROP_ACROSS
+        for drop in found:
+            if drop.fall is not None:
+                foot, top, wide = wx.streak(drop)
+                fx, fy, fd = at(foot)
+                tx, ty, td = at(top)
+                across = max(0.8, wide * lines)
+                drawn = hidden = False
+                # Three pieces, top to foot, each drawn where the map isn't in front of it.
+                for piece in range(3):
+                    a, b = piece / 3, (piece + 1) / 3
+                    mid = (a + b) / 2
+                    shown = seen(tx + (fx - tx) * mid, ty + (fy - ty) * mid, td + (fd - td) * mid)
+                    if not shown:
+                        hidden = hidden or shown is False
+                        continue
+                    y0, y1 = (ty + (fy - ty) * a) / ratio, (ty + (fy - ty) * b) / ratio
+                    x = (tx + (fx - tx) * mid) / ratio
+                    s0 = wx.DROP_TOP + (wx.DROP_FOOT - wx.DROP_TOP) * a
+                    s1 = wx.DROP_TOP + (wx.DROP_FOOT - wx.DROP_TOP) * b
+                    p.drawImage(QRectF(x - across / 2, y0, across, max(0.5, y1 - y0)), sheet.drop,
+                                QRectF(left, s0, right - left, s1 - s0))
+                    drawn = True
+                if drawn:
+                    self.weather_parts.append(("drop", fx / ratio, fy / ratio))
+                if hidden:
+                    self.weather_hidden.append(("drop", fx / ratio, fy / ratio))
+            else:
+                x, y, far = at(drop.ground)
+                shown = seen(x, y, far)
+                if not shown:
+                    if shown is False:
+                        self.weather_hidden.append(("splash", x / ratio, y / ratio, drop.splash))
+                    continue
+                p.drawImage(wx.splash_box(x / ratio, y / ratio, wx.SPLASH_UNITS * ppu, drop.splash),
+                            sheet.splash[drop.splash])
+                self.weather_parts.append(("splash", x / ratio, y / ratio, drop.splash))
+
+    def _paint_snow(self, p: QPainter, sheet: wx.Sheet, weather: int, seconds: float) -> None:
+        width, height = float(self.view.width()), float(self.view.height())
+        lines = height / wx.LINES
+        for flake in wx.flakes(weather, width, height, seconds):
+            size = wx.CELL * lines * wx.SNOW_SIZE[flake.size]
+            p.drawImage(QRectF(flake.x - size / 2, flake.y - size / 2, size, size), sheet.snow[flake.size])
+            self.weather_parts.append(("flake", flake.x, flake.y, flake.size))
 
     def _frames_for(self, pose: es.Pose) -> tuple:
         """

@@ -43,7 +43,11 @@ mesh says (`Batch.repeat`; 009's waterfalls 6 by 6).
   start. A picture with frames and no track plays at
   `ENHANCED_FRAMES_A_SECOND`. The ones the game's `RefinedBgAnim` table
   plays when something happens in a battle (its kind 2: 37 of those 42
-  rows are doors and levers) show their first frame.
+  rows are doors and levers) show their track's first frame, the door as
+  the map is read, or nothing for the part that shows it shut once opened
+  (`map_doors`); the Event Editor keeps a door's frames (`build_enhanced`'s
+  `played`, `Batch.trigger`) and plays them as its event does
+  (`MapRenderer.played`).
 - Classic, the texture animations the game plays on a loop (GaneshaDx's
   reading of them, and the ones it plays): a rectangle of the texture shown
   from a row of frames, or one of the 16 palettes swapped for the animation
@@ -52,7 +56,6 @@ mesh says (`Batch.repeat`; 009's waterfalls 6 by 6).
 from __future__ import annotations
 
 import array
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -126,6 +129,10 @@ class Batch:
     overlay: bool = False
     #: "both", or the "side" views or the "top" down view only
     view: str = "both"
+    #: enhanced: a picture the game plays when something happens (a door,
+    #: `played_on_a_trigger`), not on a loop: its track's first frame, or
+    #: the one an event has it at (`batch_frame`'s `played`)
+    trigger: bool = False
 
     @property
     def count(self) -> int:
@@ -187,6 +194,14 @@ class Scene:
     #: "ccw" in the enhanced files, "cw" in the classic ones
     front: str = "ccw"
     notes: list = field(default_factory=list)
+    #: enhanced look only: how many highlight panels its mesh has (none on
+    #: 33 of the game's looks: `map_enhanced.with_grid_panels`)
+    panels: int = 0
+    #: The Event Editor's: the map's doors as events play them
+    #: (`map_doors.Doors`, enhanced look), and `(indoors, snow)` for the
+    #: weather (`map_classic.weather_flags`).
+    doors: Optional[object] = None
+    weather_flags: tuple = (False, False)
 
 
 def world(p) -> tuple:
@@ -264,42 +279,42 @@ def mesh_nodes(sqlite_path, number: int, rows: Optional[dict] = None) -> dict:
     return out
 
 
-def batch_frame(batch: Batch, count: int, seconds: float) -> int:
+def batch_frame(batch: Batch, count: int, seconds: float, played: Optional[int] = None) -> int:
     """
     Which of a batch's `count` colour frames shows at `seconds`: its track's
     frame at that tick, or, with no track, the frames in order at
-    `ENHANCED_FRAMES_A_SECOND`.
+    `ENHANCED_FRAMES_A_SECOND`. A picture played on a trigger shows its
+    track's first frame, or the one an event has it at (`played`).
     """
     if count <= 1:
         return 0
+    if batch.trigger:
+        frame = played if played is not None else (batch.track[0] if batch.track else 0)
+        return min(max(0, int(frame)), count - 1)
     if batch.track:
         return batch.track[int(seconds * me.TICKS_A_SECOND) % len(batch.track)] % count
     return enhanced_frame(count, seconds)
 
 
-def played_on_a_trigger(sqlite_path, number: int) -> set:
+def played_on_a_trigger(sqlite_path, number: int, rows: Optional[dict] = None) -> set:
     """
     The texture groups of a map the game's `RefinedBgAnim` table plays when
     something happens (map, row, 0, kind, group); empty without the table.
+    `rows` are a mod's over the game's (`state.unmodelled_table_edits`'
+    `RefinedBgAnim`): a look copied to another map number brings its own.
     """
-    if not sqlite_path:
+    if not sqlite_path and not rows:
         return set()
-    try:
-        con = sqlite3.connect(f"file:{Path(sqlite_path).as_posix()}?mode=ro", uri=True)
-        try:
-            rows = con.execute("SELECT Unknown8 FROM RefinedBgAnim WHERE Key = ? AND Unknown4 = ?",
-                               (number, PLAYED_ON_A_TRIGGER)).fetchall()
-        finally:
-            con.close()
-    except sqlite3.Error:
-        return set()
-    return {group for (group,) in rows}
+    found = mpk.table_rows(sqlite_path, mpk.ANIM_TABLE, number, rows)
+    return {fields.get("Unknown8") for fields in found.values()
+            if fields.get("Unknown4") == PLAYED_ON_A_TRIGGER and fields.get("Unknown8") is not None}
 
 
 def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = None,
                    state: mc.State = mc.State(), mesh_file: Optional[Path] = None,
                    picture_files: Optional[dict] = None, lighting: int = 0,
-                   rows: Optional[dict] = None, anim_file: Optional[Path] = None) -> Scene:
+                   rows: Optional[dict] = None, anim_file: Optional[Path] = None,
+                   played: Optional[set] = None) -> Scene:
     """
     The enhanced look of a map: its mesh, coloured by colour x lighting,
     under the map's `lighting`th lighting (`map_enhanced.lightings`, the
@@ -308,7 +323,9 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
     its `RefinedBgTexture` and `RefinedBgMeshNode` rows (`{table: {key:
     fields}}`, `state.unmodelled_table_edits`' shape): its own texture groups
     and parts, drawn as they say. `anim_file` is the mod's anim file, whose
-    tracks its pictures' frames play by.
+    tracks its pictures' frames play by. A group the game plays on a trigger
+    shows its track's first frame; `played`, the ones an event may play
+    (its doors, `map_doors`), keep all theirs for it (`Batch.trigger`).
     """
     rows = rows or {}
     from PIL import Image
@@ -317,6 +334,7 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
     mesh = me.read_mesh(Path(mesh_file or me.mesh_path(game_dir, number)).read_bytes())
     replaced = {name.lower(): Path(path) for name, path in (picture_files or {}).items()}
     scene = Scene(number, ENHANCED)
+    scene.panels = sum(1 for poly in mesh.polygons() if me.is_panel(poly.part))
     folder = game_dir / mc.MAP_FOLDER
     if (folder / mc.gns_name(number)).exists():
         sources = mc.read_gns(folder, number).sources(state)
@@ -356,7 +374,7 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
                 buf.extend(corners[k] + block.uv(poly.corners[k]) + (render,))
     scene.bounds = _bounds(points)
     scene.frame = _bounds(framed or points)
-    still = played_on_a_trigger(sqlite_path, number)
+    still = played_on_a_trigger(sqlite_path, number, rows.get(mpk.ANIM_TABLE))
     try:
         tracks = me.picture_tracks(Path(anim_file or me.anim_path(game_dir, number)).read_bytes())
     except (OSError, me.EnhancedMapError):
@@ -370,22 +388,31 @@ def build_enhanced(game_dir: Path, number: int, sqlite_path: Optional[Path] = No
         entry = pictures.get(group)
         colour = light = None
         frames = []
+        trigger = group in still
         if entry and entry.colour:
-            colour = picture(entry.colour[0])
+            # On a trigger, its track's first frame shows until it plays.
+            rest = tracks.get(group, (0,))[0] if trigger and tracks.get(group) else 0
+            colour = picture(entry.colour[rest if 0 <= rest < len(entry.colour) else 0])
             if entry.lighting:
                 light = picture(entry.lighting)
                 scene.light_files[group] = replaced.get(entry.lighting.lower(), textures / entry.lighting)
-            if colour is not None and len(entry.colour) > 1 and group not in still:
-                frames = [colour] + [picture(name) for name in entry.colour[1:]]
+            if colour is not None and len(entry.colour) > 1 and (not trigger or group in (played or ())):
+                first = picture(entry.colour[0])
+                first = first if first is not None and first.size == colour.size else colour
+                frames = [first] + [picture(name) for name in entry.colour[1:]]
                 # A frame that isn't there shows the first in its place.
-                frames = [f if f is not None and f.size == colour.size else colour for f in frames]
+                frames = [f if f is not None and f.size == colour.size else first for f in frames]
         if colour is None:
             missing.append(group)
             colour = Image.new("RGBA", (4, 4), (128, 128, 128, 255))
+        # A door's frames fade it to nothing: drawn see through where any is.
+        see_through = (any(_is_see_through(f) for f in frames) if trigger and frames
+                       else _is_see_through(colour))
         scene.batches.append(Batch(ENHANCED, buf, (3, 2, 1), colour, light,
-                                   see_through=_is_see_through(colour), group=group, frames=frames,
+                                   see_through=see_through, group=group, frames=frames,
                                    track=tracks.get(group, ()) if frames else (), repeat=repeat,
-                                   order=node.order, overlay=node.overlay, view=node.view))
+                                   order=node.order, overlay=node.overlay, view=node.view,
+                                   trigger=trigger and bool(frames)))
     for node, buf in black.items():
         scene.batches.append(Batch("flat", buf, (3, 4, 1), order=node.order, view=node.view))
     if missing:
@@ -645,20 +672,26 @@ class SceneWorker(Worker):
     """
 
     def __init__(self, token, game_dir, number, look, state, sqlite_path=None, mesh_file=None,
-                 picture_files=None, lighting=0, rows=None, anim_file=None):
+                 picture_files=None, lighting=0, rows=None, anim_file=None, terrains=None, played=None):
         super().__init__()
         self.token, self.game_dir, self.number, self.look = token, game_dir, number, look
         self.state, self.sqlite_path, self.lighting = state, sqlite_path, lighting
         self.mesh_file, self.picture_files = mesh_file, dict(picture_files or {})
         self.rows = {table: dict(found) for table, found in (rows or {}).items()}
         self.anim_file = anim_file
+        #: The grids a mod replaces whole (`state.map_terrains`, `{grid key:
+        #: terrain part}`: a look copied here brought its source's), drawn
+        #: in place of the game's.
+        self.terrains = {key: bytes(part) for key, part in (terrains or {}).items() if part}
+        #: The groups an event may play, their frames kept (`build_enhanced`'s `played`).
+        self.played = set(played or ())
 
     def run(self):
         try:
             if self.look == ENHANCED:
                 scene = build_enhanced(self.game_dir, self.number, self.sqlite_path, self.state,
                                        self.mesh_file, self.picture_files, self.lighting, self.rows,
-                                       anim_file=self.anim_file)
+                                       anim_file=self.anim_file, played=self.played)
             else:
                 scene = build_classic(self.game_dir, self.number, self.state)
             if scene.grid_file:
@@ -666,6 +699,8 @@ class SceneWorker(Worker):
                 scene.grid_key = mc.grid_key(folder, self.number, scene.grid_file)
                 scene.grid_files = sorted(mc.grid_files(folder, self.number, scene.grid_file),
                                           key=mc.file_order)
+                if scene.grid_key in self.terrains:
+                    scene.terrain = mc.read_terrain(self.terrains[scene.grid_key])
         except Exception as exc:                               # noqa: BLE001
             return (self.token, None, str(exc) or exc.__class__.__name__)
         return (self.token, scene, None)

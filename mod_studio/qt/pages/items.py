@@ -62,6 +62,7 @@ from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, FlagFieldPanel, NumericFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.layout_settle import retire
 from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.texture_slot import InlineTextureSlot
 from .poaching import TextFieldRow
@@ -743,8 +744,7 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
             return
         value, included = old.get_value_str(), old.included
         self.linked_column.takeAt(index)
-        old.setParent(None)
-        old.deleteLater()
+        retire(old)
         row = self._make_options_row()
         # The value carries across. The byte does not change when the
         # formula does - what changes is what it means - so blanking it

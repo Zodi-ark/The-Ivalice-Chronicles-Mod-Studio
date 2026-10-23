@@ -81,7 +81,6 @@ from ... import effect_files as ef
 from ... import effect_player as ep
 from ... import entd
 from ... import map_classic as mc
-from ... import map_enhanced as me
 from ... import ui_settings
 from ... import unit_sprites as us
 from .. import effect_drawing as ed
@@ -647,12 +646,13 @@ class AbilityMap(QWidget):
                 return None
         except (OSError, mc.MapError):
             return None
-        enhanced = me.mesh_path(game, MAP_NUMBER).is_file()
+        enhanced = me_page.has_look(self.state, game, MAP_NUMBER)
         mesh, pictures = me_page.mod_look(self.state, MAP_NUMBER) if enhanced else (None, {})
         rows = me_page.mod_rows(self.state, MAP_NUMBER) if enhanced else {}
         edits = {key: dict(found) for key, found in (getattr(self.state, "map_edits", {}) or {}).items()}
         return (str(game), ms.ENHANCED if enhanced else ms.CLASSIC, mesh, tuple(sorted(pictures.items())),
-                repr(sorted((t, sorted(f.items())) for t, f in rows.items())), repr(sorted(edits.items())))
+                repr(sorted((t, sorted(f.items())) for t, f in rows.items())), repr(sorted(edits.items())),
+                me_page.terrains_of(self.state, MAP_NUMBER))
 
     def _start_reading(self) -> None:
         game, key, token = self.game_dir(), self._wanted_key, self._token
@@ -664,7 +664,8 @@ class AbilityMap(QWidget):
         worker = AbilitySceneWorker(
             token, game, MAP_NUMBER, look, mc.State(), getattr(self.state, "nxd_sqlite_path", None),
             mesh if look == ms.ENHANCED else None, pictures if look == ms.ENHANCED else {}, 0,
-            me_page.mod_rows(self.state, MAP_NUMBER) if look == ms.ENHANCED else {})
+            me_page.mod_rows(self.state, MAP_NUMBER) if look == ms.ENHANCED else {},
+            terrains=me_page.map_terrains(self.state))
         self._reading_for = key
         run_in_thread(worker, on_finished=self._scene_ready, on_failed=self._scene_failed)
 

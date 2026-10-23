@@ -1959,6 +1959,9 @@ class SetupPage(QWidget):
         except OSError as exc:
             self._log(f"Couldn't read this mod's own files: {exc}")
             self.state.mod_own_files = {}
+        # The events' setup it changes (its EventSetup.json, for the helper
+        # mod): the Event Editor's changes again.
+        self._take_over_setup(existing.mod_root)
         if self.state.mod_own_files:
             code = modconfig.code_names(existing.config, self.state.mod_own_files)
             count = len(self.state.mod_own_files)
@@ -2200,6 +2203,66 @@ class SetupPage(QWidget):
             let_go += 1
         return let_go
 
+    def _whole_terrain(self, folder: Path, mine: dict):
+        """
+        `(part, records)`: the terrain part every one of a grid's files the
+        mod carries (`mine`, `{relative path: the game's file name}`) has in
+        place of the game's (`map_classic.with_terrain`), and the texture
+        animation records they have in place of the game's (`map_classic.
+        with_animation_records`; None where they are the game's: a look
+        copied to another map number brings its doors' with it), the same in
+        each and nothing else changed; or None.
+        """
+        part = records = None
+        for i, (rel, name) in enumerate(mine.items()):
+            try:
+                theirs = Path(self.state.other_file_replacements[rel]).read_bytes()
+                made = mc.terrain_part(theirs)
+                own = mc.with_terrain((folder / name).read_bytes(), made)
+                kept = None
+                if own != theirs:
+                    kept = mc.animation_records(theirs)
+                    if mc.with_animation_records(own, kept) != theirs:
+                        return None
+            except (OSError, mc.MapError):
+                return None
+            if i and (made != part or kept != records):
+                return None
+            part, records = made, kept
+        return None if part is None else (part, records)
+
+    def _take_whole(self, key: str, part: bytes, records) -> None:
+        """A grid the mod replaces whole into `state.map_terrains`, and the texture animation records it brought
+        into `state.map_animations`."""
+        self.state.map_terrains[key] = part
+        if records is not None:
+            self.state.map_animations[key] = records
+
+    def _take_over_copies(self, game: Path) -> dict:
+        """
+        `{target: source}`: the looks this mod copied to another map number,
+        into `state.map_copies`: a model it carries for a map with none in
+        the game, whose textures are named after another map
+        (`map_package.copy_source`), as Copy this look to names them.
+        """
+        from ... import map_enhanced as me
+        from ... import map_package as mpk
+
+        found = {}
+        for rel in list(self.state.other_file_replacements):
+            m = re.fullmatch(re.escape(me.MESH_FOLDER) + r"/map_(\d{3})_mesh\.bin", rel, re.IGNORECASE)
+            if not m:
+                continue
+            number = int(m.group(1))
+            if me.mesh_path(game, number).is_file():
+                continue
+            folder = mpk.picture_relative_path(number, "").lower()
+            source = mpk.copy_source([r for r in self.state.texture_edits if r.lower().startswith(folder)], number)
+            if source is not None:
+                self.state.map_copies[number] = source
+                found[number] = source
+        return found
+
     def _take_over_maps(self) -> None:
         """
         Turns the battle map files this mod ships back into Map Editor edits.
@@ -2216,6 +2279,17 @@ class SetupPage(QWidget):
 
         Needs the unpacked game to compare with, as layouts do; without it
         every map file stays carried through.
+
+        A grid replaced whole (the Map Editor's Copy this look to puts the
+        source's grid in the target's files: its size and both levels) comes
+        back as one when every copy the mod has is the game's with only its
+        terrain part another, the same in each (`map_classic.with_terrain`):
+        into `state.map_terrains`, the tiles changed on it in it, and the
+        texture animation records copies have in place of the game's
+        (`map_classic.with_animation_records`) into `state.map_animations`.
+        And a look copied to another map number (a model the mod carries for
+        a map with none in the game) is named by the map its textures are
+        named after (`map_package.copy_source`), into `state.map_copies`.
         """
         game = getattr(self.state, "nxd_unpack_dir", None)
         carried = self.state.other_file_replacements
@@ -2229,12 +2303,24 @@ class SetupPage(QWidget):
         if not game:
             return
         folder = Path(game) / mc.MAP_FOLDER
-        taken = same = kept = 0
+        taken = same = kept = whole = 0
+        copies = self._take_over_copies(Path(game))
         for number, rels in sorted(by_number.items()):
             for key, files in mc.map_grids(folder, number).items():
                 spelled = {name.lower(): name for name in files}
                 mine = [rel for rel in rels if rel[len(prefix):].lower() in spelled]
                 if not mine:
+                    continue
+                names = {rel: spelled[rel[len(prefix):].lower()] for rel in mine}
+                # A copy's grid is its source's whole, even where tile edits
+                # could say it (a grid of the same size): its panels follow
+                # the tiles from where they lie on it.
+                whole_grid = self._whole_terrain(folder, names) if number in copies else None
+                if whole_grid is not None:
+                    for rel in mine:
+                        carried.pop(rel)
+                    self._take_whole(key, *whole_grid)
+                    whole += 1
                     continue
                 found = []
                 for rel in mine:
@@ -2245,7 +2331,14 @@ class SetupPage(QWidget):
                     except OSError:
                         found.append(None)
                 if any(edits is None or edits != found[0] for edits in found):
-                    kept += len(mine)
+                    whole_grid = self._whole_terrain(folder, names)
+                    if whole_grid is None:
+                        kept += len(mine)
+                        continue
+                    for rel in mine:
+                        carried.pop(rel)
+                    self._take_whole(key, *whole_grid)
+                    whole += 1
                     continue
                 for rel in mine:
                     carried.pop(rel)
@@ -2257,6 +2350,11 @@ class SetupPage(QWidget):
         panels = self._take_over_panel_meshes(Path(game), by_number)
         if taken:
             self._log(f"Opened {taken} of this mod's battle grid(s) as Map Editor edits.")
+        if whole:
+            self._log(f"Opened {whole} of this mod's battle grid(s) as grids it replaces whole, "
+                      f"which the Map Editor edits.")
+        for target, source in sorted(copies.items()):
+            self._log(f"Map {target:03d} has map {source:03d}'s look in this mod.")
         if panels:
             self._log(f"{panels} of this mod's enhanced map mesh(es) only have their highlight "
                       f"panels moved for its grid edits, which export does again: not carried "
@@ -2322,6 +2420,29 @@ class SetupPage(QWidget):
         if kept:
             self._log(f"Carrying {kept} event file(s) through as they are: they don't read as "
                       f"event scripts.")
+
+    def _take_over_setup(self, mod_root) -> None:
+        """
+        The events' setup an opened mod changes: its `EventSetup.json`, for
+        Mod Studio Event Setup, read back as the helper reads it into the
+        Event Editor's changes (`state.setup_edits`), which export writes
+        again. What the helper would leave out is said and left out.
+        """
+        from ... import event_setup as su
+        self.state.setup_edits = {}
+        path = Path(mod_root) / su.FILE_NAME
+        if not path.is_file():
+            return
+        try:
+            edits, problems = su.read_file_text(path.read_text(encoding="utf-8-sig"))
+        except OSError as exc:
+            self._log(f"Couldn't read this mod's {su.FILE_NAME}: {exc}")
+            return
+        self.state.setup_edits = edits
+        if edits:
+            self._log(f"Opened the setup of {len(edits)} event(s) this mod changes on the Event Editor.")
+        for problem in problems:
+            self._log(f"Left out of this mod's {su.FILE_NAME}, as the helper would: {problem}.")
 
     def forget_opened_mod(self) -> None:
         """

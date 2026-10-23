@@ -327,9 +327,10 @@ class ModContentsPane(QWidget):
                 # Zodi, 12 October: what Load edited put in showed as a
                 # carried through file and rows edited on All Game Data.
                 ("Models, textures and rows",
-                 "A map's model from Load edited goes into the mod as it was "
-                 "built. Its textures are listed under Textures too, and its "
-                 "rows go into the tables' .nxd files with FF16Tools.",
+                 "A map's model from Load edited, Add highlight panels or Copy "
+                 "this look to goes into the mod as it was made. Its textures "
+                 "are listed under Textures too, and its rows go into the "
+                 "tables' .nxd files with FF16Tools.",
                  True, self._look_summary,
                  lambda: bool(self._map_looks())),
             ]),
@@ -340,6 +341,14 @@ class ModContentsPane(QWidget):
                  "with the text files.",
                  True, self._script_summary,
                  lambda: state.has_any_script_edits()),
+                # Zodi, 21 October: "Lets go with "One shared helper mod"".
+                ("EventSetup.json",
+                 "Each event's setup this mod changes (its map, music, battle "
+                 "and the rest), beside ModConfig.json, for Mod Studio Event "
+                 "Setup to apply as the game starts. Export lists that mod "
+                 "among your mod's dependencies and puts it beside your mod.",
+                 True, self._setup_summary,
+                 lambda: state.has_any_setup_edits()),
             ]),
         ])
 
@@ -526,13 +535,25 @@ class ModContentsPane(QWidget):
         return map_looks(self.state)
 
     def _table_edits_off_maps(self) -> dict:
-        """The mod's table edits less the rows that are a map's look (the Map Editor's)."""
+        """
+        The mod's table edits less the rows that are a map's look (the Map
+        Editor's): a row's columns a look has are left out, so a `Map` row
+        whose names a copied look changed keeps the columns edited on All
+        Game Data.
+        """
         from ..pages.map_editor import look_rows
         theirs = look_rows(self.state)
         out = {}
         for table, rows in (self.state.unmodelled_table_edits or {}).items():
-            kept = {key: fields for key, fields in rows.items()
-                    if key not in theirs.get(table, {})}
+            kept = {}
+            for key, fields in rows.items():
+                look = theirs.get(table, {}).get(key)
+                if look is None:
+                    kept[key] = fields
+                    continue
+                left = {k: v for k, v in fields.items() if k not in look and k != nxd_data.ADDED_ROW}
+                if left:
+                    kept[key] = left
             if kept:
                 out[table] = kept
         return out
@@ -555,7 +576,9 @@ class ModContentsPane(QWidget):
             rows = sum(len(found) for found in look["rows"].values())
             if rows:
                 what.append(f"{rows} table row{'s' if rows != 1 else ''}")
-            lines.append(f"Map {number:03d}: " + ", ".join(what[:-1])
+            source = look.get("copied_from")
+            lines.append(f"Map {number:03d}" + (f", map {source:03d}'s look copied there" if source is not None
+                                                 else "") + ": " + ", ".join(what[:-1])
                          + (" and " if len(what) > 1 else "") + what[-1] + ".")
             if look["mesh"]:
                 lines.append(f"  bg/meshes/map_{number:03d}_mesh.bin")
@@ -567,7 +590,9 @@ class ModContentsPane(QWidget):
                 lines.append(f"  {rel}")
                 lines.append(f"      from {source}")
             for table, found in sorted(look["rows"].items()):
-                keys = ", ".join("(" + ", ".join(str(k) for k in key) + ")" for key in sorted(found))
+                # A `Map` row is keyed by the map alone.
+                keys = ", ".join("(" + ", ".join(str(k) for k in (key if isinstance(key, tuple) else (key,))) + ")"
+                                 for key in sorted(found, key=lambda k: k if isinstance(k, tuple) else (k,)))
                 lines.append(f"  {table}: {keys}")
             lines.append("")
         return "\n".join(lines).rstrip()
@@ -907,13 +932,32 @@ class ModContentsPane(QWidget):
         return "\n".join(lines)
 
     def _map_summary(self) -> str:
-        """Which grids change, and which tiles on each, to what."""
+        """Which grids change, and which tiles on each, to what; and the grids put there whole."""
         edits = {name: tiles for name, tiles in (self.state.map_edits or {}).items() if tiles}
-        if not edits:
+        terrains = {name: part for name, part in (getattr(self.state, "map_terrains", None) or {}).items() if part}
+        if not edits and not terrains:
             return "No battle maps edited."
         total = sum(len(tiles) for tiles in edits.values())
         maps = len(self.state.edited_map_numbers())
         lines = [f"{total} tile(s) edited on {maps} map(s).", ""]
+        # Copy this look to's: the source's grid in the target's files, whole.
+        copies = getattr(self.state, "map_copies", None) or {}
+        for name in sorted(terrains, key=map_classic.file_order):
+            try:
+                number = int(name.lower().split("map_map")[1][:3])
+                size = map_classic.read_terrain(terrains[name])
+                shape = f"{size.size_x} by {size.size_z} tiles"
+            except (IndexError, ValueError, map_classic.MapError):
+                number, shape = None, "a grid"
+            whose = f"map {copies[number]:03d}'s grid" if number in copies else "another grid"
+            # And its doors' animations, which the copy brought (an event
+            # opens a door by them).
+            records = (getattr(self.state, "map_animations", None) or {}).get(name)
+            doors = ", with its door animations" if records and map_classic.started_records(records) else ""
+            lines.append(f"{map_classic.relative_path(name)} and the files holding the same grid: "
+                         f"{whose}, {shape}, put there whole{doors}")
+        if terrains:
+            lines.append("")
         # Surfaces by the game's names for them, as the Map Editor says them
         # (Zodi's stress test of 20 October: "surface 5", "surface 13").
         from ..pages.map_editor import names_language, surface_names
@@ -946,6 +990,22 @@ class ModContentsPane(QWidget):
             own = not (game and (Path(game) / rel).is_file())
             lines.append(f"{rel}, {len(edits[rel]):,} bytes"
                          + (", an event the game hasn't" if own else ""))
+        return "\n".join(lines)
+
+    def _setup_summary(self) -> str:
+        """Which events' setup changes, each field in words, then the file as export writes it."""
+        from ... import event_setup as su
+        from ..pages import event_words as words
+        edits = {number: changes for number, changes in (getattr(self.state, "setup_edits", {}) or {}).items()
+                 if changes}
+        if not edits:
+            return "No event's setup changed."
+        lines = [f"The setup of {len(edits)} event(s) changed.", ""]
+        for number in sorted(edits):
+            said = "; ".join(f"{words.SETUP_LABELS.get(f.key, f.key)} {edits[number][f.key]}"
+                             for f in su.FIELDS if f.key in edits[number])
+            lines.append(f"event {number:03d}: {said}")
+        lines += ["", su.file_text(edits)]
         return "\n".join(lines)
 
     def _sound_summary(self) -> str:

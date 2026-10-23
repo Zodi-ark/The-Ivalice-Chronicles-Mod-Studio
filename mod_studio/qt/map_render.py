@@ -242,6 +242,10 @@ class MapRenderer:
         self._band = -1
         #: The map's colours changed while drawing (`render`'s `tint`), or None.
         self._tint = None
+        #: `{texture group: colour frame}`: the pictures played on a trigger
+        #: (doors, `map_scene.Batch.trigger`) where an event has them; the
+        #: others show their track's first frame.
+        self.played: dict = {}
 
     # -- the context ------------------------------------------------------
     def ensure_context(self) -> bool:
@@ -390,18 +394,19 @@ class MapRenderer:
 
     # -- what moves -------------------------------------------------------------
     def animates(self) -> bool:
-        """Whether anything in the scene moves: a picture with frames, or a classic animation."""
+        """Whether anything in the scene moves by itself: a picture with frames on a loop, or a classic
+        animation (a door moves when an event plays it, `played`)."""
         if self.scene is None:
             return False
-        return (any(len(up.colours) > 1 for up in self._uploaded)
+        return (any(len(up.colours) > 1 and not up.batch.trigger for up in self._uploaded)
                 or bool(self.scene.uv_animations or self.scene.palette_animations))
 
     def frames_at(self, seconds: float) -> tuple:
         """The frame each moving thing shows at `seconds`: a picture needs drawing again when it changes."""
         if self.scene is None:
             return ()
-        out = [ms.batch_frame(up.batch, len(up.colours), seconds) for up in self._uploaded
-               if len(up.colours) > 1]
+        out = [ms.batch_frame(up.batch, len(up.colours), seconds, self.played.get(up.batch.group))
+               for up in self._uploaded if len(up.colours) > 1]
         out += [ms.frame_at(len(a.frames), a.duration, seconds, a.back_and_forth)
                 for a in self.scene.uv_animations]
         out += [ms.frame_at(a.count, a.duration, seconds, a.back_and_forth)
@@ -634,7 +639,7 @@ class MapRenderer:
             p.setUniformValue1i("lightMap", 1)
             p.setUniformValue("uvScale", QVector2D(*batch.repeat))
             p.setUniformValue1i("alphaMode", alpha)
-            up.colours[ms.batch_frame(batch, len(up.colours), seconds)].bind(0)
+            up.colours[ms.batch_frame(batch, len(up.colours), seconds, self.played.get(batch.group))].bind(0)
             # Unit 1 always holds a picture of this map: without a lighting
             # picture, the colour one, which the shader then doesn't read.
             (up.light if up.light is not None else up.colours[0]).bind(1)

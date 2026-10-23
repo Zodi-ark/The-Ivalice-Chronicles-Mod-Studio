@@ -63,6 +63,11 @@ class TableSpec:
     header_comment: str
     flag_fields: tuple = ()   # fields using parse_flag_value/format_flag_value ("None"-default) semantics
     bool_fields: tuple = ()   # fields using "true"/"false" ("false"-default)
+    #: The smallest Id the table has. 0 for all but four: the ability
+    #: tables keyed by the abilities they are for (Throw 382 to 393, Jump
+    #: 394 to 405, Charge 406 to 413, Math 414 to 421). Rows are filled in
+    #: from here, not from 0 (`load_table`).
+    min_id: int = 0
 
 
 def derive_spec(xml_path: Path) -> "TableSpec | None":
@@ -81,6 +86,7 @@ def derive_spec(xml_path: Path) -> "TableSpec | None":
       field_order    every child tag, in the order the file uses, unioned
                      across entries so a field some rows omit is not lost
       max_id         the largest Id present
+      min_id         the smallest (394 for `AbilityJumpData.xml`)
       header_comment the file's own leading comment, which is where the
                      mod loader explains that table's rules
 
@@ -125,11 +131,10 @@ def derive_spec(xml_path: Path) -> "TableSpec | None":
         return None
     field_order = [name for name in field_order if name != "Id"]
 
-    max_id = 0
-    for entry in entries:
-        found = entry.find("Id")
-        if found is not None and (found.text or "").strip().isdigit():
-            max_id = max(max_id, int(found.text.strip()))
+    ids = [int(found.text.strip()) for found in (entry.find("Id") for entry in entries)
+           if found is not None and (found.text or "").strip().isdigit()]
+    max_id = max(ids, default=0)
+    min_id = min(ids, default=0)
 
     header = ""
     for node in root.iter():
@@ -182,6 +187,7 @@ def derive_spec(xml_path: Path) -> "TableSpec | None":
             f"Everything else keeps the game's own value."),
         flag_fields=flag_fields,
         bool_fields=bool_fields,
+        min_id=min_id,
     )
 
 
@@ -271,8 +277,14 @@ def load_table(xml_path: Path, spec: TableSpec) -> tuple[list[ItemTableRecord], 
     # included), but gap-fill defensively
     # anyway in case a future game update's reference table falls behind,
     # same defensive approach as xml_io.load_job_table.
+    #
+    # From the table's first id, not from 0. Filled from 0, the jump table
+    # (394 to 405) loaded as 406 rows, 394 of them blank, and All Game Data
+    # offered them all; a change to one wrote an id the table hasn't, which
+    # the loader's jump table would index past its 12 entries (found 20
+    # October).
     seen_ids = {r.item_id for r in records}
-    for missing_id in range(0, spec.max_id + 1):
+    for missing_id in range(spec.min_id, spec.max_id + 1):
         if missing_id not in seen_ids:
             blank_values = {f: _default_for(spec, f) for f in spec.field_order}
             records.append(ItemTableRecord(item_id=missing_id, name=None, values=blank_values))
@@ -309,7 +321,7 @@ def parse_diff_xml(xml_path: Path, spec: TableSpec) -> tuple[dict, str, dict]:
             entry_id = int(id_el.text.strip())
         except ValueError:
             continue
-        if not (0 <= entry_id <= spec.max_id):
+        if not (spec.min_id <= entry_id <= spec.max_id):
             continue
 
         fields = {}

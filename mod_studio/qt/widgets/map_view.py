@@ -42,7 +42,7 @@ import time
 from typing import Optional
 
 from PySide6.QtCore import QCoreApplication, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
 from ... import map_classic as mc
@@ -65,6 +65,9 @@ CARD_RIGHT, CARD_ABOVE = 16, 4
 ANIMATION_TICK = 16
 #: How often a moving overlay is painted again, in milliseconds.
 OVERLAY_TICK = 33
+#: The sky's gradient is drawn through this many steps down the view, so a
+#: colour kept to 0 or 255 past its span (`MapView.sky_at`) bends where it is kept.
+SKY_STOPS = 16
 
 
 def _colour(name: str, alpha: int = 255) -> QColor:
@@ -134,6 +137,14 @@ class MapView(QWidget):
         #: Render the map with nothing behind it (alpha 0 there), for an
         #: overlay that paints its own backdrop.
         self.transparent = False
+        #: `(top, bottom)` QColors: the sky behind the map, fading from the
+        #: top of the view to its bottom, as the game draws a map's `Map` row
+        #: colors in a battle (`map_variants`); None, the page's background.
+        self.sky = None
+        #: `() -> (top, bottom)`: where in the view the sky's top and bottom
+        #: colors are, fading on past them as they went (`sky_at`), as the
+        #: game spreads an event's sky; None, the view's top and bottom.
+        self.sky_span = None
         #: Whether each drawing also measures how far the map is at each pixel
         #: (`MapRenderer.render_depth`), into `depth`: for an overlay that
         #: hides what stands behind the map's walls.
@@ -169,6 +180,8 @@ class MapView(QWidget):
         self.hovered = None
         self.picked = []
         self.depth = None
+        # A new map's doors are as it is read until an event plays them.
+        self.renderer.played = {}
         self.renderer.set_scene(scene)
         if scene is not None and self.renderer.error is None:
             # On the graphics card now; an enhanced map's pictures are tens
@@ -221,7 +234,35 @@ class MapView(QWidget):
             self.tint = tint
             self.schedule()
 
+    def set_played(self, played) -> None:
+        """
+        `{texture group: colour frame}`: the doors and such an event has
+        played (`MapRenderer.played`, `map_doors.pictures_at`), drawn again
+        when they change; {} for each at its track's first frame.
+        """
+        played = dict(played or {})
+        if played != self.renderer.played:
+            self.renderer.played = played
+            self.schedule()
+
     # -- drawing ----------------------------------------------------------------
+
+    def sky_at(self, y: float) -> tuple:
+        """The sky's colour at `y` in the view, `(r, g, b)`: its top colour faded to its bottom one over
+        `sky_span` (the view's height without one), on past them as it went, each channel kept to 0 to 255."""
+        if self.sky is None:
+            return (0, 0, 0)
+        top, bottom = self.sky_span() if self.sky_span is not None else (0.0, float(self.height()))
+        t = (y - top) / (bottom - top) if abs(bottom - top) > 1e-6 else 0.0
+        return tuple(min(255, max(0, int(round(a + (b - a) * t))))
+                     for a, b in zip(self.sky[0].getRgb()[:3], self.sky[1].getRgb()[:3]))
+
+    def set_sky(self, sky) -> None:
+        """The sky behind the map (`sky`), drawn again when it changes."""
+        if sky == self.sky:
+            return
+        self.sky = sky
+        self.schedule()
 
     def schedule(self) -> None:
         """Asks for a drawing once the events waiting have been handled."""
@@ -253,7 +294,7 @@ class MapView(QWidget):
         image = self.renderer.render(self.camera, round(self.width() * ratio),
                                      round(self.height() * ratio), show_grid=self.show_grid,
                                      background=(ground.redF(), ground.greenF(), ground.blueF()),
-                                     seconds=seconds, transparent=self.transparent,
+                                     seconds=seconds, transparent=self.transparent or self.sky is not None,
                                      tint=self.tint)
         if image is not None:
             image.setDevicePixelRatio(ratio)
@@ -331,7 +372,13 @@ class MapView(QWidget):
     def paintEvent(self, event):                                  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        p.fillRect(self.rect(), _colour("surface_alt"))
+        if self.sky is not None and self.image is not None and self.scene is not None:
+            sky = QLinearGradient(0, 0, 0, self.height())
+            for k in range(SKY_STOPS + 1):
+                sky.setColorAt(k / SKY_STOPS, QColor(*self.sky_at(self.height() * k / SKY_STOPS)))
+            p.fillRect(self.rect(), sky)
+        else:
+            p.fillRect(self.rect(), _colour("surface_alt"))
         if self.image is not None and self.scene is not None:
             p.drawImage(QPointF(0, 0), self.image)
         error = self.renderer.error and ("Maps can't be drawn on this computer: "

@@ -25,6 +25,10 @@ polygon's corners, UVs and normals written as the OBJ's, in world space
 Positions are joined within a part, so an edit in a 3D program moves every
 face at a corner together. The highlight panels are left out: they follow
 the battle grid (`map_enhanced.panels_following`), which the Map Editor edits.
+A look the game gave none and the Map Editor gave panels
+(`map_enhanced.with_grid_panels`) keeps them through a build, with their
+row (`part_rows`), and export makes them again from the tiles
+(`panels_for_tiles`).
 
 **Back**, `build`: the OBJ read, and a mesh made from it.
 
@@ -122,9 +126,10 @@ faces stand between the camera and a tile from (`map_battles.corners_hiding`),
 or "none". Every face of the part gets those bits, the game's own faces
 too; a part with no such word keeps the game's bits on the game's faces,
 and new faces get none. Saved again, a part whose faces all have one
-corner set's bits says so (`part_hiding`). A new part drawn in the side
-views that stands between the camera and tiles, with no word, gets a note
-saying from which corners and what to write.
+corner set's bits says so (`part_hiding`). A new part drawn as a wall
+(`WALL_KINDS`) that stands between the camera and tiles, with no word,
+gets a note saying from which corners and what to write; a new tree
+(`side`) gets none, as the game draws its own from every corner.
 
 Still out of reach, and said so: new moving parts (doors, windmills: the
 anim file's other channels), the classic look. Tried in the
@@ -132,8 +137,9 @@ game (085, 7 to 12 October): new texture groups, through rows a mod adds
 to `RefinedBgTexture`, numbered without a gap; new faces, bound to no
 tile, drawn as the game's; and (20 October, the icy tundra) parts drawn
 other than solid, through rows a mod adds to `RefinedBgMeshNode`: side
-parts from the usual camera, top parts from above, never both. Not tried
-yet: parts left out from camera corners, and new groups with frames.
+parts from the usual camera, top parts from above, never both; and (21
+October, Gariland's 022) parts left out from camera corners, by their
+faces' bits. Not tried yet: new groups with frames.
 
 `python -m mod_studio.map_package` does all of it from a command line:
 `export`, `check`, `build` and `preview`; `preview` runs
@@ -183,8 +189,12 @@ NEW_RENDER, HIDE_BITS = 0x8001, me.CAMERA_BITS
 #: it stands between the camera and a tile from (`map_battles.corners_hiding`),
 #: or "none": drawn from every corner.
 HIDE_WORD, HIDE_AUTO, HIDE_NONE = "hide", "auto", "none"
-#: The kinds of part drawn in the side views, where a wall can hide tiles.
-SIDE_VIEW_KINDS = ("solid", "edge", "side")
+#: The kinds of part a wall is drawn as, which Load edited offers to leave
+#: out from the camera corners it would hide tiles from, as the game leaves
+#: out its walls. Not a tree's (`side`): the game draws its 47 trees from
+#: every corner (`dev/research/maps/tree_corners.py`), and a tree left out
+#: was "very jarring in a bad way" (Zodi, 21 October).
+WALL_KINDS = ("solid", "edge")
 #: map.json's "base" "from" for a package saved from a mod's own model.
 FROM_MOD = "the mod's own mesh"
 #: A texture's mark in `map.json` when it was the mod's, not the game's.
@@ -232,6 +242,11 @@ PART_KINDS = {
     "top": (2, -1, 0, 0, 0, 0, 1, 1),         # 48: the icons of trees, grass, cacti
     "upright": (3, -1, 0, 0, 1, 0, 1, 1),     # 19: the icons of fires and candles
 }
+#: The row of a part of highlight panels (75 of the game's 77 panel rows):
+#: drawn in every view, first of the see through parts (-100), Unknown16 1.
+#: Not a `PART_KINDS` word: panels aren't in `map.obj` or `parts.txt`, as
+#: they follow the grid (`map_enhanced.with_grid_panels`).
+PANEL_ROW = (0, -100, 0, 1, 0, 1, 1, 1)
 #: A part whose row is none of `PART_KINDS`: drawn as its row says, kept.
 OWN_KIND = "own"
 #: How a part with no `RefinedBgMeshNode` row is drawn: the usual way. In
@@ -1075,9 +1090,10 @@ Parts, and how the game draws them
     way too. The Map Editor adds the rows when you Load edited.
 
   The game leaves its walls out when the battle camera stands at a corner
-  they would hide the field from, so you can see the units behind them.
-  A part you add is drawn from every corner, unless its line ends with
-  hide and the corners to leave it out from:
+  they would hide the field from, so you can see the units behind them;
+  its trees it draws from every corner. A part you add is drawn from every
+  corner, unless its line ends with hide and the corners to leave it out
+  from:
 
     glacier    solid hide NE SE    left out when the camera is at the
                                    north east or the south east corner
@@ -1088,8 +1104,10 @@ Parts, and how the game draws them
   The corners are SW, NW, NE and SE: in the Map Editor, N, E, S and W are
   marked round the map, and Turn left and Turn right go from corner to
   corner, saying which one the camera is at. Load edited says which new
-  parts stand between the camera and tiles, and from which corners, so
-  you know what to write. With hide auto, it says which corners it chose.
+  walls (solid and edge parts) stand between the camera and tiles, and
+  from which corners, so you know what to write; a new tree (side) it
+  leaves be, as the game does its own. With hide auto, it says which
+  corners it chose.
   A part left out from all four is never seen in a battle: name its
   corners instead. The game's own parts keep the corners the game gave
   each face unless you write hide on their line; a part you hid is saved
@@ -1100,7 +1118,10 @@ Tried in the game
   New texture groups (map 085): their textures drawn in a battle, and new
   faces drawn as the game's own. Parts drawn other than solid (085 made an
   icy tundra, 20 October): crystals drawn as side parts from the usual
-  camera, their icons as top parts from above, never both.
+  camera, their icons as top parts from above, never both. Parts left out
+  from camera corners (map 022, 21 October): left out from the corners
+  their faces say, as the Map Editor draws them. Not tried yet: moving
+  textures in a new group.
 
 The classic look
 
@@ -1940,10 +1961,11 @@ def part_hides(package: Package, plans: list, notes: list) -> dict:
     from camera corners (`read_part_hides`): the bits its every face gets,
     `HIDE_AUTO`'s worked out from where its faces are over the package's
     tiles (`map_battles.corners_hiding`). And a note for each new part drawn
-    in the side views that stands between the camera and tiles, with no
-    word for it: which corners, and what to write (Zodi's stress test of 20
-    October: a wall a map adds was drawn from every corner, as none of the
-    game's walls is).
+    as a wall (`WALL_KINDS`) that stands between the camera and tiles, with
+    no word for it: which corners, and what to write (Zodi's stress test of
+    20 October: a wall a map adds was drawn from every corner, as none of
+    the game's walls is). A new tree gets none: the game's own stand in the
+    view from every corner (Zodi, 21 October).
     """
     out = {}
     tiles = None
@@ -1953,7 +1975,7 @@ def part_hides(package: Package, plans: list, notes: list) -> dict:
         if hide is None and (b, part) in in_base:
             continue
         kind = (package.parts.get(name) or (DEFAULT_KIND,))[0] or DEFAULT_KIND
-        if hide is None and kind not in SIDE_VIEW_KINDS:
+        if hide is None and kind not in WALL_KINDS:
             continue
         corners = hide[0] if hide is not None else HIDE_AUTO
         if corners == HIDE_AUTO:
@@ -2244,10 +2266,18 @@ def part_rows(package: Package, names: list, problems: list, notes: list) -> dic
     listed = dict(package.parts)
     plain = kind_row(DEFAULT_KIND)
     rows = {}
+    rows_at = meta.get("rows_at")
+    game_rows = {(int(b), int(slot)) for b, slot in rows_at} if rows_at is not None else None
+    own_panels = {p.part for p in package.base.blocks[0].polygons(0) if me.is_panel(p.part)} \
+        if package.base.blocks else set()
     for b, block_names in enumerate(names):
         in_base = package.base.blocks[b].names if b < len(package.base.blocks) else []
         for slot, part in enumerate(block_names):
             if me.is_panel(part):
+                # Panels Mod Studio made for a look with none (block 0's
+                # part, its slot without a row of the game's) keep their row.
+                if b == 0 and game_rows is not None and (0, slot) not in game_rows and part in own_panels:
+                    rows[(number, 0, slot)] = dict(zip(NODE_COLUMNS, PANEL_ROW), DLCFlags=0, **{ADDED_ROW: True})
                 continue
             name = object_name(part, b)
             kind, order, _line = listed.pop(name, (None, None, None))
@@ -2620,14 +2650,45 @@ def enhanced_grid_file(game_dir, number: int) -> Optional[str]:
     return source.file_name if source else None
 
 
-def panels_for_tiles(mesh_bytes: bytes, game_dir, number: int, edited_tiles: dict) -> tuple:
+def panels_for_tiles(mesh_bytes: bytes, game_dir, number: int, edited_tiles: dict,
+                     copy: Optional[tuple] = None) -> tuple:
     """
     `(mesh bytes, panels moved)`: the highlight panels of `mesh_bytes` put on
     the grid as edited (`{(x, z, level): Tile}`), from the game's panels and
-    the game's tiles (`map_enhanced.panels_following`). The bytes as they
-    were when nothing moved.
+    the game's tiles (`map_enhanced.panels_following`). A look the game gave
+    none whose mesh has panels has Mod Studio's (`map_enhanced.
+    with_grid_panels`): those are made again from the tiles as edited. The
+    bytes as they were when nothing moved.
+
+    A look copied to `number` from another map (`copy`: `(source, the grid
+    copied with it, a terrain part)`, `look_copy`) has no mesh of the game's
+    there: its panels are the copy's own, followed from where they lie on
+    the copied grid, and Mod Studio's (the source's look had none in the
+    game) are made again from the tiles.
     """
     game_dir = Path(game_dir)
+    if copy is not None:
+        source, part = copy
+        game_tiles = {(t.x, t.z, t.level): t for t in mc.read_terrain(part).tiles}
+        mesh = me.read_mesh(mesh_bytes)
+        try:
+            source_mesh = me.read_mesh(me.mesh_path(game_dir, source).read_bytes())
+            source_has = me.has_panels(source_mesh)
+        except (OSError, me.EnhancedMapError):
+            source_mesh = None
+            source_has = me.panel_slot(mesh) is not None and me.has_panels(mesh)
+        if not source_has:
+            if me.panel_slot(mesh) is None:
+                return mesh_bytes, 0
+            made, _count = me.with_grid_panels(mesh, list((edited_tiles or game_tiles).values()))
+            data = me.write_mesh(made)
+            return (mesh_bytes, 0) if data == mesh_bytes else (data, len(_panel_shapes(made) - _panel_shapes(mesh)))
+        reference = me.read_mesh(mesh_bytes)
+        moved_mesh, moved = me.panels_following(mesh, reference, me.tile_rise(game_tiles, edited_tiles))
+        # The tiles with panels of the game's: its source's look's, on the
+        # grid that came with it (the copy's own may hold panels made before).
+        return _with_tiles_panels(moved_mesh, source_mesh or reference, mesh_bytes, edited_tiles or game_tiles,
+                                  moved)
     name = enhanced_grid_file(game_dir, number)
     if name is None:
         return mesh_bytes, 0
@@ -2636,9 +2697,377 @@ def panels_for_tiles(mesh_bytes: bytes, game_dir, number: int, edited_tiles: dic
         return mesh_bytes, 0
     game_tiles = {(t.x, t.z, t.level): t for t in terrain.tiles}
     game_mesh = me.read_mesh(me.mesh_path(game_dir, number).read_bytes())
+    if not me.has_panels(game_mesh):
+        mesh = me.read_mesh(mesh_bytes)
+        slot = me.panel_slot(mesh)
+        if slot is None:
+            return mesh_bytes, 0
+        made, _count = me.with_grid_panels(mesh, list((edited_tiles or game_tiles).values()))
+        data = me.write_mesh(made)
+        if data == mesh_bytes:
+            return mesh_bytes, 0
+        return data, len(_panel_shapes(made) - _panel_shapes(mesh))
     mesh, moved = me.panels_following(me.read_mesh(mesh_bytes), game_mesh,
                                       me.tile_rise(game_tiles, edited_tiles))
-    return (me.write_mesh(mesh) if moved else mesh_bytes), moved
+    return _with_tiles_panels(mesh, game_mesh, mesh_bytes, edited_tiles or game_tiles, moved)
+
+
+def _with_tiles_panels(mesh, game_mesh, mesh_bytes: bytes, tiles: dict, moved: int) -> tuple:
+    """
+    `panels_for_tiles`' answer for a look with the game's panels, `moved`
+    of them followed onto the tiles: with panels of their own over the tiles
+    the game's look has none for (an upper level a mod made, `map_enhanced.
+    with_added_panels`), made again each time from the tiles as they are, and
+    taken away with them. How many panels moved or were added, at least one
+    when only panels made before are taken away.
+    """
+    mesh, added = me.with_added_panels(mesh, game_mesh, list(tiles.values()))
+    data = me.write_mesh(mesh)
+    if data == mesh_bytes:
+        return mesh_bytes, moved + added
+    return data, (moved + added) or 1
+
+
+def _panel_shapes(mesh: me.EnhancedMesh) -> set:
+    """Each highlight panel of a mesh as its tile and corners, to count those that moved."""
+    out = set()
+    for b, block in enumerate(mesh.blocks):
+        for poly in block.polygons(b):
+            if me.is_panel(poly.part):
+                out.add((poly.tile, tuple(tuple(round(v, 4) for v in block.positions[c]) for c in poly.corners)))
+    return out
+
+
+def grid_tiles(game_dir, number: int, map_edits: Optional[dict] = None, carried: Optional[dict] = None,
+               terrains: Optional[dict] = None) -> dict:
+    """
+    `{(x, z, level): Tile}`: the grid map `number`'s enhanced look stands on
+    (`enhanced_grid_file`), with the tile edits a mod has for it
+    (`state.map_edits`, by `map_classic.grid_key`), on the grid it put there
+    whole when it has (`terrains`, `state.map_terrains`: a look copied from
+    another map), or as the mod carries its file whole (`carried`,
+    `state.other_file_replacements`); empty without one.
+    """
+    game_dir = Path(game_dir)
+    name = enhanced_grid_file(game_dir, number)
+    if name is None:
+        return {}
+    folder = game_dir / mc.MAP_FOLDER
+    key = mc.grid_key(folder, number, name)
+    whole = {str(rel).replace("\\", "/").lower(): path for rel, path in (carried or {}).items()}
+    source = whole.get(mc.relative_path(name).lower())
+    if key is not None and (terrains or {}).get(key):
+        terrain = mc.read_terrain(terrains[key])
+    else:
+        terrain = mc.read_mesh(Path(source).read_bytes() if source else (folder / name).read_bytes()).terrain
+    if terrain is None:
+        return {}
+    edits = (map_edits or {}).get(key) or {}
+    return {(t.x, t.z, t.level): mc.Tile(t.x, t.z, t.level, mc.tile_with(t.raw, edits.get((t.x, t.z, t.level), {})))
+            for t in terrain.tiles}
+
+
+def grid_panel_rows(sqlite_path, number: int, mesh: me.EnhancedMesh, rows: Optional[dict] = None) -> dict:
+    """
+    `{(map, 0, slot): fields}`: the `RefinedBgMeshNode` rows a look given
+    highlight panels (`map_enhanced.with_grid_panels`) needs, each a row the
+    mod adds: its panel part's (`PANEL_ROW`), and a plain one (how a part
+    with none is drawn) for every name slot of block 0 below it without a
+    row, the game's or the mod's (`rows`, `state.unmodelled_table_edits`'
+    for the table), as the game's rows never skip a slot.
+    """
+    slot = me.panel_slot(mesh)
+    if slot is None:
+        return {}
+    have, _added = map_rows(sqlite_path, NODE_TABLE, number, rows)
+    out = {(number, 0, slot): dict(zip(NODE_COLUMNS, PANEL_ROW), DLCFlags=0, **{ADDED_ROW: True})}
+    plain = kind_row(DEFAULT_KIND)
+    for s in range(slot):
+        if (0, s) not in have:
+            out[(number, 0, s)] = dict(plain, DLCFlags=0, **{ADDED_ROW: True})
+    return out
+
+
+# =============================================================================
+# A look copied to another map number
+# =============================================================================
+
+#: The map numbers a look is copied to: a battle grid and no enhanced look
+#: in the game, and no event of the game's set on them (none of the
+#: PlayStation's scenarios, none of the 713 records in Zodi's program), so a
+#: battle a mod sets there meets nothing of the game's (Zodi, 21 October:
+#: "copying a map's look to a new map number"). 126 and 127 have a GNS and no
+#: files of their own, and WotL Restoration's battle is on 127.
+SPARE_MAPS = (97, 98, 99, 117, 118, 119, 125)
+#: The story battles' changes to a map's polygons (`map_enhanced`'s notes):
+#: rows keyed by map and row, copied with the look they name polygons of.
+POLYGON_TABLE = "RefinedBgMeshPolygon"
+#: A map's own row (one key): its names (`PlaceName` keys: the whole name,
+#: the place and its part), its lightings' variants and their sky.
+MAP_TABLE = "Map"
+MAP_COLUMNS = ("Unknown8", "UnknownC", "Unknown10", "Unknown14", "Unknown1C")
+#: The tables a look is copied in, keyed by map first: Load edited's four
+#: and the polygons'.
+COPY_TABLES = (TEXTURE_TABLE, NODE_TABLE, SYSTEM_TABLE, ANIM_TABLE, POLYGON_TABLE)
+#: A copied look's pictures keep their source's names (`gt_0_map048_...`),
+#: as WotL Restoration's 127 keeps 066's: what the rows say.
+_SOURCE_NAME = re.compile(r"gt_\d+_map(\d{3})_", re.IGNORECASE)
+
+
+@dataclass
+class LookCopy:
+    """
+    Map `source`'s enhanced look as a mod has it, for map `target`: its mesh
+    and anim file numbered as the target, every picture its rows name (from
+    the mod's pictures, else the source's folder, under the source's names),
+    its rows keyed by the target (added, or over the target's own), the
+    grid its look stands on, whole (`map_classic.terrain_part`), and the
+    classic map's texture animation records its events open its doors with
+    (`map_classic.animation_records`; None when the source has none).
+    """
+    source: int
+    target: int
+    mesh: bytes
+    anim: Optional[bytes]
+    pictures: dict          # {picture file name: image file}
+    rows: dict              # {table: {key: fields}}, `unmodelled_table_edits`' shape
+    terrain: Optional[bytes]
+    missing: list = field(default_factory=list)
+    animations: Optional[bytes] = None
+
+
+def copy_targets(game_dir) -> list:
+    """`SPARE_MAPS` the game has a battle grid for (`map_classic.map_grids`)."""
+    folder = Path(game_dir) / mc.MAP_FOLDER
+    return [n for n in SPARE_MAPS if mc.map_grids(folder, n)]
+
+
+def _key_names(con, table: str) -> list:
+    columns = [row[1] for row in con.execute(f'PRAGMA table_info("{table}")')]
+    return [name for name in ("Key", "Key2", "Key3") if name in columns]
+
+
+def table_rows(sqlite_path, table: str, number: int, rows: Optional[dict] = None) -> dict:
+    """
+    `{key: {column: value}}`: map `number`'s rows of `table` (keyed by map
+    first, one to three keys), the game's with a mod's over them (`rows`:
+    its edits change a row's columns, the rows it adds are added), keys as
+    the store keeps them (`(map, key2, ...)`, or the map alone for a table
+    of one key).
+    """
+    found, names = {}, ["Key"]
+    if sqlite_path:
+        try:
+            con = sqlite3.connect(f"file:{Path(sqlite_path).as_posix()}?mode=ro", uri=True)
+            try:
+                con.row_factory = sqlite3.Row
+                names = _key_names(con, table) or ["Key"]
+                order = ", ".join(names)
+                for row in con.execute(f'SELECT * FROM "{table}" WHERE Key = ? ORDER BY {order}', (number,)):
+                    key = tuple(row[k] for k in names)
+                    found[key[0] if len(key) == 1 else key] = {k: row[k] for k in row.keys() if k not in names}
+            finally:
+                con.close()
+        except sqlite3.Error:
+            found = {}
+    for key, fields in (rows or {}).items():
+        first = key[0] if isinstance(key, tuple) else key
+        if first != number:
+            continue
+        if key not in found:
+            if not fields.get(ADDED_ROW):
+                continue
+            found[key] = {}
+        found[key].update({k: v for k, v in fields.items() if k != ADDED_ROW})
+    return found
+
+
+def _rekeyed(key, target: int):
+    return (target,) + tuple(key[1:]) if isinstance(key, tuple) else target
+
+
+def copy_rows(sqlite_path, source: int, target: int, rows: Optional[dict] = None) -> dict:
+    """
+    `{table: {key: fields}}`: map `source`'s rows of `COPY_TABLES` (the
+    game's with the mod's, `rows`), and its `MAP_TABLE` row's `MAP_COLUMNS`,
+    for map `target`: a row the target hasn't added (`ADDED_ROW`), one it
+    has given the columns that differ. The target's rows the source hasn't
+    stay as the game has them (rows a mod adds or edits; none is taken out).
+    """
+    out = {}
+    for table in COPY_TABLES + (MAP_TABLE,):
+        mine = table_rows(sqlite_path, table, source, (rows or {}).get(table))
+        theirs = table_rows(sqlite_path, table, target)
+        found = {}
+        for key, fields in mine.items():
+            if table == MAP_TABLE:
+                fields = {k: v for k, v in fields.items() if k in MAP_COLUMNS}
+            new_key = _rekeyed(key, target)
+            have = theirs.get(new_key)
+            if have is None:
+                found[new_key] = dict(fields, **{ADDED_ROW: True})
+            else:
+                changed = {k: v for k, v in fields.items() if have.get(k) != v}
+                if changed:
+                    found[new_key] = changed
+        if found:
+            out[table] = found
+    return out
+
+
+def look_pictures(game_dir, number: int, sqlite_path=None, rows: Optional[dict] = None) -> list:
+    """
+    Every picture file map `number`'s rows name (the game's with a mod's,
+    `rows`): each lighting's colour pictures and their frames, lightings
+    and second lightings (`map_enhanced.lightings`), and the units' lighting
+    (`SYSTEM_TABLE`'s `lut_chara` lists), in a stable order.
+    """
+    names = []
+    for lighting in me.lightings(game_dir, number, sqlite_path, (rows or {}).get(TEXTURE_TABLE)):
+        for _group, entry in sorted(lighting.pictures.items()):
+            names.extend(entry.colour)
+            names.extend(n for n in (entry.lighting, entry.lighting2) if n)
+    for _key, fields in sorted(table_rows(sqlite_path, SYSTEM_TABLE, number,
+                                          (rows or {}).get(SYSTEM_TABLE)).items()):
+        for column in ("Unknown8", "Unknown10"):
+            names.extend(f"{name}.tga" for name in _json_list(fields.get(column)) if name)
+    out, seen = [], set()
+    for name in names:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            out.append(name)
+    return out
+
+
+def source_grid(game_dir, number: int, map_edits: Optional[dict] = None, carried: Optional[dict] = None,
+                terrains: Optional[dict] = None) -> Optional[bytes]:
+    """
+    The grid map `number`'s enhanced look stands on (`enhanced_grid_file`),
+    as a mod has it, whole (`map_classic.terrain_part`): the game's file, or
+    the mod's copy of it carried whole, its grid replaced whole when the mod
+    did (`terrains`), with the mod's tile edits. None without one.
+    """
+    game_dir = Path(game_dir)
+    name = enhanced_grid_file(game_dir, number)
+    if name is None:
+        return None
+    folder = game_dir / mc.MAP_FOLDER
+    key = mc.grid_key(folder, number, name)
+    whole = {str(rel).replace("\\", "/").lower(): path for rel, path in (carried or {}).items()}
+    carried_file = whole.get(mc.relative_path(name).lower())
+    data = Path(carried_file).read_bytes() if carried_file else (folder / name).read_bytes()
+    if key is not None and (terrains or {}).get(key):
+        data = mc.with_terrain(data, terrains[key])
+    data, _problems = mc.apply_tile_edits(data, (map_edits or {}).get(key) or {})
+    try:
+        return mc.terrain_part(data)
+    except mc.MapError:
+        return None
+
+
+def source_animations(game_dir, number: int, carried: Optional[dict] = None,
+                      animations: Optional[dict] = None) -> Optional[bytes]:
+    """
+    Map `number`'s texture animation records as a mod has them
+    (`map_classic.animation_records`, 640 bytes): its grid's own when the
+    mod put some there (`animations`, `state.map_animations`: a look copied
+    there brought its source's), else the file its first state reads them
+    from, the mod's copy carried whole or the game's. None for a map with
+    none (098's, 117's to 119's and 125's files have no place for them).
+    """
+    game_dir = Path(game_dir)
+    folder = game_dir / mc.MAP_FOLDER
+    name = enhanced_grid_file(game_dir, number)
+    key = mc.grid_key(folder, number, name) if name else None
+    if key is not None and (animations or {}).get(key):
+        return bytes(animations[key])
+    try:
+        found = mc.read_gns(folder, number).sources(mc.State()).get("texture_animations")
+    except (OSError, mc.MapError):
+        return None
+    if found is None:
+        return None
+    whole = {str(rel).replace("\\", "/").lower(): path for rel, path in (carried or {}).items()}
+    own = whole.get(mc.relative_path(found.file_name).lower())
+    try:
+        data = Path(own).read_bytes() if own else (folder / found.file_name).read_bytes()
+        return mc.animation_records(data)
+    except (OSError, mc.MapError):
+        return None
+
+
+def look_copy(game_dir, source: int, target: int, sqlite_path=None, mesh_file=None,
+              pictures: Optional[dict] = None, rows: Optional[dict] = None, anim_file=None,
+              map_edits: Optional[dict] = None, carried: Optional[dict] = None,
+              terrains: Optional[dict] = None, copies: Optional[dict] = None,
+              animations: Optional[dict] = None) -> LookCopy:
+    """
+    Map `source`'s enhanced look as a mod has it (its `mesh_file`, else the
+    game's; its `pictures`, `{name: image file}`, over the game's folder;
+    its `rows`, `state.unmodelled_table_edits`; its `anim_file`), the grid
+    it stands on (with the mod's `map_edits`, `carried` files and
+    `terrains`) and its texture animation records (`source_animations`,
+    with the mod's `animations`), made map `target`'s (`LookCopy`). The
+    mesh's highlight panels are put on the grid as the mod has it first, as
+    export would (`panels_for_tiles`). PackageError when the source has no
+    look. A target with no battle grid of its own (127: a GNS and no files)
+    gets the look alone; `copy_targets` offers the ones with a grid.
+    """
+    game_dir = Path(game_dir)
+    if source == target:
+        raise PackageError(f"map {source:03d} can't be copied onto itself")
+    base = Path(mesh_file) if mesh_file else me.mesh_path(game_dir, source)
+    try:
+        mesh_bytes = base.read_bytes()
+        me.read_mesh(mesh_bytes)
+    except (OSError, me.EnhancedMapError) as exc:
+        raise PackageError(f"map {source:03d}'s look can't be read: {exc}") from exc
+    terrain = source_grid(game_dir, source, map_edits, carried, terrains)
+    origin = (copies or {}).get(source)
+    if terrain is not None:
+        tiles = grid_tiles(game_dir, source, map_edits, carried, terrains)
+        try:
+            if me.mesh_path(game_dir, source).is_file():
+                mesh_bytes, _moved = panels_for_tiles(mesh_bytes, game_dir, source, tiles)
+            elif origin is not None:
+                base_part = source_grid(game_dir, source, None, carried, terrains)
+                mesh_bytes, _moved = panels_for_tiles(mesh_bytes, game_dir, source, tiles,
+                                                      copy=(origin, base_part))
+        except (OSError, me.EnhancedMapError, mc.MapError):
+            pass
+    anim = None
+    anim_source = Path(anim_file) if anim_file else me.anim_path(game_dir, source)
+    if anim_source.is_file():
+        anim = me.renumbered(anim_source.read_bytes(), target)
+    mod_pictures = {str(name).lower(): Path(path) for name, path in (pictures or {}).items()}
+    found, missing = {}, []
+    for name in look_pictures(game_dir, source, sqlite_path, rows):
+        path = mod_pictures.get(name.lower()) or me.texture_folder(game_dir, source) / name
+        if path.is_file():
+            found[name] = path
+        else:
+            missing.append(name)
+    return LookCopy(source, target, me.renumbered(mesh_bytes, target), anim, found,
+                    copy_rows(sqlite_path, source, target, rows), terrain, missing,
+                    source_animations(game_dir, source, carried, animations))
+
+
+def copy_source(names, number: int) -> Optional[int]:
+    """
+    The map a look at `number` was copied from, by the names of the
+    pictures a mod has in its folder (`gt_0_map048_...` in 097's: 48), as
+    an opened mod has them (its textures come back before its tables do);
+    the map most of them name, the lower on a tie. None when they name
+    `number` itself or no map.
+    """
+    counts = Counter()
+    for name in names or ():
+        m = _SOURCE_NAME.match(Path(str(name)).name)
+        if m and int(m.group(1)) != number:
+            counts[int(m.group(1))] += 1
+    if not counts:
+        return None
+    return min(counts, key=lambda n: (-counts[n], n))
 
 
 def build_into_mod(folder, mod_folder, mode: str = "enhanced", game_dir=None) -> dict:

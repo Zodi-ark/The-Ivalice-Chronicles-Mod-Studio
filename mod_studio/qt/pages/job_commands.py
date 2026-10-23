@@ -299,6 +299,12 @@ class JobCommandsPage(RefreshesWhenVisible, QWidget):
         apply_view_toggles(
             list(self.rows.values()) + list(self.text_rows.values()),
             hide_notes, hide_unknown, hide_comments)
+        # The toggles show and hide each row themselves, so a monster's
+        # slots 5 to 16, which its table hasn't, came back with them, ready
+        # to tick (found 21 October). Its shape goes on again after.
+        record = self._record(self.current_command_id)
+        if record is not None:
+            self._show_shape(record)
 
     def refresh_records(self) -> None:
         # The saved preference has to be applied on load, not only when the
@@ -368,10 +374,38 @@ class JobCommandsPage(RefreshesWhenVisible, QWidget):
         if current is not None:
             self.load_command(current.data(Qt.UserRole))
 
+    def _record(self, command_id):
+        """The loaded skillset with this id, or None."""
+        if command_id is None:
+            return None
+        return next((r for r in (getattr(self.state, "job_command_records", []) or [])
+                     if r.command_id == command_id), None)
+
+    @staticmethod
+    def _slot_names(record) -> list:
+        """The slots this skillset's table has: a monster's four, or a job's 16 and 6."""
+        if record.is_monster:
+            return [f"AbilityId{i}" for i in range(1, len(record.ability_ids) + 1)]
+        return ([f"AbilityId{i}" for i in range(1, ABILITY_SLOTS + 1)]
+                + [f"ReactionSupportMovementId{i}" for i in range(1, RSM_SLOTS + 1)])
+
+    def _show_shape(self, record) -> None:
+        """
+        Shows this skillset's slots and hides the rest.
+
+        A monster skillset is a different SHAPE: four ability slots and no
+        Reaction, Support or Movement. The rows that do not exist for this
+        record are hidden rather than shown empty, because an empty slot
+        and a slot the table does not have are different things and the
+        second one cannot be edited into existence.
+        """
+        own = set(self._slot_names(record))
+        for field_name, row in self.rows.items():
+            row.setVisible(field_name in own)
+        self._set_section_visible(record)
+
     def load_command(self, command_id: int) -> None:
-        records = {r.command_id: r for r
-                   in (getattr(self.state, "job_command_records", []) or [])}
-        record = records.get(command_id)
+        record = self._record(command_id)
         if record is None:
             return
         self.current_command_id = command_id
@@ -380,33 +414,22 @@ class JobCommandsPage(RefreshesWhenVisible, QWidget):
         self._load_text_rows(command_id)
 
         already = self.state.job_command_edits.get(command_id, {})
-        # A monster skillset is a different SHAPE: four ability slots and no
-        # Reaction, Support or Movement. The rows that do not exist for this
-        # record are hidden rather than shown empty, because an empty slot
-        # and a slot the table does not have are different things and the
-        # second one cannot be edited into existence.
-        slots = len(record.ability_ids) if record.is_monster else ABILITY_SLOTS
-        for i in range(1, ABILITY_SLOTS + 1):
-            field_name = f"AbilityId{i}"
-            row = self.rows[field_name]
-            row.setVisible(i <= slots)
-            if i > slots:
-                continue
-            if field_name in already:
+        own = set(self._slot_names(record))
+        values = {f"AbilityId{i}": v for i, v in enumerate(record.ability_ids, 1)}
+        values.update({f"ReactionSupportMovementId{i}": v
+                       for i, v in enumerate(record.rsm_ids, 1)})
+        for field_name, row in self.rows.items():
+            if field_name not in own:
+                # Unticked, not only hidden. A job's tick left on slot 7 or
+                # an R/S/M slot stayed on the row when a monster came next,
+                # and the monster's next change recorded it with its own (a
+                # slot its file hasn't; found 20 October).
+                row.load("0", False)
+            elif field_name in already:
                 row.load(already[field_name], True)
             else:
-                row.load(str(record.ability_ids[i - 1]), False)
-        for i in range(1, RSM_SLOTS + 1):
-            field_name = f"ReactionSupportMovementId{i}"
-            row = self.rows[field_name]
-            row.setVisible(not record.is_monster)
-            if record.is_monster:
-                continue
-            if field_name in already:
-                row.load(already[field_name], True)
-            else:
-                row.load(str(record.rsm_ids[i - 1]), False)
-        self._set_section_visible(record)
+                row.load(str(values.get(field_name, 0)), False)
+        self._show_shape(record)
 
     def _set_section_visible(self, record) -> None:
         """
@@ -516,9 +539,13 @@ class JobCommandsPage(RefreshesWhenVisible, QWidget):
         if self.current_command_id is None:
             return
         command_id = self.current_command_id
+        record = self._record(command_id)
+        # Only the slots this skillset has: a field for one it hasn't is
+        # taken out rather than kept.
+        own = set(self._slot_names(record)) if record is not None else set(self.rows)
         edits = self.state.job_command_edits.setdefault(command_id, {})
         for field_name, row in self.rows.items():
-            if row.included:
+            if row.included and field_name in own:
                 edits[field_name] = row.get_value_str()
             elif field_name in edits:
                 del edits[field_name]

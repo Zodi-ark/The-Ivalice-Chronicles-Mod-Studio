@@ -205,6 +205,31 @@ def find_game_root() -> Optional[Path]:
     return roots[0] if roots else None
 
 
+def find_program(pack_folder=None, name: str = GAME_EXE_NAMES[0]) -> Optional[Path]:
+    """
+    The game's program (`FFT_enhanced.exe` unless named), for what Mod
+    Studio reads from it as data (`event_setup`): in the folder of .pac
+    files General Setup was given or a folder above it (the game's own
+    folder is a level or two up), else in the Steam install found; None
+    without either. Never run.
+    """
+    if pack_folder:
+        folder = Path(pack_folder)
+        for candidate in [folder, *folder.parents][:_MAX_PACK_SEARCH_DEPTH + 1]:
+            try:
+                if (candidate / name).is_file():
+                    return candidate / name
+            except OSError:
+                continue
+    for root in find_game_roots():
+        try:
+            if (root / name).is_file():
+                return root / name
+        except OSError:
+            continue
+    return None
+
+
 # =============================================================================
 # Pack folder discovery
 # =============================================================================

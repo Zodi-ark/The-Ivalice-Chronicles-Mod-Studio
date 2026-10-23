@@ -28,6 +28,18 @@ to `FFTIVC/data/<mode>/script/<mode>/eventNNN.e`. A speech line's words go
 into `state.pzd_edits`, the Sounds page's store, on the scene's text file;
 a Speak node with new words is a new line of that file, in every language
 the game has it in (`pzd_data.ADDED_LINE`), written in the language shown.
+
+**The event's setup** (Zodi, 21 October: "Lets go with "One shared helper
+mod""): its map, weather, time of day, two pieces of music, enemy battle,
+deploy areas and what follows, read from the game's own program on this
+machine (`event_setup`, the program found from General Setup's folder of
+.pac files, `game_install.find_program`), for every event it has, not only
+the PlayStation's 1 to 490 (`ATTACK.OUT`, still read when the program
+can't be). Shown on the card when an event is picked and no node is (and
+by Setup over the nodes), each field a control; a change goes into
+`state.setup_edits` (only what differs from the game's), the map, units
+and music played follow it, and export writes `EventSetup.json` for the
+helper mod, Mod Studio Event Setup.
 """
 from __future__ import annotations
 
@@ -45,6 +57,10 @@ from PySide6.QtWidgets import (
 from ... import battle_maps as bmaps
 from ... import encounter_names
 from ... import event_scripts as es
+from ... import event_setup as su
+from ... import game_install
+from ... import map_classic
+from ... import map_doors as md
 from ... import pzd_data
 from ... import reference_names
 from ... import ui_settings
@@ -52,6 +68,7 @@ from ... import unit_sprites as us
 from .. import theme
 from ..widgets import actions
 from ..widgets.actions import page_intro
+from ..widgets.layout_settle import retire
 from ..workers import Worker, run_in_thread
 from . import abilities as abilities_page
 from . import encounter_map as em
@@ -105,15 +122,17 @@ MARKS_NOTE = ("Words in < > are the game's marks and aren't shown: speaker=\"...
 MUSIC_LABEL = "Music"
 NO_PIECE = "No music: the event has no other track to switch to."
 PLAY_MUSIC, STOP_MUSIC = "Play", "Stop"
-#: Which two tracks an event has, and why that can't be changed here (Zodi,
-#: 20 October: "If we can change what the two are or even better have it
-#: support more than two tracks that would be great").
-TRACKS_NOTE = ("This event's two tracks: 1, {first}; 2, {second}. The game keeps every event's two tracks "
-               "in its own program, not in a file a mod changes, so which they are can't be changed here; "
-               "a SwitchTrack only takes turns between them. A tune (PlayTune) plays a short piece once, "
-               "and the Sounds page can replace what any piece sounds like.")
-NO_TRACKS = ("The game's files don't say this event's two tracks (its setup is in the game's program; the "
-             "PlayStation's copy of it, which Mod Studio reads, has events 1 to 490).")
+#: Which two tracks an event has (Zodi, 20 October: "If we can change what
+#: the two are or even better have it support more than two tracks that
+#: would be great"): its setup's, changed on its Setup card since 21 October.
+TRACKS_NOTE = ("This event's two tracks: 1, {first}; 2, {second}. A SwitchTrack takes turns between them; "
+               "which two they are is the event's setup, changed on its Setup card (Setup, over the nodes). "
+               "A tune (PlayTune) plays a short piece once, and the Sounds page can replace what any piece "
+               "sounds like.")
+NO_TRACKS = ("This event's two tracks aren't known: its setup is in the game's program, found beside the "
+             "folder of .pac files chosen on General Setup, and the PlayStation's copy of it has only events "
+             "1 to 490.")
+NO_MUSIC_SET = "This event's setup gives it no music. Its Setup card (Setup, over the nodes) can give it some."
 #: Where the game's voices and music are, under the unpacked game: their being there
 #: (and AudioMog) ticks Voices and Music for somebody new (`_first_ticks`).
 VOICE_FOLDER, MUSIC_FOLDER = "sound/voice", "sound/music"
@@ -186,6 +205,8 @@ class EventListJob(Worker):
             said = frozenset(es.operand(i, "line", self.mode) for i in script.instructions
                              if i.opcode in LINE_OPCODES)
             out.append((number, place, first, script.is_placeholder(), (tuple(files_of.get(number, [])), said)))
+        # Kept on the job too, so the page can tell its rows from an earlier reading's.
+        self.rows = out
         return out
 
 
@@ -223,7 +244,15 @@ class EventEditorPage(QWidget):
         self._scenarios_key = None
         self._deployments: dict = {}
         self._musics: dict = {}
+        #: The game's program, as found when the events were last read
+        #: (`find_program`), and why its setup records can't be read.
+        self._program_path: Optional[Path] = None
+        self.program_problem = ""
+        #: Each listed event's words, `{number: (place, first words, placeholder)}`, for its line.
+        self._event_rows: dict = {}
         self._list_job = None
+        #: The newest reading asked for: only its rows are listed (`_events_ready`).
+        self._list_latest = None
         self._loading_form = False
         self._words_timer = QTimer(self)
         self._words_timer.setSingleShot(True)
@@ -290,6 +319,8 @@ class EventEditorPage(QWidget):
         self.event_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.event_list.setTextElideMode(Qt.ElideRight)
         self.event_list.currentItemChanged.connect(self._event_picked)
+        # The event shown clicked again: its setup on the card.
+        self.event_list.itemClicked.connect(self._event_clicked)
         events_column.addWidget(self.event_list, 1)
         self.stack.addWidget(events)
         # The favourites as they were left (Zodi, 19 October).
@@ -384,6 +415,11 @@ class EventEditorPage(QWidget):
         bottom_column.setContentsMargins(0, 0, 0, 0)
         bottom_column.setSpacing(4)
         head = QHBoxLayout()
+        # The event's setup on the card, as a node is when picked.
+        self.setup_button = QPushButton(words.SETUP_BUTTON)
+        self.setup_button.setToolTip(words.SETUP_BUTTON_TIP)
+        self.setup_button.clicked.connect(self.pick_setup)
+        head.addWidget(self.setup_button)
         nodes_title = QLabel("Nodes")
         nodes_title.setStyleSheet("font-weight: 600;")
         head.addWidget(nodes_title)
@@ -472,7 +508,40 @@ class EventEditorPage(QWidget):
     def sqlite_path(self):
         return getattr(self.state, "nxd_sqlite_path", None)
 
-    def scenarios(self) -> dict:
+    def find_program(self) -> Optional[Path]:
+        """The game's program (`FFT_enhanced.exe`), from the folder of .pac files General Setup has."""
+        return game_install.find_program(ui_settings.load().get("game_data_folder") or None)
+
+    def program(self) -> Optional[su.Program]:
+        """The game's program's setup records, or None (`program_problem` says why, when it was found)."""
+        if self._program_path is None:
+            self.program_problem = ""
+            return None
+        try:
+            program = su.read_program(self._program_path)
+        except (OSError, su.SetupError) as exc:
+            self.program_problem = str(exc)
+            return None
+        self.program_problem = ""
+        return program
+
+    def game_setup(self, number: Optional[int]) -> Optional[bytes]:
+        """Event `number`'s setup record as the game's program holds it, or None."""
+        program = self.program()
+        return program.records.get(number) if program is not None and number is not None else None
+
+    def setup_record(self, number: Optional[int]) -> Optional[bytes]:
+        """Event `number`'s setup record as the mod has it: the program's with the mod's changes."""
+        record = self.game_setup(number)
+        changes = (getattr(self.state, "setup_edits", None) or {}).get(number)
+        if record is not None and changes:
+            try:
+                return su.applied(record, changes)
+            except su.SetupError:
+                return record
+        return record
+
+    def psx_scenarios(self) -> dict:
         """`{event: Scenario}` for the PlayStation's events, from the scenario table the game keeps."""
         game = self.game_dir()
         if game is None:
@@ -493,25 +562,79 @@ class EventEditorPage(QWidget):
             self._musics = {}
         return self._scenarios or {}
 
+    def scenarios(self) -> dict:
+        """`{event: Scenario}`: every event's setup the game's program has, as the mod has it, else
+        the PlayStation's events' from the scenario table the game keeps."""
+        program = self.program()
+        if program is None:
+            return self.psx_scenarios()
+        edits = getattr(self.state, "setup_edits", None) or {}
+        out = {}
+        for number, record in program.records.items():
+            if edits.get(number):
+                try:
+                    record = su.applied(record, edits[number])
+                except su.SetupError:
+                    pass
+            out[number] = su.scenario(record)
+        return out
+
+    def scenario(self, number: Optional[int]):
+        """Event `number`'s setup as a `battle_maps.Scenario`, the program's as the mod has it first."""
+        record = self.setup_record(number)
+        if record is not None:
+            return su.scenario(record)
+        return self.psx_scenarios().get(number) if self.program() is None else None
+
     def deployment(self, number: Optional[int]) -> Optional[es.Deployment]:
-        """Where the player's units stand as event `number`'s battle starts (ATTACK.OUT's squads)."""
-        if number is None or number not in self.scenarios():
+        """Where the player's units stand as event `number`'s battle starts: the program's squads,
+        else ATTACK.OUT's."""
+        record = self.setup_record(number)
+        program = self.program()
+        if record is not None and program is not None and program.squads:
+            key = ("program", record)
+            if key not in self._deployments:
+                self._deployments[key] = su.deployment(record, program.squads)
+            return self._deployments[key]
+        if number is None or program is not None or number not in self.psx_scenarios():
             return None
         if number not in self._deployments:
             self._deployments[number] = es.deployment_from_game(self.game_dir(), number)
         return self._deployments[number]
 
     def music_of(self, number: Optional[int]) -> tuple:
-        """Event `number`'s two tracks (`event_scripts.scenario_music`), `(0, 0)` for none."""
-        if number is None or number not in self.scenarios():
+        """Event `number`'s two tracks, `(0, 0)` for none: the program's record as the mod has it, else
+        ATTACK.OUT's (`event_scripts.scenario_music`)."""
+        record = self.setup_record(number)
+        if record is not None:
+            return su.music(record)
+        if number is None or self.program() is not None or number not in self.psx_scenarios():
             return (0, 0)
         if number not in self._musics:
             self._musics[number] = es.scenario_music_from_game(self.game_dir(), number)
         return self._musics[number]
 
+    def battle_of(self, number: Optional[int]) -> Optional[tuple]:
+        """
+        `(event, night, weather, arrangement)`: event `number`'s battle as its
+        setup has it (the program's as the mod has it, else the PlayStation's
+        copy), which the map is drawn in, with its lighting and sky; None with
+        neither.
+        """
+        if number is None:
+            return None
+        record = self.setup_record(number)
+        if record is None and self.program() is None:
+            record = self._psx_row(number)
+        if record is None:
+            return None
+        values = su.values(record)
+        return (int(number), int(bool(values.get("Night", 0))), int(values.get("Weather", 0)),
+                int(values.get("Arrangement", 0)))
+
     def map_shown(self) -> Optional[int]:
-        """The map the event shown is played on: the one chosen, else the scenario table's."""
-        scenario = self.scenarios().get(self.number) if self.number is not None else None
+        """The map the event shown is played on: the one chosen, else its setup's."""
+        scenario = self.scenario(self.number) if self.number is not None else None
         return self.chosen_map.get(self.number, scenario.map if scenario is not None and scenario.map else None)
 
     def own_scripts(self) -> dict:
@@ -528,6 +651,8 @@ class EventEditorPage(QWidget):
     def refresh_tree(self) -> None:
         """Reads the game's events again (after an unpack, an opened mod, a new mod)."""
         self.mode = "classic" if getattr(self.state, "loaded_game_mode", None) == "classic" else "enhanced"
+        self._program_path = self.find_program()
+        self._deployments, self._musics = {}, {}
         game = self.game_dir()
         if game is None:
             self.lengths = None
@@ -548,7 +673,7 @@ class EventEditorPage(QWidget):
         maps = {number: row.map for number, row in self.scenarios().items()}
         job = EventListJob(game, self.mode, self.own_scripts(), self.lengths, self.sqlite_path(), maps,
                            self._map_names(), self._first_words)
-        self._list_job = job
+        self._list_job = self._list_latest = job
         run_in_thread(job, on_finished=self._events_ready, on_failed=self._events_failed)
         if self.number is not None:
             self.show_event(self.number)
@@ -566,6 +691,13 @@ class EventEditorPage(QWidget):
         return None
 
     def _events_ready(self, rows) -> None:
+        # A reading begun before the newest one (the page asked twice, the
+        # game's program found between) ends here too, sooner or later: its
+        # rows are let go, only the newest one's listed. Before, whichever
+        # ended last was listed (measured: the newer reading ended first).
+        latest = getattr(self, "_list_latest", None)
+        if latest is not None and getattr(latest, "rows", None) is not rows:
+            return
         self._list_job = None
         game = self.game_dir()
         if not rows and game is not None and not es.game_script_numbers(game, self.mode):
@@ -574,13 +706,10 @@ class EventEditorPage(QWidget):
         self.event_list.blockSignals(True)
         self.event_list.clear()
         self._event_said = {}
+        self._event_rows = {}
         for number, place, first, placeholder, said in rows:
-            text = f"{number:03d}  {place}" if place else f"{number:03d}"
-            if placeholder:
-                text += "  (empty)" if place else "  Empty"
-            elif first:
-                text += f"\n{words._first_line(first, 48)}"
-            item = QListWidgetItem(text)
+            self._event_rows[number] = (place, first, placeholder)
+            item = QListWidgetItem(self._list_text(number, place, first, placeholder))
             item.setData(Qt.UserRole, number)
             self._event_said[number] = said
             self.event_list.addItem(item)
@@ -589,6 +718,30 @@ class EventEditorPage(QWidget):
         self.event_list.blockSignals(False)
         self._mark_list()
         self._filter_events(self.event_search.text())
+
+    @staticmethod
+    def _list_text(number: int, place: str, first: str, placeholder: bool) -> str:
+        """An event's line in the list: its number, its place, and its first words."""
+        text = f"{number:03d}  {place}" if place else f"{number:03d}"
+        if placeholder:
+            text += "  (empty)" if place else "  Empty"
+        elif first:
+            text += f"\n{words._first_line(first, 48)}"
+        return text
+
+    def _relist(self, number: int) -> None:
+        """An event's line again, its place as its setup now has it (a map changed on the card)."""
+        if number not in self._event_rows:
+            return
+        _place, first, placeholder = self._event_rows[number]
+        scenario = self.scenario(number)
+        place = self._map_names().get(scenario.map, "") if scenario is not None else ""
+        self._event_rows[number] = (place, first, placeholder)
+        for row in range(self.event_list.count()):
+            item = self.event_list.item(row)
+            if item.data(Qt.UserRole) == number:
+                item.setText(self._list_text(number, place, first, placeholder))
+                break
 
     def _events_failed(self, message: str) -> None:
         self._list_job = None
@@ -604,6 +757,11 @@ class EventEditorPage(QWidget):
         if item is None:
             return
         self.show_event(int(item.data(Qt.UserRole)))
+
+    def _event_clicked(self, item) -> None:
+        """The event shown clicked again in the list: its setup on the card."""
+        if item is not None and item.data(Qt.UserRole) == self.number:
+            self.pick_setup()
 
     def pick_event(self, number: int) -> bool:
         """Picks event `number` in the list, as a click would; False if the list hasn't it."""
@@ -669,7 +827,7 @@ class EventEditorPage(QWidget):
             self._music_titles_from = self.sqlite_path()
             self.music.titles = self.music_titles
         self._read_lines()
-        scenario = self.scenarios().get(number)
+        scenario = self.scenario(number)
         own_map = [scenario.map] if scenario is not None and scenario.map else []
         chosen_map = self.chosen_map.get(number, own_map[0] if own_map else None)
         self.map.fill_maps(own_map, chosen_map)
@@ -678,7 +836,7 @@ class EventEditorPage(QWidget):
             battle = scenario.battle or scenario.scene or None
         self.map.fill_battles(self._battle_choices(scenario), battle)
         self._scene(battle)
-        self.map.show_map(chosen_map)
+        self.map.show_map(chosen_map, self.battle_of(number))
         self._replay()
 
     def _clear_event(self) -> None:
@@ -706,7 +864,7 @@ class EventEditorPage(QWidget):
         if self.number is None:
             return
         self.chosen_map[self.number] = number
-        self.map.show_map(number)
+        self.map.show_map(number, self.battle_of(self.number))
 
     def _battle_chosen(self, battle: int) -> None:
         if self.number is None:
@@ -738,7 +896,7 @@ class EventEditorPage(QWidget):
             deployed = None
         tiles = self.map.map_tiles() if shown is not None and self.map.map_number == shown else None
         self.units = es.scene_units(entd_units, self.script.instructions if self.script else [], deployed, tiles,
-                                    self.mode)
+                                    self.mode, deploys=self.deployment(self.number) is not None)
         names = self._chara_names()
         sprite_names = reference_names.sprite_set_names()
         self.unit_names, self.sprites_of = {}, {}
@@ -863,13 +1021,17 @@ class EventEditorPage(QWidget):
         # player's units march in a battle's scene (a scenario with squads);
         # otherwise the script says (`event_scripts.starts_marching`).
         marching = True if self.deployment(self.number) is not None else None
+        # The map's doors, read with it: how long the waits for them wait.
+        doors = self.map.doors()
         self.timeline = es.play(self.script, self.units, lambda line: words.shown_words(self.words_of(line)),
                                 self.map.ground_psx, tiles, self.map.map_number, marching=marching,
-                                music=self.music_of(self.number))
+                                music=self.music_of(self.number),
+                                field_frames=doors.record_frames if doors is not None else None,
+                                object_frames=doors.object_frames if doors is not None else None)
         self._music_of = self._music_started(self.script, self.timeline)
         self.picked = min(self.picked, len(self.nodes) - 1)
         title = f"{self.number:03d}"
-        scenario = self.scenarios().get(self.number)
+        scenario = self.scenario(self.number)
         shown = scenario.map if scenario is not None else self.map.map_number
         place = self._map_names().get(shown, "") if shown is not None else ""
         if place:
@@ -884,8 +1046,10 @@ class EventEditorPage(QWidget):
         self._prepare_music()
 
     def scene_words(self) -> words.Scene:
+        doors = self.map.doors()
         return words.Scene(self.unit_names, self.words_of, self.speaker_of, self._map_names(),
-                           music=self.piece_of, music_titles=self.music_titles)
+                           music=self.piece_of, music_titles=self.music_titles,
+                           door=lambda opcode, number, state: md.opens(doors, number, opcode, state))
 
     @staticmethod
     def portrait_reads(script: es.Script, timeline: es.Timeline) -> list:
@@ -973,8 +1137,9 @@ class EventEditorPage(QWidget):
         self._mark_list()
 
     def edited_events(self) -> set:
-        """The listed events the mod changed: their scripts, or the words of a line they show."""
+        """The listed events the mod changed: their scripts, their setup, or the words of a line they show."""
         out = set(self.own_scripts())
+        out |= {number for number, changes in (getattr(self.state, "setup_edits", None) or {}).items() if changes}
         changed: dict = {}
         for relative, lines in (getattr(self.state, "pzd_edits", {}) or {}).items():
             relative = str(relative).replace("\\", "/")
@@ -1238,6 +1403,14 @@ class EventEditorPage(QWidget):
         for button in (self.play_here, self.copy_button, self.remove_button):
             buttons.addWidget(button, 1)
         self.foot_column.addWidget(self.buttons)
+        # The setup card's own button at its foot.
+        self.setup_buttons = QWidget()
+        setup_row = QHBoxLayout(self.setup_buttons)
+        setup_row.setContentsMargins(0, 2, 0, 0)
+        self.setup_back = QPushButton(words.SETUP_BACK)
+        self.setup_back.clicked.connect(self.back_to_game_setup)
+        setup_row.addWidget(self.setup_back, 1)
+        self.foot_column.addWidget(self.setup_buttons)
         self.field_widgets: dict = {}
 
     def _clear_fields(self) -> None:
@@ -1250,8 +1423,7 @@ class EventEditorPage(QWidget):
                 widget.blockSignals(True)
                 for child in widget.findChildren(QWidget):
                     child.blockSignals(True)
-                widget.setParent(None)
-                widget.deleteLater()
+                retire(widget)
         self.field_widgets = {}
 
     def _fill_form(self) -> None:
@@ -1259,15 +1431,23 @@ class EventEditorPage(QWidget):
         try:
             self._clear_fields()
             has = self.script is not None and 0 <= self.picked < len(self.nodes)
+            # No node picked: the event's setup, when the game's program (or
+            # the PlayStation's copy) has it.
+            shown = self._setup_shown() if not has and self.script is not None else None
             for button in (self.play_here, self.copy_button, self.remove_button):
                 button.setEnabled(has)
-            # With no node, the card says what to do and nothing else: no
+            # With neither, the card says what to do and nothing else: no
             # band, no buttons, its words in the middle.
             for part in (self.band, self.node_title, self.node_blurb, self.fields_holder, self.foot_line,
-                         self.status, self.buttons):
-                part.setVisible(has)
-            self.empty_note.setVisible(not has)
-            self.empty_stretch.setVisible(not has)
+                         self.status):
+                part.setVisible(has or shown is not None)
+            self.buttons.setVisible(has)
+            self.setup_buttons.setVisible(shown is not None)
+            self.empty_note.setVisible(not has and shown is None)
+            self.empty_stretch.setVisible(not has and shown is None)
+            if shown is not None:
+                self._setup_card(*shown)
+                return
             if not has:
                 self.form.setStyleSheet("#bigNode { border: 1px solid palette(mid); border-radius: 8px; }")
                 self.empty_note.setText(PICK_A_NODE if self.script is not None else PICK_AN_EVENT)
@@ -1293,6 +1473,224 @@ class EventEditorPage(QWidget):
             self._say_status(node)
         finally:
             self._loading_form = False
+
+    # -- the event's setup -------------------------------------------------------------
+
+    def _psx_row(self, number: Optional[int]) -> Optional[bytes]:
+        """Event `number`'s 24 bytes in the PlayStation's scenario table the game keeps, or None."""
+        game = self.game_dir()
+        if game is None or number is None:
+            return None
+        try:
+            data = (game / bmaps.SCENARIO_FILE).read_bytes()
+        except OSError:
+            return None
+        at = bmaps.SCENARIOS_AT
+        while at + bmaps.SCENARIO_BYTES <= len(data):
+            row = data[at:at + bmaps.SCENARIO_BYTES]
+            if not any(row):
+                return None
+            if su.event_of(row) == number:
+                return row
+            at += bmaps.SCENARIO_BYTES
+        return None
+
+    def _setup_shown(self) -> Optional[tuple]:
+        """`(the record as the mod has it, the game's, whether it can be changed, a note)` for the
+        event shown: the program's, else the PlayStation's copy (not to be changed); None for neither."""
+        if self.number is None:
+            return None
+        game = self.game_setup(self.number)
+        if game is not None:
+            return self.setup_record(self.number), game, True, ""
+        if self.program() is not None:
+            return None
+        row = self._psx_row(self.number)
+        if row is None:
+            return None
+        note = (words.SETUP_UNREADABLE.format(problem=self.program_problem) if self.program_problem
+                else words.SETUP_NO_PROGRAM.format(program=su.PROGRAM))
+        return row, row, False, note
+
+    def pick_setup(self, _checked=False) -> None:
+        """The event's setup on the card, no node picked."""
+        if self.script is None:
+            return
+        self.picked = -1
+        self.strip.set_chosen(-1)
+        self._fill_form()
+
+    def set_setup(self, key: str, value) -> None:
+        """One field of the event's setup changed on the card: kept in the mod when it differs from
+        the game's, and the event played again as it now starts."""
+        if self._loading_form or self.number is None or value is None:
+            return
+        number, game = self.number, self.game_setup(self.number)
+        if game is None:
+            return
+        changes = dict((self.state.setup_edits or {}).get(number) or {})
+        changes[key] = int(value)
+        try:
+            su.applied(game, changes)
+        except su.SetupError as exc:
+            self._show_message(CANT_WRITE.format(exc))
+            return
+        kept = su.tidy({number: game}, {number: changes}).get(number)
+        if kept:
+            self.state.setup_edits[number] = kept
+        else:
+            self.state.setup_edits.pop(number, None)
+        self._setup_changed(key)
+
+    def back_to_game_setup(self, _checked=False) -> None:
+        """The event's setup as the game has it again: the mod's changes to it let go."""
+        if self.number is None or not (self.state.setup_edits or {}).get(self.number):
+            return
+        keys = list(self.state.setup_edits.pop(self.number))
+        for key in keys:
+            self._setup_changed(key, replay=False)
+        self._setup_changed("")
+
+    def _setup_changed(self, key: str, replay: bool = True) -> None:
+        """After a setup change: a map or battle chosen for the preview gives way to the setup's, the
+        list's line and mark follow, and the event plays again (its map, units and music)."""
+        if key == "Map":
+            self.chosen_map.pop(self.number, None)
+        if key in ("EnemyBattle", "SceneUnits"):
+            self.chosen_battle.pop(self.number, None)
+        if not replay:
+            return
+        self._show_message("")
+        self._relist(self.number)
+        self._mark_list()
+        self.show_event(self.number)
+
+    def _setup_caption(self, key: str, changed: dict) -> QLabel:
+        caption = QLabel(words.SETUP_LABELS[key])
+        caption.setProperty("role", "muted")
+        if key in changed:
+            caption.setStyleSheet(f"color: {theme.current()['edited_fg']}; font-weight: 600;")
+            caption.setToolTip("Changed in this mod")
+        return caption
+
+    def _setup_row(self, key: str, widget: QWidget, changed: dict, editable: bool) -> None:
+        holder = QWidget()
+        column = QVBoxLayout(holder)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(2)
+        column.addWidget(self._setup_caption(key, changed))
+        column.addWidget(widget)
+        widget.setEnabled(editable)
+        self.fields.addWidget(holder)
+
+    def _setup_combo(self, key: str, choices: list, value: int) -> QComboBox:
+        """A dropdown of `[(value, words)]`, the value it has added if it isn't among them."""
+        box = _combo()
+        for number, text in choices:
+            box.addItem(text, number)
+        if box.findData(value) < 0:
+            box.addItem(str(value), value)
+        box.setCurrentIndex(box.findData(value))
+        box.currentIndexChanged.connect(lambda _i, b=box, k=key: self.set_setup(k, b.currentData()))
+        self.field_widgets[f"setup_{key}"] = box
+        return box
+
+    def _setup_number(self, key: str, value: int) -> QSpinBox:
+        field = su.field_of(key)
+        box = QSpinBox()
+        box.setRange(0, field.most)
+        box.setValue(value)
+        box.setKeyboardTracking(False)
+        box.valueChanged.connect(lambda number, k=key: self.set_setup(k, number))
+        self.field_widgets[f"setup_{key}"] = box
+        return box
+
+    def _setup_card(self, record: bytes, game: bytes, editable: bool, note: str) -> None:
+        """The event's setup, drawn as a big node: its band, what it is, a control for each field
+        (its caption marked where the mod changed it), and Back to the game's at its foot."""
+        from .map_editor import COPY_TITLE, arrangement_word
+        number = self.number
+        colour = words.KIND_COLOURS["story"]
+        self.band.set_words(words.SETUP_BAND, f"Event {number:03d}", colour)
+        self.form.setStyleSheet(f"#bigNode {{ border: 2px solid {colour}; border-radius: 8px; }}")
+        self.node_title.setText(words.SETUP_TITLE.format(number=number))
+        self.node_blurb.setText(note or words.SETUP_BLURB)
+        values = su.values(record)
+        changed = su.changes_between(game, record)
+        maps = self._map_names()
+        # A spare map number given a look by the Map Editor's Copy this look
+        # to says whose, so the map made for a battle is found in the list.
+        copies = getattr(self.state, "map_copies", None) or {}
+        self._setup_row("Map", self._setup_combo(
+            "Map", [(n, f"{n:03d} {maps[n]}" + (COPY_TITLE.format(source=copies[n]) if n in copies else ""))
+                    for n in sorted(maps)], values["Map"]), changed, editable)
+        self._setup_row("Weather", self._setup_combo(
+            "Weather", list(enumerate(map_classic.WEATHERS)), values["Weather"]), changed, editable)
+        self._setup_row("Arrangement", self._setup_combo(
+            "Arrangement", [(n, arrangement_word(n)) for n in range(8)], values["Arrangement"]), changed,
+            editable)
+        self._setup_row("Night", self._setup_combo(
+            "Night", list(words.TIMES_OF_DAY.items()), values["Night"]), changed, editable)
+        pieces = sorted(set(range(1, 128)) | set(self.music_titles))
+        for key in ("Music1", "Music2"):
+            box = self._setup_combo(key, [(0, emu.music_words(0, self.music_titles))]
+                                    + [(n, emu.music_words(n, self.music_titles)) for n in pieces], values[key])
+            holder = QWidget()
+            row = QHBoxLayout(holder)
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
+            row.addWidget(box, 1)
+            play = QPushButton(PLAY_MUSIC)
+            play.setEnabled(bool(values[key]))
+            play.clicked.connect(lambda _c=False, b=box: self._play_music(b.currentData()))
+            row.addWidget(play)
+            self.field_widgets[f"setup_{key}_play"] = play
+            self._setup_row(key, holder, changed, True)
+            box.setEnabled(editable)
+        names = encounter_names.EncounterNames.load()
+        game_dir = self.game_dir()
+        count = 512 + es.fifth_battle_count(game_dir) if game_dir is not None else 512
+        battles = [(b, f"Battle {names.label_for(b)}") for b in range(count)]
+        self._setup_row("EnemyBattle", self._setup_combo("EnemyBattle", battles, values["EnemyBattle"]),
+                        changed, editable)
+        # The scene's own units: a second battle's, 0 for none (`battle_maps.Scenario.scene`).
+        self._setup_row("SceneUnits", self._setup_combo(
+            "SceneUnits", [(0, words.SETUP_NO_BATTLE)] + battles[1:], values["SceneUnits"]), changed, editable)
+        program = self.program()
+        areas = [(0, words.SETUP_NO_SQUAD)]
+        for squad_number in range(su.SQUAD_MOST):
+            squad = su.squad(program.squads, squad_number) if program is not None else None
+            if squad is not None and squad.tiles:
+                areas.append((squad_number, words.SETUP_SQUAD.format(
+                    number=squad_number, place=maps.get(squad.map) or f"map {squad.map}", most=squad.most)))
+        for key in ("DeployArea1", "DeployArea2"):
+            self._setup_row(key, self._setup_combo(key, areas, values[key]), changed, editable)
+        ramza = QCheckBox(words.SETUP_LABELS["RamzaRequired"])
+        ramza.setChecked(bool(values["RamzaRequired"]))
+        ramza.toggled.connect(lambda on: self.set_setup("RamzaRequired", int(on)))
+        ramza.setEnabled(editable)
+        if "RamzaRequired" in changed:
+            ramza.setStyleSheet(f"color: {theme.current()['edited_fg']}; font-weight: 600;")
+        self.fields.addWidget(ramza)
+        self.field_widgets["setup_RamzaRequired"] = ramza
+        self._setup_row("AfterEvent", self._setup_combo(
+            "AfterEvent", list(words.AFTER_EVENT.items()), values["AfterEvent"]), changed, editable)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        for n, key in enumerate(("NextEvent", "BattleRules", "Portrait", "PortraitUnit")):
+            box = self._setup_number(key, values[key])
+            box.setEnabled(editable)
+            grid.addWidget(self._setup_caption(key, changed), (n // 2) * 2, n % 2)
+            grid.addWidget(box, (n // 2) * 2 + 1, n % 2)
+        holder = QWidget()
+        holder.setLayout(grid)
+        self.fields.addWidget(holder)
+        labels = [words.SETUP_LABELS[f.key] for f in su.FIELDS if f.key in changed]
+        self.status.setText(words.SETUP_CHANGED.format(fields=", ".join(labels)) if labels
+                            else words.SETUP_AS_GAME)
+        self.status.setStyleSheet(f"color: {theme.current()['ok']};")
+        self.setup_back.setEnabled(editable and bool(changed))
 
     def _node_blurb(self, node: es.Node) -> str:
         first = self.script.instructions[node.first].opcode
@@ -1477,8 +1875,8 @@ class EventEditorPage(QWidget):
     def _music_row(self, item: es.Instruction) -> None:
         """
         A music node's piece: its name, Play (alone, from its start) and Open
-        in Sounds; and, under a SwitchTrack, the event's two tracks and why
-        they can't be changed here.
+        in Sounds; and, under a SwitchTrack, the event's two tracks and where
+        they are changed (its Setup card).
         """
         played = self.piece_of(item)
         music_id = played.track if played is not None else 0
@@ -1508,7 +1906,8 @@ class EventEditorPage(QWidget):
             first, second = self.timeline.music_tracks if self.timeline is not None else (0, 0)
             note = QLabel(TRACKS_NOTE.format(first=emu.music_words(first, self.music_titles),
                                              second=emu.music_words(second, self.music_titles))
-                          if first or second else NO_TRACKS)
+                          if first or second
+                          else NO_MUSIC_SET if self.setup_record(self.number) is not None else NO_TRACKS)
             note.setProperty("role", "muted")
             note.setWordWrap(True)
             self.fields.addWidget(note)
@@ -1695,7 +2094,7 @@ class EventEditorPage(QWidget):
         if not specs:
             if item.operands:
                 raw = QLabel(" ".join(f"{b}" for b in item.operands))
-                self._row(f"Its {len(item.operands)} bytes (what they mean isn't known)", raw)
+                self._row(words.bytes_words(item.opcode, len(item.operands)), raw)
             return
         for spec in specs:
             value = es.operand(item, spec.name, self.mode)

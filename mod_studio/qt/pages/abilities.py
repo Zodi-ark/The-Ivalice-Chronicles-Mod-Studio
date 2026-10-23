@@ -53,7 +53,7 @@ from ..widgets.field_rows import (
     NamedNumberRow, NumericFieldRow,
 )
 from ..widgets.form_scroll import FormScrollArea
-from ..widgets.layout_settle import settle_layout
+from ..widgets.layout_settle import retire, settle_layout
 from ..widgets.visible_refresh import RefreshesWhenVisible
 from ..widgets.texture_slot import InlineTextureSlot
 from .ability_map import AbilityMap, AbilityShow
@@ -71,9 +71,10 @@ def jump_rows() -> frozenset:
     """
     The abilities `JUMP_TABLE` has a row for, read from the bundled file.
 
-    From the file, not from the loaded table: `item_xml_io.load_table`
-    fills every id below the file's first with a blank row, so the loaded
-    jump table runs 0 to 405 where the file has 394 to 405.
+    From the file, so it holds whether or not the reference tables are
+    loaded. (Until 21 October the loaded table was no guide either:
+    `item_xml_io.load_table` filled every id from 0 with a blank row, so it
+    ran 0 to 405 where the file has 394 to 405.)
     """
     import xml.etree.ElementTree as ET
     from ... import paths
@@ -1277,10 +1278,35 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
             named = self._inflict_choices().get(value)
         return named or str(value)
 
+    def _refresh_inflict_names(self) -> None:
+        """
+        Inflict Status's list named as the rows stand now.
+
+        The list was made once, with the page, so a row changed on the
+        Inflict Status tab kept its old name here, while Items, which makes
+        its list again with each item, showed the new one (a user's report,
+        21 October: "there like 4 stone status and if 3 of them are changed
+        you have to remember which ID does the new status"). Made again
+        with each ability, and so each time this page comes back on screen
+        (`refresh_from_store`); the selection is kept (`set_choices`). With
+        Formula 2 the list is the abilities, named as they stand too.
+        """
+        row = self.override_rows.get("InflictStatus")
+        if row is None:
+            return
+        if getattr(row, "lists_abilities", False):
+            from ..app import ability_choices
+            row.set_override_choices(ability_choices(self.state))
+        else:
+            row.set_override_choices(self._inflict_choices())
+
     def _load_override(self, key: int) -> None:
         actions = {a.key: a for a in (self.state.override_action_records or [])}
         action = actions.get(key)
         edits = self.state.override_action_edits.get(key, {})
+
+        # The names first: the rows below load into the list.
+        self._refresh_inflict_names()
 
         # Before the rows are filled. Each row's Inherit entry names what
         # THIS ability inherits, so it has to be right by the time `load`
@@ -1546,8 +1572,7 @@ class AbilitiesPage(RefreshesWhenVisible, QWidget):
             return
         value, included = old.get_value_str(), old.included
         self.override_column.takeAt(index)
-        old.setParent(None)
-        old.deleteLater()
+        retire(old)
         row = self._make_inflict_row()
         # The byte does not change when the formula does - what changes is
         # what it means - so the value carries across rather than resetting.

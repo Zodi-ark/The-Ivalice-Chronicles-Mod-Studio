@@ -38,6 +38,30 @@ from PySide6.QtCore import QEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 
+def retire(widget: QWidget) -> None:
+    """
+    Takes `widget` out of its page for good: hidden, left without a parent,
+    and deleted when control next returns to the event loop.
+
+    Hidden FIRST. A widget added to a layout whose parent is on screen isn't
+    shown at once: Qt queues the call that shows it. Taken out before that
+    call runs and left without a parent, it is shown as a window of its own
+    until `deleteLater` gets to it. Zodi saw it on the Event Editor (21
+    October: "when switching through events little windows quickly pop up
+    and then dissappear"): picking an event fills the card twice (as the
+    event is read, and again as its map is ready), and the first setup
+    card's rows came up as a dozen little windows each time. Hidden first,
+    the queued call leaves it hidden.
+
+    Left without a parent at once, so the page's `findChildren` no longer
+    finds it and nothing of it paints over what replaces it (All Game Data's
+    "Ticks" drawn over the next table's first row, before).
+    """
+    widget.hide()
+    widget.setParent(None)
+    widget.deleteLater()
+
+
 def settle_layout(widget: QWidget) -> None:
     """
     Re-lays `widget` and every ancestor at once, before the caller returns.

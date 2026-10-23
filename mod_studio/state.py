@@ -176,7 +176,11 @@ class WizardState:
         self.uib_edits = {}
         self.utexpt_edits = {}
         self.map_edits = {}
+        self.map_terrains = {}
+        self.map_animations = {}
+        self.map_copies = {}
         self.script_edits = {}
+        self.setup_edits = {}
         self.sound_file_replacements = {}
         self.other_file_replacements = {}
         self.mod_own_files = {}
@@ -695,10 +699,36 @@ class WizardState:
     #: (`map_classic.grid_files`), under the mod's `fftpack/map/`.
     map_edits: dict = field(default_factory=dict)
 
+    #: Battle grids replaced whole: `{file name: terrain part}`, keyed as
+    #: `map_edits` is, the part another map's grid (`map_classic.
+    #: terrain_part`: its size and both levels, `TERRAIN_BYTES`). A look
+    #: copied to another map number (the Map Editor's Copy this look to)
+    #: stands on its source's grid there, and a tile's place in a grid file
+    #: depends on its width, so the grid goes whole (Zodi, 21 October: "lets
+    #: move on to ... copying a map's look to a new map number"). At export
+    #: it is written into every file holding that grid, before its tile
+    #: edits (`map_edits`, made on it).
+    map_terrains: dict = field(default_factory=dict)
+
+    #: Texture animation records replaced whole: `{file name: records}`,
+    #: keyed as `map_terrains` is, the records another map's
+    #: (`map_classic.animation_records`, 640 bytes). A look copied to another
+    #: map number takes its source's with it, as its events open its doors
+    #: by them (instruction 0x55); Zodi's test 12 (22 October) opened 062's
+    #: chapel door on 097 so. At export they are written into every file
+    #: holding that grid that has room for them.
+    map_animations: dict = field(default_factory=dict)
+
+    #: The looks copied to another map number: `{target: source}`, e.g.
+    #: `{97: 48}`, for the pages to name (the copy itself is the target's
+    #: model, pictures and rows in the stores above, and its grid in
+    #: `map_terrains`).
+    map_copies: dict = field(default_factory=dict)
+
     def edited_map_numbers(self) -> list:
-        """The maps with a tile edit, as numbers."""
+        """The maps with a tile edit or a grid replaced whole, as numbers."""
         out = set()
-        for name, tiles in self.map_edits.items():
+        for name, tiles in list(self.map_edits.items()) + list((self.map_terrains or {}).items()):
             if tiles:
                 try:
                     out.add(int(name.lower().split("map_map")[1][:3]))
@@ -710,7 +740,7 @@ class WizardState:
         return sum(len(tiles) for tiles in self.map_edits.values())
 
     def has_any_map_edits(self) -> bool:
-        return self.edited_map_tile_count() > 0
+        return self.edited_map_tile_count() > 0 or any(self.map_terrains.values())
 
     # -- Event scripts (see event_scripts.py) -----------------------------------
     #: Changed event scripts: `{relative path: the whole script's bytes}`,
@@ -730,6 +760,20 @@ class WizardState:
 
     def has_any_script_edits(self) -> bool:
         return self.edited_script_count() > 0
+
+    #: Changed event setup records (see event_setup.py): `{event number:
+    #: {field name: value}}`, only the fields the mod holds otherwise than
+    #: the game's program (`event_setup.tidy`), e.g. `{9: {"Music1": 51}}`.
+    #: Export writes them into the mod's `EventSetup.json`, which the helper
+    #: mod, Mod Studio Event Setup, applies as the game starts (Zodi, 21
+    #: October: "Lets go with "One shared helper mod"").
+    setup_edits: dict = field(default_factory=dict)
+
+    def edited_setup_count(self) -> int:
+        return sum(1 for changes in self.setup_edits.values() if changes)
+
+    def has_any_setup_edits(self) -> bool:
+        return self.edited_setup_count() > 0
 
     # -- Sounds (.sab, via AudioMog - see sound_data.py) --------------------
     # Same unpacked_game_dir as Textures above - sound archives are real

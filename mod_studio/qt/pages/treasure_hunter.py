@@ -51,7 +51,6 @@ from PySide6.QtWidgets import (
 
 from ... import constants as c
 from ... import map_classic as mc
-from ... import map_enhanced as me
 from ... import paths
 from ... import texture_data as td
 from .. import map_scene as ms
@@ -382,12 +381,13 @@ class TreasureHunterPage(TableEditorPage):
         of it changes.
         """
         game = self.game_dir()
-        enhanced = game is not None and me.mesh_path(game, number).is_file()
+        enhanced = game is not None and me_page.has_look(self.state, game, number)
         mesh, pictures = me_page.mod_look(self.state, number) if enhanced else (None, {})
         rows = me_page.mod_rows(self.state, number) if enhanced else {}
         edits = {key: dict(found) for key, found in (getattr(self.state, "map_edits", {}) or {}).items()}
         return (ms.ENHANCED if enhanced else ms.CLASSIC, mesh, tuple(sorted(pictures.items())),
-                repr(sorted((t, sorted(f.items())) for t, f in rows.items())), repr(sorted(edits.items())))
+                repr(sorted((t, sorted(f.items())) for t, f in rows.items())), repr(sorted(edits.items())),
+                me_page.terrains_of(self.state, number))
 
     def _show_map(self, number: int) -> None:
         game = self.game_dir()
@@ -427,7 +427,8 @@ class TreasureHunterPage(TableEditorPage):
                                 getattr(self.state, "nxd_sqlite_path", None),
                                 mesh if look[0] == ms.ENHANCED else None,
                                 pictures if look[0] == ms.ENHANCED else {}, 0,
-                                me_page.mod_rows(self.state, number) if look[0] == ms.ENHANCED else {})
+                                me_page.mod_rows(self.state, number) if look[0] == ms.ENHANCED else {},
+                                terrains=me_page.map_terrains(self.state))
         run_in_thread(worker, on_finished=self._scene_ready, on_failed=self._scene_failed)
 
     def _scene_ready(self, result) -> None:

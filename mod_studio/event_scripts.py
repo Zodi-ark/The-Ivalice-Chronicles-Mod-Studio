@@ -363,6 +363,8 @@ LAYOUTS = {
                ("top_blue", U8, False, "colour"), ("bottom_red", U8, False, "colour"),
                ("bottom_green", U8, False, "colour"), ("bottom_blue", U8, False, "colour"),
                ("frames", U8, False, "frames"), ("store", U8, False, "flag")),
+    0x31: _ops(("style", U8, False, "number"), ("red", U8, True, "colour"), ("green", U8, True, "colour"),
+               ("blue", U8, True, "colour"), ("frames", U8, False, "frames")),
     0x32: _ops(("unit", U16, False, "units"), ("style", U8, False, "number"), ("red", U8, True, "colour"),
                ("green", U8, True, "colour"), ("blue", U8, True, "colour"), ("frames", U8, False, "frames")),
     # ColorField: the map's colours as ColorUnit's a unit's (the
@@ -380,6 +382,12 @@ LAYOUTS = {
                ("blue", U8, False, "colour"), ("end_red", U8, False, "colour"),
                ("end_green", U8, False, "colour"), ("end_blue", U8, False, "colour"),
                ("frames", U16, False, "frames")),
+    # A tile changed as the event runs: the camera kept from seeing through
+    # it (0x3F), its height (0x40; the decompilation's handlers).
+    0x3F: _ops(("x", U8, False, "x"), ("y", U8, False, "y"), ("level", U8, False, "level"),
+               ("mask", U8, False, "number")),
+    0x40: _ops(("x", U8, False, "x"), ("y", U8, False, "y"), ("level", U8, False, "level"),
+               ("tile_height", U8, False, "number"), ("untargetable", U8, False, "flag")),
     0x41: _ops(("step", U8, False, "number"), ("period", U8, False, "frames"),
                ("step2", U8, False, "number"), ("period2", U8, False, "frames")),
     0x43: _ops(("function", U8, False, "number")),
@@ -397,6 +405,12 @@ LAYOUTS = {
     0x51: _ops(("box", U8, False, "window"), ("line", U16, False, "line"), ("portrait", U16, False, "portrait")),
     0x53: _ops(("unit", U16, False, "unit"), ("unit2", U16, False, "units"), ("style", U8, False, "number"),
                ("speed", U8, False, "turn_speed"), ("delay", U8, False, "frames")),
+    # The map's moving parts: one of its 3D objects put in a state (0x54), and
+    # one of its texture animation records started (0x55, USE_FIELD_OBJECT:
+    # the map's data command 0x83; its value isn't read), which is how an
+    # event opens and shuts a door (`map_doors`).
+    0x54: _ops(("object", U8, False, "number"), ("state", U8, False, "number")),
+    0x55: _ops(("animation", U8, False, "number"), ("value", U8, False, "number")),
     # The event's own animations (EVTCHR, `unit_sprites`): LoadEVTCHR puts a
     # block of the file in a slot, SaveEVTCHR its picture up, the two after
     # clear a slot; EVTCHR palette colours a unit with one of a slot's
@@ -405,34 +419,60 @@ LAYOUTS = {
     0x59: _ops(("slot", U8, False, "number")),
     0x5A: _ops(("slot", U8, False, "number")),
     0x5B: _ops(("slot", U8, False, "number")),
+    0x5C: _ops(("unit", U16, False, "unit"), ("slot", U8, False, "number")),
+    0x5D: _ops(("slot", U8, False, "number")),
     0x5E: _ops(("slot", U8, False, "number")),
     0x5F: _ops(("unit", U16, False, "unit"), ("x", U8, False, "x"), ("y", U8, False, "y"),
                ("level", U8, False, "level"), ("facing", U8, False, "facing")),
     0x60: _ops(("shift", U8, False, "number"), ("frames", U8, False, "frames")),
+    0x62: _ops(("slot", U8, False, "number"), ("unused", U8, False, "number"), ("x", U8, False, "x"),
+               ("y", U8, False, "y"), ("level", U8, False, "level"), ("facing", U8, False, "facing")),
     0x63: _ops(("curve", U8, False, "number")),
     0x64: _ops(("unit", U16, False, "unit")),
     0x68: _ops(("unit", U16, False, "unit"), ("flag", U8, False, "flag")),
     0x69: _ops(("unit", U16, False, "units"), ("x", U8, False, "x"), ("y", U8, False, "y"),
                ("unused", U8, False, "number"), ("style", U8, False, "number"),
                ("speed", U8, False, "turn_speed"), ("delay", U8, False, "frames")),
+    # A background sound (rain, wind...): begun, or its volume changed, from
+    # one level to another a step a frame.
+    0x6A: _ops(("sound", U8, False, "number"), ("from_level", U8, False, "number"),
+               ("to_level", U8, False, "number"), ("unused", U8, False, "number"), ("frames", U8, False, "frames")),
+    0x6B: _ops(("sound", U8, False, "number"), ("from_level", U8, False, "number"),
+               ("to_level", U8, False, "number"), ("find", U8, False, "flag"), ("frames", U8, False, "frames")),
+    0x6C: _ops(("unit", U16, False, "units")),
+    0x6D: _ops(("unit", U16, False, "units")),
+    0x6E: _ops(("unit", U16, False, "unit"), ("dx", S16, True, "offset"), ("dy", S16, True, "offset"),
+               ("dz", S16, True, "offset"), ("curve", U8, False, "number"), ("weight", U8, False, "number"),
+               ("speed", U16, False, "number")),
     0x6F: _ops(("unit", U16, False, "unit")),
     0x70: _ops(("unit", U16, False, "unit"), ("length", U8, False, "number"), ("direction", U8, False, "number")),
+    0x71: _ops(("unit", U16, False, "unit")),
+    0x76: _ops(("unused", U8, False, "number"), ("burst", U8, False, "number"), ("divisor", U8, False, "number"),
+               ("angle_step", U16, False, "number"), ("radius_step", U8, False, "number")),
     0x73: _ops(("x", S16, True, "camera"), ("height", S16, True, "camera"), ("y", S16, True, "camera"),
                ("tilt", S16, True, "angle"), ("yaw", S16, True, "angle"), ("roll", S16, True, "angle"),
                ("zoom", S16, True, "zoom")),
     0x78: _ops(("display", U8, False, "number"), ("frames", U8, False, "frames")),
     0x79: _ops(("unit", U16, False, "unit"), ("animation", U16, False, "animation")),
+    0x7A: _ops(("sprite_set", U16, False, "number")),
+    0x7B: _ops(("buttons", U16, False, "number")),
+    0x7D: _ops(("graphic", U8, False, "number")),
     0x7E: _ops(("variable", U16, False, "variable"), ("value", S16, True, "number")),
     0x7F: _ops(("unit", U16, False, "unit"), ("slot", U8, False, "number"), ("palette", U8, False, "number")),
     0x80: _ops(("unit", U16, False, "units"), ("frames", U8, False, "frames")),
+    0x81: _ops(("unit", U16, False, "units"), ("flag", U8, False, "flag")),
     0x83: _ops(("unit", U16, False, "units"), ("stat", U8, False, "number"), ("delta", S16, True, "number")),
     0x84: _ops(("tune", U8, False, "number")),
+    0x85: _ops(("date", U8, False, "number")),
     0x86: _ops(("unit", U16, False, "unit"), ("item", U8, False, "number")),
     0x87: _ops(("unit", U16, False, "unit"), ("unit2", U16, False, "unit")),
     0x8C: _ops(("unit", U16, False, "unit"), ("facing", U8, False, "facing"),
                ("animation", U16, False, "animation"), ("unused", U8, False, "number")),
+    0x8F: _ops(("lock", U8, False, "number")),
+    0x90: _ops(("x", U8, False, "x"), ("y", U8, False, "y"), ("unused", U8, False, "number")),
     0x91: _ops(("dx", U8, True, "offset"), ("dy", U8, True, "offset"), ("step", U8, True, "number")),
     0x92: _ops(("unit", U16, False, "unit"), ("status", U8, False, "number"), ("frames", U16, False, "frames")),
+    0x93: _ops(("days", S16, True, "number")),
     0x94: _ops(("unit", U16, False, "unit")),
     0x97: _ops(("unit", U16, False, "unit")),
     0x98: _ops(("unit", U16, False, "unit")),
@@ -467,6 +507,9 @@ ENHANCED_LAYOUTS = {
 }
 #: ChangeDialog's text id that closes its box instead.
 CLOSE_BOX = {"enhanced": 0xFFFFFFFF, "classic": 0xFFFF}
+#: Opcodes whose operand bytes no handler reads (the decompilation's
+#: "unread"): the game does nothing with them.
+UNREAD = frozenset((0x17, 0x23, 0x61, 0x74, 0x75, 0xC0))
 
 
 def layout(opcode: int, mode: str = "enhanced") -> tuple:
@@ -942,6 +985,10 @@ class SceneUnit:
     deployed: bool = False
     #: The ENTD slot's `unit_name` (a `CharaName` key), for its name.
     name_id: int = 0
+    #: Whether the game has made it as the event starts, to be drawn or not
+    #: (its graphics loaded: a runtime unit): a Draw (0x44) shows only such
+    #: a unit, and AddUnit (0x45) makes one (`scene_units`).
+    loaded: bool = True
 
 
 #: An ENTD slot whose unit id is this holds no unit the script can name.
@@ -1067,19 +1114,21 @@ class Deployment:
 
 def deployment(attack_out: bytes, number: int) -> Optional[Deployment]:
     """Scenario `number`'s deployment, from ATTACK.OUT's bytes; None when it deploys no one."""
-    at = bm.SCENARIOS_AT
-    while at + bm.SCENARIO_BYTES <= len(attack_out):
-        row = attack_out[at:at + bm.SCENARIO_BYTES]
-        if not any(row):
-            return None
-        if struct.unpack_from("<H", row, 0)[0] == number:
-            break
-        at += bm.SCENARIO_BYTES
-    else:
+    row = _scenario_row(attack_out, number)
+    if row is None:
         return None
+    return deployment_from_row(row, lambda squad_number: read_squad(attack_out, squad_number))
+
+
+def deployment_from_row(row: bytes, squad_of) -> Optional[Deployment]:
+    """
+    A scenario row's deployment, its squads read by `squad_of(number)`
+    (ATTACK.OUT's, or the game's program's: `event_setup.deployment`); None
+    when it deploys no one.
+    """
     tiles, map_number = [], None
     for squad_number in struct.unpack_from("<HH", row, SCENARIO_SQUADS_AT):
-        squad = read_squad(attack_out, squad_number) if squad_number else None
+        squad = squad_of(squad_number) if squad_number else None
         # A squad without tiles the game swaps for its first, a test of its own.
         if squad is None or not squad.tiles:
             continue
@@ -1200,13 +1249,32 @@ def deployment_from_game(game_dir, number: int) -> Optional[Deployment]:
         return None
 
 
+#: An ENTD unit's presence (its `always_present` and `randomly_present`
+#: bits, the decompilation's `UNIT_TEAM_PRESENCE_MASK`): neither, off the
+#: field; random alone, there half the time; always alone, there; both,
+#: off the field with its graphics loaded for the script to bring in
+#: (`unit_entd_load`).
+PRESENT_ALWAYS, PRESENT_RANDOMLY = 0x80, 0x40
+
+
+def presence(values: dict) -> int:
+    """An ENTD unit's presence bits (`PRESENT_ALWAYS`, `PRESENT_RANDOMLY`), from its values."""
+    return (PRESENT_ALWAYS if values.get("always_present") else 0) | (
+        PRESENT_RANDOMLY if values.get("randomly_present") else 0)
+
+
 def scene_units(entd_units, instructions, deployed: Optional[Deployment] = None, tiles=None,
-                mode: str = "enhanced") -> dict:
+                mode: str = "enhanced", deploys: Optional[bool] = None) -> dict:
     """
-    `{unit id: SceneUnit}`: the ENTD battle's units, those the script adds
-    (AddUnit) not shown at first, the others at their ENTD place, facing as
-    the ENTD faces them. A unit id two slots share is the first's; a slot
-    of unit id 255 is none the script can name.
+    `{unit id: SceneUnit}`: the ENTD battle's units at their ENTD place,
+    facing as the ENTD faces them, shown as the game makes them (Zodi, 22
+    October, event 004: units waiting to come in stood at the map's edge):
+    a unit always there, or there half the time (shown so), is drawn; one
+    with both bits waits off the field, loaded, for a Draw or an AddUnit;
+    one with neither is off the field until an AddUnit brings it in
+    (`presence`, the decompilation's `unit_entd_load`). A unit id two slots
+    share is the first's; a slot of unit id 255 is none the script can
+    name.
 
     A story character the script places (WarpUnit) but the battle hasn't is
     one of the player's party: Ramza is unit 3 in WotL's event 538 on
@@ -1218,19 +1286,33 @@ def scene_units(entd_units, instructions, deployed: Optional[Deployment] = None,
     them; with no tile left for it, beside the first unit it speaks to (on
     `tiles`, `{(x, y)}`, when given). Every one of them is `party` and
     `deployed`.
+
+    So is one the battle has off the field (neither presence bit) that the
+    script names and never adds, where the battle deploys the player's
+    units (`deploys`; None: where `deployed` is given): a party member the
+    player brings, Agrias in event 120 (battle 403), drawn as the battle
+    has it. Where the battle deploys none, the game never draws it.
     """
-    added = {_unit16(i) for i in instructions if i.opcode == 0x45}
     out = {}
     for unit in entd_units:
         v = unit.values
         unit_id = int(v.get("unit_id", 0))
         if unit_id in out or unit_id in PARTY_UNITS or unit_id == NO_UNIT_ID:
             continue
+        present = presence(v)
         out[unit_id] = SceneUnit(unit_id, int(v.get("sprite_set", 0)), int(v.get("main_job", 0)),
                                  int(v.get("palette", 0)), int(v.get("x", 0)), int(v.get("y", 0)),
                                  int(bool(v.get("upper_level"))), int(v.get("facing", 0)) & 3,
-                                 unit_id not in added, unit.slot, int(v.get("team", 0)),
-                                 name_id=int(v.get("unit_name", 0)))
+                                 present in (PRESENT_ALWAYS, PRESENT_RANDOMLY), unit.slot,
+                                 int(v.get("team", 0)), name_id=int(v.get("unit_name", 0)),
+                                 loaded=present != 0)
+    waiting = {}
+    if (deployed is not None) if deploys is None else deploys:
+        named = set(named_units(instructions, mode))
+        added = {_unit16(i) for i in instructions if i.opcode == 0x45}
+        for unit_id, unit in list(out.items()):
+            if not unit.loaded and is_story_unit(unit_id) and unit_id in named and unit_id not in added:
+                waiting[unit_id] = out.pop(unit_id)
     for item in instructions:
         if item.opcode != 0x5F or len(item.operands) < 6:
             continue
@@ -1238,8 +1320,12 @@ def scene_units(entd_units, instructions, deployed: Optional[Deployment] = None,
         if unit_id in out or not is_story_unit(unit_id):
             continue
         x, y, level, facing = item.operands[2], item.operands[3], item.operands[4], item.operands[5]
-        out[unit_id] = SceneUnit(unit_id, unit_id, 0, 0, x, y, level & 1, facing & 3, True, party=True)
-    _deploy(out, instructions, deployed, tiles, mode)
+        if unit_id in waiting:
+            out[unit_id] = replace(waiting[unit_id], x=x, y=y, level=level & 1, facing=facing & 3, shown=True,
+                                   loaded=True)
+        else:
+            out[unit_id] = SceneUnit(unit_id, unit_id, 0, 0, x, y, level & 1, facing & 3, True, party=True)
+    _deploy(out, instructions, deployed, tiles, mode, waiting)
     return out
 
 
@@ -1268,11 +1354,14 @@ def named_units(instructions, mode: str = "enhanced") -> list:
     return out
 
 
-def _deploy(out: dict, instructions, deployed: Optional[Deployment], tiles, mode: str) -> None:
-    """The story characters the script names that `out` hasn't, put where the player's units stand."""
+def _deploy(out: dict, instructions, deployed: Optional[Deployment], tiles, mode: str,
+            waiting: Optional[dict] = None) -> None:
+    """The story characters the script names that `out` hasn't, put where the player's units stand; one the
+    battle has off the field (`waiting`) as the battle has it."""
     missing = [u for u in named_units(instructions, mode) if u not in out]
     missing.sort(key=lambda u: u not in RAMZA_UNITS)
-    taken = {(u.x, u.y) for u in out.values()}
+    # A unit off the field stands on no tile.
+    taken = {(u.x, u.y) for u in out.values() if u.shown}
     free = [t for t in (deployed.tiles if deployed is not None else ()) if (t[0], t[1]) not in taken]
     speakers = [(index, _speech_unit(item, mode)) for index, item in enumerate(instructions)]
     speakers = [(index, unit) for index, unit in speakers if unit is not None]
@@ -1285,6 +1374,10 @@ def _deploy(out: dict, instructions, deployed: Optional[Deployment], tiles, mode
                 continue
             x, y, level, facing = beside
         taken.add((x, y))
+        if unit_id in (waiting or {}):
+            out[unit_id] = replace(waiting[unit_id], x=x, y=y, level=level, facing=facing, shown=True, loaded=True,
+                                   deployed=True)
+            continue
         out[unit_id] = SceneUnit(unit_id, unit_id, 0, 0, x, y, level, facing, True, party=True, deployed=True)
 
 
@@ -1424,6 +1517,63 @@ def _changes_at(changes: list, frame: float, before: Optional[tuple] = None) -> 
 
 
 # =============================================================================
+# The background and the weather (Background 0x2E, Weather 0x3C)
+# =============================================================================
+
+def background_frames(period: int) -> int:
+    """
+    How long a Background takes to fade, from its frames operand (the
+    decompilation's `background_transition`, which both
+    `battle_map_background_transition_and_store` and
+    `battle_map_background_set` fade by, and the fades' stepping): at once
+    for 0, `period` x 8 frames under 4, else 32 steps of `period` / 4
+    frames.
+    """
+    if period <= 0:
+        return 0
+    if period < 4:
+        return 8 * period
+    return 32 * (period >> 2)
+
+
+def background_at(changes: list, frame: float, base: Optional[tuple] = None) -> Optional[tuple]:
+    """
+    The background's two colors, `((top rgb), (bottom rgb))` 0 to 255, at
+    `frame`: `base` (the sky the battle has, or None) faded to each of
+    `changes` (`Timeline.backgrounds`) in turn, each from the colors shown
+    as it starts; with no base, the first is there at once.
+    """
+    shown = base
+    for k, (start, end, to) in enumerate(changes):
+        if frame < start:
+            break
+        after = changes[k + 1][0] if k + 1 < len(changes) else None
+        when = frame if after is None or frame < after else after
+        if shown is None or end <= start:
+            shown = to
+            continue
+        t = min(1.0, max(0.0, (when - start) / (end - start)))
+        shown = tuple(tuple(a + (b - a) * t for a, b in zip(was, now)) for was, now in zip(shown, to))
+    return shown
+
+
+#: The weathers an event can ask for (`WEATHER_NAMES`): 0 and 1 none, 2 to 4
+#: light, normal and heavy rain, snow on a map that has it (the
+#: decompilation's `weather_e` and `s_event_weather_commands`).
+WEATHER_LIGHT, WEATHER_NORMAL, WEATHER_HEAVY = 2, 3, 4
+
+
+def weather_at(changes: list, frame: float, start: int = 0) -> int:
+    """The weather at `frame`: `start` (the battle's), then each the event asked for (`Timeline.weathers`)."""
+    now = start
+    for when, weather in changes:
+        if when > frame:
+            break
+        now = weather
+    return now
+
+
+# =============================================================================
 # Captions (the remaster's E7) and music
 # =============================================================================
 
@@ -1521,6 +1671,14 @@ class Timeline:
     music_tracks: tuple = (0, 0)
     #: Whether its units march as it starts (`starts_marching`).
     marching: bool = False
+    #: The background's colors (Background, 0x2E): `[(start, end, (top rgb, bottom rgb))]`, each faded to
+    #: from the colors shown as it starts (`background_at`).
+    backgrounds: list = field(default_factory=list)
+    #: The weather asked for (Weather, 0x3C): `[(frame, weather 0 to 4)]` (`weather_at`).
+    weathers: list = field(default_factory=list)
+    #: The map's moving parts started: `[(frame, opcode, number, state)]`, 0x55 a texture animation record
+    #: (a door, `map_doors`), 0x54 a 3D object.
+    objects: list = field(default_factory=list)
 
     def node_at(self, frame: float) -> int:
         """The node playing at `frame`: the last to have started."""
@@ -1727,7 +1885,8 @@ class _Player:
 
     def __init__(self, script: Script, units: dict, words: Callable, ground: Callable,
                  tiles: Optional[set], map_number: Optional[int], marching: bool = False,
-                 music: tuple = (0, 0)):
+                 music: tuple = (0, 0), field_frames: Optional[Callable] = None,
+                 object_frames: Optional[Callable] = None):
         self.script, self.mode = script, script.mode
         self.units, self.words = units, words
         self.ground, self.tiles = ground, tiles
@@ -1772,6 +1931,18 @@ class _Player:
         self.end_frame = 0
         #: The block of the event animations' file each slot holds (LoadEVTCHR).
         self.evtchr_slots = {0: None, 1: None}
+        #: Which units the game has made, as the script runs (`SceneUnit.loaded`).
+        self.loaded = {unit_id: bool(getattr(unit, "loaded", True)) for unit_id, unit in units.items()}
+        #: The background's colors and the weather asked for (`Timeline.backgrounds`, `.weathers`).
+        self.backgrounds, self.weathers = [], []
+        #: The map's moving parts started (`Timeline.objects`), how long a
+        #: texture animation record and a 3D object play (`play`'s
+        #: `field_frames`, `object_frames`), and when the last started of
+        #: each ends, which WaitFieldObject (0x57) and Wait3DObject (0x56) wait for.
+        self.objects = []
+        self.field_frames = field_frames or (lambda record: 0)
+        self.object_frames = object_frames or (lambda number, state: 0)
+        self.field_end = self.object_end = 0
 
     # -- helpers ---------------------------------------------------------------------
 
@@ -1954,9 +2125,13 @@ class _Player:
                     self.problem(index, "tile")
             return frame
         if op == 0x45:
+            # AddUnit (the decompilation's interpreter): the unit is made, and
+            # shown unless hidden; hidden, one made already stays as it was.
             track = self.track(v["unit"], index)
             if track is not None:
-                self.add(track, frame, "set", {"shown": not v["hidden"], "alpha": 1.0})
+                self.loaded[v["unit"]] = True
+                if not v["hidden"]:
+                    self.add(track, frame, "set", {"shown": True, "alpha": 1.0})
             return frame
         if op == 0x47:
             unit_id = v["unit"]
@@ -1965,22 +2140,33 @@ class _Player:
                                                 v["facing"] & 3, False, None, 0, v["sprite"])
                 self.tracks[unit_id] = _Track(Pose(unit_id, float(v["x"]), float(v["y"]), v["level"] & 1,
                                                    float((v["facing"] & 3) * 4), False, animation=STAND))
+            self.loaded[unit_id] = True
             self.add(self.tracks[unit_id], frame, "set", {"shown": not v["hidden"], "alpha": 1.0})
             return frame
         if op == 0x44:
-            # Drawn; a teleport's fade, started just before, goes on.
+            # Drawn, if the game has made it (a unit off the field and never
+            # added has nothing to draw); a teleport's fade, started just before, goes on.
             track = self.track(v["unit"], index)
-            if track is not None:
+            if track is not None and self.loaded.get(v["unit"], True):
                 self.add(track, frame, "set", {"shown": True})
             return frame
-        if op in (0x46, 0x3D, 0x99):
+        if op == 0x46:
+            track = self.track(v["unit"], index)
+            if track is not None and self.loaded.get(v["unit"], True):
+                self.add(track, frame, "set", {"shown": False})
+            return frame
+        if op in (0x3D, 0x99):
+            # Taken off the field: RemoveUnit once the unit has stopped walking.
             track = self.track(v["unit"], index)
             if track is not None:
+                if op == 0x3D and self.loaded.get(v["unit"], True):
+                    frame = max(frame, self.walks_end.get(v["unit"], frame))
                 self.add(track, frame, "set", {"shown": False})
+                self.loaded[v["unit"]] = False
             return frame
         if op == 0x98:
             track = self.track(v["unit"], index)
-            if track is not None:
+            if track is not None and self.loaded.get(v["unit"], True):
                 self.add(track, frame, "set", {"shown": True, "alpha": 0.0})
                 self.add(track, frame, "fade", {"from": 0.0, "to": 1.0, "end": frame + TELEPORT_FRAMES})
                 self.effect_end = max(self.effect_end, frame + TELEPORT_FRAMES)
@@ -2095,9 +2281,39 @@ class _Player:
             self.field_colours.append((frame, frame + colour_frames(v["frames"] or 0), now, to))
             return frame
         if op == 0x66:
-            # StoreModifiedMapPalette: the map's colours now are those kept.
-            self.field_kept = _changes_at(self.field_colours, frame)
+            # StoreModifiedMapPalette: the map's colours now are those kept,
+            # to which mode 8 goes back. Not in the remaster's own look, which
+            # keeps the map's own: event 004's lightning there ends with the
+            # map as it is, not in the blue this keeps (Zodi, 22 October,
+            # beside the game).
+            if self.mode != "enhanced":
+                self.field_kept = _changes_at(self.field_colours, frame)
             return frame
+        if op == 0x2E:
+            # Background: the colors behind the map, faded to (`background_frames`).
+            to = ((v["top_red"], v["top_green"], v["top_blue"]),
+                  (v["bottom_red"], v["bottom_green"], v["bottom_blue"]))
+            self.backgrounds.append((frame, frame + background_frames(v["frames"] or 0), to))
+            return frame
+        if op == 0x3C:
+            # Weather: its low four bits, when any of bits 8 to 11 says to
+            # (without them the game changes nothing).
+            request = v["weather"] or 0
+            if request & 0xF00:
+                self.weathers.append((frame, request & 0xF))
+            return frame
+        if op == 0x55:
+            self.objects.append((frame, 0x55, v["animation"], v["value"]))
+            self.field_end = frame + max(0, int(self.field_frames(v["animation"]) or 0))
+            return frame
+        if op == 0x57:
+            return max(frame, self.field_end)
+        if op == 0x54:
+            self.objects.append((frame, 0x54, v["object"], v["state"]))
+            self.object_end = frame + max(0, int(self.object_frames(v["object"], v["state"]) or 0))
+            return frame
+        if op == 0x56:
+            return max(frame, self.object_end)
         if op == 0xE7:
             if v["caption"] is not None:
                 self.captions.append([frame, frame + CAPTION_FRAMES, v["caption"]])
@@ -2313,7 +2529,8 @@ def starts_marching(script: Script) -> bool:
 def play(script: Script, units: dict, words: Callable[[int], Optional[str]] = lambda line: None,
          ground: Callable = default_ground, tiles: Optional[set] = None,
          map_number: Optional[int] = None, marching: Optional[bool] = None,
-         music: tuple = (0, 0)) -> Timeline:
+         music: tuple = (0, 0), field_frames: Optional[Callable[[int], int]] = None,
+         object_frames: Optional[Callable[[int, int], int]] = None) -> Timeline:
     """
     `script` played out: each instruction's frame, each node's, and what
     every frame shows. `units` are the scene's (`scene_units`), `words(line)`
@@ -2322,11 +2539,14 @@ def play(script: Script, units: dict, words: Callable[[int], Optional[str]] = la
     when a map is shown. `marching`: whether its units march as it starts
     (None: as `starts_marching` says); `music`: the event's two tracks
     (`scenario_music`), the first playing from its start.
+    `field_frames(record)` and `object_frames(number, state)`: how long the
+    map's texture animation record and 3D object play, which the waits for
+    them wait (0, as nothing says, without them).
     """
     copy = Script(script.mode, list(script.instructions), script.tail, script.stopped)
     marching = starts_marching(script) if marching is None else bool(marching)
     player = _Player(copy, {k: replace(u) for k, u in units.items()}, words, ground, tiles, map_number,
-                     marching, music)
+                     marching, music, field_frames, object_frames)
     frames = player.run()
     nodes = group_nodes(script)
     node_starts = [player.starts[node.first] if node.count else 0 for node in nodes]
@@ -2337,4 +2557,5 @@ def play(script: Script, units: dict, words: Callable[[int], Optional[str]] = la
                     player.tracks, player.camera_moves, player.first_camera, player.boxes, player.screens,
                     player.screen_start, map_number, player.changes_map, player.waits_for_button,
                     player.field_colours, [tuple(c) for c in player.captions], player.music,
-                    (int(music[0]) if music else 0, int(music[1]) if music and len(music) > 1 else 0), marching)
+                    (int(music[0]) if music else 0, int(music[1]) if music and len(music) > 1 else 0), marching,
+                    player.backgrounds, player.weathers, player.objects)
