@@ -1,4 +1,4 @@
-// Mod Studio Event Setup: the running game's program, as bytes. Part of The
+// Mod Studio Framework: the running game's program, as bytes. Part of The
 // Ivalice Chronicles Mod Studio, GPL-3.0.
 using System;
 using System.Diagnostics;
@@ -50,6 +50,13 @@ namespace ModStudioEventSetup
         }
 
         public Span<byte> Bytes => new Span<byte>(_base, _size);
+
+        /// <summary>(1.9.0) Bytes from `address` on, counted from where the program is loaded, wherever they are: the
+        /// setup table in the program, or moved past it (EventRoom.cs).</summary>
+        public Span<byte> At(int address, int length) => new Span<byte>(_base + address, length);
+
+        /// <summary>Where the program is loaded: what its addresses count from.</summary>
+        public byte* Base => _base;
 
         const uint ReadWrite = 0x04;
 

@@ -38,6 +38,8 @@ from ... import (
 from ... import sound_data as sd, texture_data as td
 from ... import constants as c
 from ... import map_classic as mc
+from ... import quest_map_edits as qe
+from ... import quest_maps as qm
 from ... import uib
 from ..widgets.field_rows import CollapsibleSection
 from ..widgets.form_scroll import FormScrollArea
@@ -1962,6 +1964,17 @@ class SetupPage(QWidget):
         # The events' setup it changes (its EventSetup.json, for the helper
         # mod): the Event Editor's changes again.
         self._take_over_setup(existing.mod_root)
+        # Its quest maps (ModStudioMaps): the Map Editor's again, each with its own changes.
+        self._take_over_quest_maps(existing.mod_root, str(existing.config.get("ModId") or folder.name))
+        # Its places and roads (ModStudioPlaces, ModStudioRoads): the Side Quests page's again, before its quests,
+        # whose steps may wait at them.
+        self._take_over_places(existing.mod_root)
+        # (1.26.0) Its own items, which its towns' Outfitters may sell.
+        self._take_over_items(existing.mod_root)
+        # (1.28.0) The game's weapons' looks in battle it changes (its ModStudioItemLooks.json).
+        self._take_over_item_looks(existing.mod_root)
+        # Its side quests (ModStudioQuests): the Side Quests page's again, with their words.
+        self._take_over_quests(existing.mod_root)
         if self.state.mod_own_files:
             code = modconfig.code_names(existing.config, self.state.mod_own_files)
             count = len(self.state.mod_own_files)
@@ -2368,6 +2381,205 @@ class SetupPage(QWidget):
             self._log(f"Carrying {kept} battle map file(s) through as they are, changed "
                       f"in ways the Map Editor doesn't make.")
 
+    def _take_over_quest_maps(self, mod_root, mod_id: str) -> None:
+        """
+        Turns the quest maps this mod has (`ModStudioMaps/<name>/`, Zodi, 28
+        October: "Edit quest maps directly") back into the Map Editor's quest
+        maps, each with the changes that write it again
+        (`quest_map_edits.from_quest_map`): its files (its pictures, model and
+        anims, which the replaced files' reading took as the mod's) are the
+        quest map's, not the mod's changes to its Base, nor files of the
+        mod's own. One that can't be read stays carried through as it is.
+        Needs the unpacked game and its database to compare with. Each one's
+        files are copied into its own working folder, as an export may write
+        the mod's again under other names.
+        """
+        qe.forget(self.state.quest_maps or {})
+        self.state.quest_maps = {}
+        game = getattr(self.state, "nxd_unpack_dir", None)
+        found = qm.read_mod_maps(mod_root)
+        if not found:
+            return
+        if not game:
+            self._log(f"This mod has {len(found)} quest map(s), carried through as they are: the Map Editor "
+                      f"opens them when the mod is opened with the game unpacked.")
+            return
+        data_root = Path(mod_root) / "FFTIVC" / "data" / "enhanced"
+        own = self.state.mod_own_files or {}
+        taken = 0
+        for name, quest_map, problems in found:
+            if quest_map is None:
+                self._log(f"Carrying the quest map {name} through as it is: {'; '.join(problems)}.")
+                continue
+            edits, said, named = qe.from_quest_map(Path(game), getattr(self.state, "nxd_sqlite_path", None),
+                                                   mod_id, name, quest_map, Path(mod_root) / qm.FOLDER / name,
+                                                   data_root)
+            self.state.quest_maps[name] = edits
+            taken += 1
+            for problem in said:
+                self._log(f"The quest map {name}: {problem}.")
+            # Its files are the quest map's own now.
+            for file in named:
+                try:
+                    rel = file.relative_to(data_root).as_posix()
+                except ValueError:
+                    continue
+                self.state.texture_edits.pop(rel, None)
+                self.state.other_file_replacements.pop(rel, None)
+            prefix = f"{qm.FOLDER}/{name}/".lower()
+            for rel in [r for r in own if r.lower().startswith(prefix)]:
+                own.pop(rel)
+        if taken:
+            self._log(f"Opened {taken} quest map(s) of this mod, which the Map Editor lists under the game's maps.")
+
+    def _take_over_places(self, mod_root) -> None:
+        """
+        Turns the places and roads this mod has (`ModStudioPlaces/<folder>/`
+        and `ModStudioRoads/<folder>/`, Zodi, 28 October, "Side quest page",
+        its second part) back into the Side Quests page's
+        (`place_edits.read_mod`): each one Mod Studio Framework would read,
+        a town's own texture read back from the mod's files, which are the
+        place's now, not files carried through or of the mod's own; a road's
+        texture is drawn again from its places and turns at export. One that
+        can't be read stays carried through as it is, and says why, and so
+        does a road joining a place carried through.
+        """
+        from ... import map_places as mp
+        from ... import map_roads as mr
+        from ... import place_edits as pe
+        self.state.places, self.state.roads = {}, {}
+        places, roads = pe.read_mod(mod_root)
+        if not places and not roads:
+            return
+        own = self.state.mod_own_files or {}
+        data = "FFTIVC/data/enhanced/"
+        taken = 0
+        names = {edit.name for _folder, edit, _problems in places if edit is not None}
+        for kind, found, store, folder_name, file_name in (
+                ("place", places, self.state.places, mp.FOLDER, mp.FILE_NAME),
+                ("road", roads, self.state.roads, mr.FOLDER, mr.FILE_NAME)):
+            for folder, edit, problems in found:
+                if edit is not None and kind == "road":
+                    gone = [end for end in (edit.start, edit.end) if isinstance(end, str) and end not in names]
+                    if gone:
+                        edit, problems = None, [f"it joins {gone[0]}, a place carried through as it is"]
+                if edit is None:
+                    self._log(f"Carrying the {kind} {folder} through as it is: {'; '.join(problems)}.")
+                    continue
+                store[folder] = edit
+                taken += 1
+                prefix = f"{folder_name}/{folder}/".lower()
+                for rel in [r for r in own if r.lower().startswith(prefix)]:
+                    own.pop(rel)
+                # Its textures are its own now.
+                for rel in pe.named_files(Path(mod_root) / folder_name / folder, file_name):
+                    wanted = rel[len(data):].lower() if rel.lower().startswith(data.lower()) else rel.lower()
+                    for kept in (self.state.texture_edits, self.state.other_file_replacements):
+                        for key in [k for k in kept if str(k).replace("\\", "/").lower() == wanted]:
+                            kept.pop(key)
+        if taken:
+            self._log(f"Opened {taken} place(s) and road(s) of this mod, which the New Content page lists under "
+                      f"Places.")
+
+    def _take_over_item_looks(self, mod_root) -> None:
+        """
+        (1.28.0) The game's weapons' looks in battle this mod changes (its
+        `ModStudioItemLooks.json`, `mod_items.read_looks`), the Items page's
+        again, read as Mod Studio Framework reads them: the file the mod's
+        own now, not carried through. A file that can't be read at all stays
+        carried through as it is, and says why; a look of it that can't be
+        read is said and left out.
+        """
+        from ... import mod_items as mi
+        self.state.item_looks = {}
+        if not (Path(mod_root) / mi.LOOKS_FILE).is_file():
+            return
+        looks, problems = mi.read_looks(mod_root)
+        if problems and not looks:
+            self._log(f"Carrying {mi.LOOKS_FILE} through as it is: {'; '.join(problems)}.")
+            return
+        for problem in problems:
+            self._log(f"{mi.LOOKS_FILE}: {problem}; that look is left out.")
+        self.state.item_looks = looks
+        own = self.state.mod_own_files or {}
+        for rel in [r for r in own if r.lower() == mi.LOOKS_FILE.lower()]:
+            own.pop(rel)
+        if looks:
+            self._log(f"Opened the looks in battle of {len(looks)} of the game's weapon(s), which the Items page "
+                      f"shows under In battle.")
+
+    def _take_over_items(self, mod_root) -> None:
+        """
+        (1.26.0) Turns the items this mod has (`ModStudioItems/<folder>/`,
+        Zodi's list of 3 November, his first) back into the Side Quests page's
+        (`mod_items.read_mod`): each one Mod Studio Framework would read, its
+        own icon read back from the mod's files, which are the item's now, not
+        files carried through or of the mod's own. One that can't be read stays
+        carried through as it is, and says why.
+        """
+        from ... import mod_items as mi
+        self.state.items = {}
+        found = mi.read_mod(mod_root)
+        if not found:
+            return
+        own = self.state.mod_own_files or {}
+        data = "FFTIVC/data/enhanced/"
+        taken = 0
+        for folder, edit, problems in found:
+            if edit is None:
+                self._log(f"Carrying the item {folder} through as it is: {'; '.join(problems)}.")
+                continue
+            self.state.items[folder] = edit
+            taken += 1
+            prefix = f"{mi.FOLDER}/{folder}/".lower()
+            for rel in [r for r in own if r.lower().startswith(prefix)]:
+                own.pop(rel)
+            # Its icon's textures are its own now.
+            for rel in mi.named_files(Path(mod_root) / mi.FOLDER / folder):
+                wanted = rel[len(data):].lower() if rel.lower().startswith(data.lower()) else rel.lower()
+                for kept in (self.state.texture_edits, self.state.other_file_replacements):
+                    for key in [k for k in kept if str(k).replace("\\", "/").lower() == wanted]:
+                        kept.pop(key)
+        if taken:
+            self._log(f"Opened {taken} item(s) of this mod, which the New Content page lists under Items.")
+
+    def _take_over_quests(self, mod_root) -> None:
+        """
+        Turns the side quests this mod has (`ModStudioQuests/<folder>/`, Zodi,
+        28 October, "Side quest page") back into the Side Quests page's
+        (`quest_edits.read_mod`): each one Mod Studio Framework would read,
+        with its scripts, its battles' units and its events' words, which are
+        the quest's now, not files carried through or of the mod's own. One
+        that can't be read stays carried through as it is, and says why.
+        """
+        from ... import quest_edits as qx
+        from ... import side_quests as sq
+        self.state.quests = {}
+        found = qx.read_mod(mod_root)
+        if not found:
+            return
+        own = self.state.mod_own_files or {}
+        carried = self.state.other_file_replacements
+        data = "FFTIVC/data/enhanced/"
+        taken = 0
+        for folder, edits, problems in found:
+            if edits is None:
+                self._log(f"Carrying the side quest {folder} through as it is: {'; '.join(problems)}.")
+                continue
+            self.state.quests[folder] = edits
+            taken += 1
+            prefix = f"{sq.FOLDER}/{folder}/".lower()
+            for rel in [r for r in own if r.lower().startswith(prefix)]:
+                own.pop(rel)
+            # Its words files are its own now.
+            for ev in edits.quest.events:
+                for language in (qx.LANGUAGES if ev.words else ()):
+                    rel = sq.words_file(ev.words, language)[len(data):].lower()
+                    for key in [k for k in carried if str(k).replace("\\", "/").lower() == rel]:
+                        carried.pop(key)
+        if taken:
+            self._log(f"Opened {taken} side quest(s) of this mod, which the New Content page lists.")
+
     def _take_over_scripts(self) -> None:
         """
         The Event Editor's share of an opened mod: each of its event scripts
@@ -2424,7 +2636,7 @@ class SetupPage(QWidget):
     def _take_over_setup(self, mod_root) -> None:
         """
         The events' setup an opened mod changes: its `EventSetup.json`, for
-        Mod Studio Event Setup, read back as the helper reads it into the
+        Mod Studio Framework, read back as the helper reads it into the
         Event Editor's changes (`state.setup_edits`), which export writes
         again. What the helper would leave out is said and left out.
         """

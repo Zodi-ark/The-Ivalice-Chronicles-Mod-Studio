@@ -62,9 +62,9 @@ from typing import Optional
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QMenu, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSpinBox,
-    QSplitter, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QRadioButton,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
 
 from ... import constants as c
@@ -73,6 +73,10 @@ from ... import map_classic as mc
 from ... import map_enhanced as me
 from ... import map_package as mpk
 from ... import map_variants as mv
+from ... import quest_edits as qx
+from ... import quest_map_edits as qe
+from ... import quest_maps as qm
+from ... import texture_data as td
 from ... import game_install, paths, ui_settings, xml_io
 from .. import export_dialogs
 from .. import map_scene as ms
@@ -284,6 +288,149 @@ COPY_PUT_BACK = ("Map {target:03d} is as the game has it again: map {source:03d}
 #: The title of a map with a copied look: "Map 097, ..., with map 048's look".
 COPY_TITLE = ", with map {source:03d}'s look"
 
+#: A quest map's words (Zodi, 28 October: "Edit quest maps directly"): a map of the mod's own for its side
+#: quests' battles, made from one of the game's maps, listed under the game's and changed here apart from it
+#: (`quest_map_edits`; what it is in the game, `quest_maps`).
+QUEST_HEADER = "Quest maps"
+QUEST_LABEL = "{name}  (from {base:03d})"
+#: What marks a quest map's row in the list (`Qt.UserRole`: the marker and its name).
+QUEST_ITEM = "quest map"
+QUEST_NEW_BUTTON = "New quest map"
+QUEST_NEW_TIP = ("Makes a quest map of your mod from this map as it is shown: a map of its own for your side "
+                 "quests' battles, listed under Quest maps, which you change here apart from this one.")
+QUEST_EDIT_BUTTON = "Name and title"
+QUEST_EDIT_TIP = ("Changes this quest map's name, which a side quest's battle names it by, and its title, the "
+                  "place name the game shows for its battles.")
+QUEST_REMOVE_BUTTON = "Remove quest map"
+QUEST_REMOVE_TIP = "Takes this quest map out of your mod."
+QUEST_MAP_TITLE = "Quest map {name}, made from map {base:03d}{place}"
+QUEST_SHOWN_AS = ", shown in the game as {title}"
+QUEST_NEW_DIALOG = "New quest map"
+QUEST_EDIT_DIALOG = "Quest map's name and title"
+QUEST_INTRO = ("A quest map is a map of your mod's own for its side quests' battles, made from map {base:03d}"
+               "{place} as it is shown now. You change it here apart from map {base:03d}, which stays as it is. "
+               "Mod Studio Framework gives it a map number of its own as the game starts.")
+QUEST_EDIT_INTRO = ("A side quest's battle names this quest map by its name. The title is the place name the game "
+                    "shows for its battles.")
+QUEST_NAME = "Name"
+QUEST_NAME_TIP = ("A side quest's battle names its map by this: letters, digits, spaces, underscores and hyphens, "
+                  "up to 64.")
+QUEST_TITLE_LABEL = "Title"
+QUEST_TITLE_TIP = "The place name the game shows for its battles. Leave it empty to show {place}."
+QUEST_NAME_BAD = ("A name is letters, digits, spaces, underscores and hyphens, 1 to 64 of them, with no space at "
+                  "either end.")
+QUEST_NAME_TAKEN = "Your mod has a quest map named {name} already."
+QUEST_NAME_LIKE = ("Your mod has a quest map named {name}, whose files would have the same names as this one's: "
+                   "names that differ only in case, spaces, underscores or hyphens do. Change a letter or digit.")
+QUEST_TITLE_BAD = ("A title is 1 to 64 characters, none of them a control character, with no space at either "
+                   "end.")
+QUEST_MADE = ("{name} is a quest map of your mod now, made from map {base:03d}. Change it here: map {base:03d} "
+              "stays as it is. It goes into your mod when you export.")
+QUEST_CHANGED = "Quest map {name}'s name and title are changed."
+QUEST_REMOVE_ASK = "Take the quest map {name} out of your mod? Its changes go with it."
+QUEST_REMOVED = "Quest map {name} is out of your mod."
+QUEST_NO_GRID = "Map {base:03d} has no battle grid in the game, so no quest map can be made from it."
+QUEST_NO_COPY = "A quest map is a map of its own already, so its look isn't copied to a spare map number."
+#: A quest map's pictures, changed from the map (the Textures page changes the game's own).
+QUEST_TEXTURE = "Replace its texture in this quest map"
+QUEST_LIGHTING = "Replace its lighting in this quest map"
+QUEST_PICTURE_BACK = "Put back map {base:03d}'s {what}"
+QUEST_PICTURE_DONE = "Quest map {name} has {file} as its {what} now."
+QUEST_PICTURE_GAME = "Quest map {name} has map {base:03d}'s {what} again."
+
+
+def quest_name_problem(name: str, title: str, taken) -> str:
+    """What is wrong with a quest map's name and title (`taken`: the mod's other quest maps' names), or "": a name
+    another has whatever its case (Windows folders being one name whatever their case), or one giving its files
+    the names another's have (`quest_maps.same_files`)."""
+    if not qm.good_name(name):
+        return QUEST_NAME_BAD
+    for other in taken:
+        if other.lower() == name.lower():
+            return QUEST_NAME_TAKEN.format(name=other)
+    for other in taken:
+        if qm.same_files(name, other):
+            return QUEST_NAME_LIKE.format(name=other)
+    if title and not qm.good_title(title):
+        return QUEST_TITLE_BAD
+    return ""
+
+
+def quest_name_for(place: str, taken) -> str:
+    """A name to offer a new quest map made from a map called `place`: its letters, digits, spaces, underscores
+    and hyphens (as a name may have them), and "Quest Map", numbered past those `taken`."""
+    kept = "".join(ch if qm.good_name(ch) or ch == "\x20" else "\x20" for ch in place)
+    stem = " ".join(kept.split())[:40].strip() or "New"
+    name = f"{stem} Quest Map"
+    n = 2
+    while quest_name_problem(name, "", taken) and n < 100000:
+        name = f"{stem} Quest Map {n}"
+        n += 1
+    return name
+
+
+class QuestMapDialog(QDialog):
+    """A quest map's name and title: asked when one is made, and changed after (`MapEditorPage`)."""
+
+    def __init__(self, parent, heading: str, intro: str, name: str, title: str, place: str, taken):
+        super().__init__(parent)
+        self.setWindowTitle(heading)
+        self.taken = set(taken)
+        layout = QVBoxLayout(self)
+        text = QLabel(intro)
+        text.setWordWrap(True)
+        layout.addWidget(text)
+        form = QFormLayout()
+        self.name_box = QLineEdit(name)
+        self.name_box.setMaxLength(64)
+        self.name_box.setToolTip(QUEST_NAME_TIP)
+        self.title_box = QLineEdit(title)
+        self.title_box.setMaxLength(64)
+        self.title_box.setPlaceholderText(place)
+        self.title_box.setToolTip(QUEST_TITLE_TIP.format(place=place or "its map's name"))
+        form.addRow(QUEST_NAME, self.name_box)
+        form.addRow(QUEST_TITLE_LABEL, self.title_box)
+        layout.addLayout(form)
+        self.note = QLabel("")
+        self.note.setProperty("role", "danger")
+        self.note.setWordWrap(True)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.setMinimumWidth(460)
+
+    def values(self) -> tuple:
+        return self.name_box.text(), self.title_box.text()
+
+    def _accept(self) -> None:
+        said = quest_name_problem(*self.values(), self.taken)
+        if said:
+            self.note.setText(said)
+            return
+        self.accept()
+
+
+def quest_tip(edits, place: str) -> str:
+    """A quest map's row's tip: the map it is made from, its title, and what it changes."""
+    counts = qe.summary(edits)
+    made = [f"made from map {edits.base:03d}" + (f", {place}" if place else "")]
+    if edits.title:
+        made.append(f"shown in the game as {edits.title}")
+    changes = []
+    if counts["tiles"]:
+        changes.append(f"{counts['tiles']} tile{'s' if counts['tiles'] != 1 else ''}")
+    if counts["textures"]:
+        changes.append(f"{counts['textures']} texture{'s' if counts['textures'] != 1 else ''}")
+    if counts["model"]:
+        changes.append("its model")
+    if counts["rows"]:
+        changes.append(f"{counts['rows']} table row{'s' if counts['rows'] != 1 else ''}")
+    text = "Quest map, " + ", ".join(made) + "."
+    return text + (f" Changed: {', '.join(changes)}." if changes else "")
+
+
 #: Put back the game's look's words: the tiles' heights go back with the look.
 LOOK_PUT_BACK = "Map {number:03d} has the game's model and textures again."
 SKY_PUT_BACK = " Its sky colors are the game's again too."
@@ -342,9 +489,11 @@ def heights_back_note(count: int) -> str:
         return ""
     return HEIGHTS_PUT_BACK_ONE if count == 1 else HEIGHTS_PUT_BACK.format(count=count)
 
-def panels_file(number: int) -> Path:
-    """Where Add highlight panels keeps map `number`'s look with its panels, for the mod to carry."""
-    return paths.local_data_dir() / "map_panels" / f"map_{int(number):03d}" / f"map_{int(number):03d}_mesh.bin"
+def panels_file(number: int, root: Optional[Path] = None) -> Path:
+    """Where Add highlight panels keeps map `number`'s look with its panels, for the mod to carry: in Mod Studio's
+    own folder, or a quest map's working folder (`root`)."""
+    return ((root or paths.local_data_dir()) / "map_panels" / f"map_{int(number):03d}"
+            / f"map_{int(number):03d}_mesh.bin")
 
 
 def copy_folder(number: int) -> Path:
@@ -352,12 +501,13 @@ def copy_folder(number: int) -> Path:
     return paths.local_data_dir() / "map_copies" / f"map_{int(number):03d}"
 
 
-def light_file(number: int) -> Path:
+def light_file(number: int, root: Optional[Path] = None) -> Path:
     """
     Where Light the map keeps map `number`'s light (`map_light.light_folder`
-    and `LIGHT_FILE`), named here so carrying it in a package needs no numpy.
+    and `LIGHT_FILE`), named here so carrying it in a package needs no numpy:
+    in Mod Studio's own folder, or a quest map's working folder (`root`).
     """
-    return paths.local_data_dir() / "map_lighting" / f"map_{int(number):03d}" / "light.json"
+    return (root or paths.local_data_dir()) / "map_lighting" / f"map_{int(number):03d}" / "light.json"
 
 
 def names_in(value) -> list:
@@ -1002,6 +1152,9 @@ class MapEditorPage(QWidget):
         super().__init__(parent)
         self.state = state
         self.number = None
+        #: The quest map shown (Zodi, 28 October: "Edit quest maps directly"): its name in
+        #: `state.quest_maps`, `self.number` its Base; None for one of the game's maps.
+        self.quest = None
         #: The look chosen, and the one shown: a map with no enhanced files
         #: is shown classic without changing the choice, so the next map
         #: that has them comes back enhanced.
@@ -1230,6 +1383,20 @@ class MapEditorPage(QWidget):
         self.copy_button.setMenu(self.copy_menu)
         model_row.addWidget(self.copy_button)
         model_row.addWidget(self.put_back_look_button)
+        #: Zodi, 28 October: "Edit quest maps directly": a map of the mod's own for its side quests' battles,
+        #: made from the map shown and changed here apart from it (`quest_map_edits`).
+        self.new_quest_button = QPushButton(QUEST_NEW_BUTTON)
+        self.new_quest_button.setToolTip(QUEST_NEW_TIP)
+        self.new_quest_button.clicked.connect(lambda: self.ask_new_quest_map())
+        self.edit_quest_button = QPushButton(QUEST_EDIT_BUTTON)
+        self.edit_quest_button.setToolTip(QUEST_EDIT_TIP)
+        self.edit_quest_button.clicked.connect(lambda: self.ask_edit_quest_map())
+        self.remove_quest_button = QPushButton(QUEST_REMOVE_BUTTON)
+        self.remove_quest_button.setToolTip(QUEST_REMOVE_TIP)
+        self.remove_quest_button.clicked.connect(lambda: self.remove_quest_map())
+        self.edit_quest_button.setVisible(False)
+        self.remove_quest_button.setVisible(False)
+        model_row.addWidget(_together(self.new_quest_button, self.edit_quest_button, self.remove_quest_button))
         #: For a look with no highlight panels (33 of the game's: no battle of
         #: the game's is fought on them), panels made from the tiles
         #: (`map_enhanced.with_grid_panels`), so a battle a mod puts there
@@ -1326,18 +1493,202 @@ class MapEditorPage(QWidget):
         return (False, False, False)
 
     def select_record(self, number) -> bool:
-        """Picks a map by its number: what a jump from another page carries."""
+        """Picks a map by its number, or one of the mod's quest maps by its name (the Side Quests page's Open on
+        the Map Editor): what a jump from another page carries."""
+        if isinstance(number, str) and not number.isdigit():
+            if number not in self.quest_maps():
+                return False
+            self._show_quest(number)
+            return True
         return actions.select_list_row(self.map_list, int(number), self.search)
 
     # -- the maps ----------------------------------------------------------------------
 
     def game_dir(self):
-        folder = getattr(self.state, "nxd_unpack_dir", None)
+        folder = getattr(self.edit_state, "nxd_unpack_dir", None)
         return Path(folder) if folder else None
 
     def map_folder(self):
         game = self.game_dir()
         return game / mc.MAP_FOLDER if game is not None else None
+
+    # -- quest maps (Zodi, 28 October: "Edit quest maps directly") ---------------------------------
+
+    def quest_edits(self):
+        """The quest map shown (`quest_map_edits.QuestMapEdits`), or None for one of the game's maps."""
+        if self.quest is None:
+            return None
+        return (getattr(self.state, "quest_maps", None) or {}).get(self.quest)
+
+    @property
+    def edit_state(self):
+        """
+        What this page's tools change: the app's state, or while a quest map is
+        shown its `EditView`, the state but for the stores the quest map keeps
+        its own changes in. So every tool changes a quest map as it changes a
+        map, and the game's map it is made from not at all.
+        """
+        quest = self.quest_edits()
+        return qe.EditView(self.state, quest) if quest is not None else self.state
+
+    def working_root(self) -> Path:
+        """Where Light the map and Add highlight panels keep their files: Mod Studio's own folder, or the quest
+        map's working folder."""
+        quest = self.quest_edits()
+        return quest.folder() if quest is not None else paths.local_data_dir()
+
+    def quest_maps(self) -> dict:
+        """The mod's quest maps (`state.quest_maps`)."""
+        maps = getattr(self.state, "quest_maps", None)
+        if maps is None:
+            maps = self.state.quest_maps = {}
+        return maps
+
+    def has_grid(self, number) -> bool:
+        """Whether map `number` has a battle grid in the game (a quest map is made only from one that has)."""
+        folder = self.map_folder()
+        if folder is None or number is None:
+            return False
+        known = self.__dict__.setdefault("_grids", {})
+        if (folder, number) not in known:
+            known[(folder, number)] = bool(mc.map_grids(folder, number))
+        return known[(folder, number)]
+
+    def _show_quest(self, name: str) -> None:
+        self.refresh_tree()
+        actions.select_list_row(self.map_list, (QUEST_ITEM, name), self.search)
+
+    def new_quest_map(self, name: str, title: str = "") -> str:
+        """
+        Makes a quest map named `name` (its title `title`) from the map shown as
+        it is shown: the mod's changes to it, or the quest map's when one is
+        shown, and shows it. Returns what was wrong, or "".
+        """
+        number = self.number
+        if number is None:
+            return ""
+        if not self.has_grid(number):
+            return QUEST_NO_GRID.format(base=number)
+        said = quest_name_problem(name, title, set(self.quest_maps()))
+        if said:
+            return said
+        shown = self.quest_edits()
+        made = qe.copy_of(shown, title) if shown is not None else qe.from_state(self.state, number, title)
+        self.quest_maps()[name] = made
+        self._show_quest(name)
+        self._say_look(QUEST_MADE.format(name=name, base=number), "ok")
+        self.edits_changed.emit()
+        return ""
+
+    def edit_quest_map(self, name: str, title: str) -> str:
+        """Gives the quest map shown the name `name` and the title `title` (empty: its Base's name). Returns what
+        was wrong, or ""."""
+        quest = self.quest_edits()
+        if quest is None:
+            return ""
+        said = quest_name_problem(name, title, {n for n in self.quest_maps() if n != self.quest})
+        if said:
+            return said
+        maps = self.quest_maps()
+        order = [(name if n == self.quest else n, e) for n, e in maps.items()]
+        maps.clear()
+        maps.update(order)
+        # The side quests' battles and scenes on it name it by its new name (the Side Quests page).
+        if name != self.quest:
+            qx.rename_map(getattr(self.state, "quests", None) or {}, self.quest, name)
+        quest.title = title
+        self.quest = name
+        self._show_quest(name)
+        self.title.setText(self._title(self.number))
+        self._say_look(QUEST_CHANGED.format(name=name), "ok")
+        self.edits_changed.emit()
+        return ""
+
+    def remove_quest_map(self, ask: bool = True) -> bool:
+        """Takes the quest map shown out of the mod (asked first, unless `ask` is False), and shows the map it was
+        made from."""
+        quest = self.quest_edits()
+        if quest is None:
+            return False
+        name, base = self.quest, quest.base
+        if ask and QMessageBox.question(self, QUEST_REMOVE_BUTTON, QUEST_REMOVE_ASK.format(name=name)) \
+                != QMessageBox.Yes:
+            return False
+        qe.forget({name: self.quest_maps().pop(name)})
+        self.quest = None
+        self.refresh_tree()
+        actions.select_list_row(self.map_list, base, self.search)
+        self._say_look(QUEST_REMOVED.format(name=name), "ok")
+        self.edits_changed.emit()
+        return True
+
+    def ask_new_quest_map(self) -> None:
+        """New quest map's dialog, then `new_quest_map`."""
+        if self.number is None:
+            return
+        place = map_names(self.state).get(self.number, "")
+        taken = set(self.quest_maps())
+        dialog = QuestMapDialog(self, QUEST_NEW_DIALOG,
+                                QUEST_INTRO.format(base=self.number, place=f", {place}," if place else ""),
+                                quest_name_for(place, taken), "", place, taken)
+        if dialog.exec() == QDialog.Accepted:
+            said = self.new_quest_map(*dialog.values())
+            if said:
+                self._say_look(said, "danger")
+
+    def ask_edit_quest_map(self) -> None:
+        """Name and title's dialog, then `edit_quest_map`."""
+        quest = self.quest_edits()
+        if quest is None:
+            return
+        place = map_names(self.state).get(quest.base, "")
+        taken = {n for n in self.quest_maps() if n != self.quest}
+        dialog = QuestMapDialog(self, QUEST_EDIT_DIALOG, QUEST_EDIT_INTRO, self.quest, quest.title, place, taken)
+        if dialog.exec() == QDialog.Accepted:
+            said = self.edit_quest_map(*dialog.values())
+            if said:
+                self._say_look(said, "danger")
+
+    def quest_picture(self, name: str, file, what: str = "texture") -> None:
+        """Gives the quest map shown the picture `file` for its picture `name` (a file name in its Base's folder of
+        pictures), or its Base's again for None, and draws it."""
+        quest = self.quest_edits()
+        if quest is None or not name:
+            return
+        rel = mpk.picture_relative_path(quest.base, name)
+        if file:
+            quest.texture_edits[rel] = {"source_path": Path(file), "is_face_texture": False}
+            self._say_look(QUEST_PICTURE_DONE.format(name=self.quest, file=Path(file).name, what=what), "ok")
+        else:
+            quest.texture_edits.pop(rel, None)
+            self._say_look(QUEST_PICTURE_GAME.format(name=self.quest, base=quest.base, what=what), "ok")
+        self._load()
+        self._update_look_buttons()
+        self._mark_list()
+        self.edits_changed.emit()
+
+    def _ask_quest_picture(self, name: str, what: str) -> None:
+        file, _ = QFileDialog.getOpenFileName(self, QUEST_TEXTURE if what == "texture" else QUEST_LIGHTING, "",
+                                              actions.image_open_filter(td.REPLACEMENT_IMAGE_EXTENSIONS))
+        if file:
+            self.quest_picture(name, file, what)
+
+    def quest_pictures(self, point) -> list:
+        """`[(what, name)]`: the pictures of the polygon under a point of a quest map's enhanced look, its texture
+        and its lighting, by their file names in its Base's folder."""
+        if self.scene is None or self.scene.look != ms.ENHANCED:
+            return []
+        batch = self.view.batch_at(QPointF(point))
+        if batch is None or batch.group is None:
+            return []
+        entry = self.scene.pictures.get(batch.group)
+        if entry is None:
+            return []
+        out = []
+        for what, name in (("texture", entry.colour[0] if entry.colour else None), ("lighting", entry.lighting)):
+            if name:
+                out.append((what, name))
+        return out
 
     def refresh_tree(self) -> None:
         """
@@ -1364,26 +1715,41 @@ class MapEditorPage(QWidget):
         actions.set_empty_state(self.empty_note, has_data, self.split, self.counter)
         self._read_names()
         names = map_names(self.state)
-        current = self.number
+        current, quest = self.number, self.quest
         self.map_list.blockSignals(True)
         self.map_list.clear()
         for n in numbers:
             item = QListWidgetItem(map_label(n, names.get(n, "")))
             item.setData(Qt.UserRole, n)
             self.map_list.addItem(item)
+        # The mod's quest maps under the game's (`quest_map_edits`), each by its name and the map it is made from.
+        quests = {name: edits for name, edits in (getattr(self.state, "quest_maps", None) or {}).items()
+                  if edits.base in numbers}
+        if quests:
+            header = QListWidgetItem(QUEST_HEADER)
+            header.setFlags(Qt.NoItemFlags)
+            font = header.font()
+            font.setBold(True)
+            header.setFont(font)
+            self.map_list.addItem(header)
+            for name, edits in quests.items():
+                item = QListWidgetItem(QUEST_LABEL.format(name=name, base=edits.base))
+                item.setData(Qt.UserRole, (QUEST_ITEM, name))
+                item.setToolTip(quest_tip(edits, names.get(edits.base, "")))
+                self.map_list.addItem(item)
         self.map_list.blockSignals(False)
         self._mark_list()
         self._update_counter()
         self._on_filter(self.search.text())
-        if current not in numbers:
+        if current not in numbers or quest is not None and quest not in quests:
             self._forget_map()
             return
         self.map_list.blockSignals(True)
-        actions.select_list_row(self.map_list, current)
+        actions.select_list_row(self.map_list, (QUEST_ITEM, quest) if quest is not None else current)
         self.map_list.blockSignals(False)
         if changed_game:
             self.number = None          # another game's map of that number: read afresh
-            self._open_map(current)
+            self._open_map(current, quest)
         elif self.scene is not None and self._shown_inputs != self.look_inputs(current):
             # The mod's look of the map shown changed under the page (a mod
             # opened, or Start a new mod: Zodi, 22 October, an edited map's
@@ -1400,6 +1766,7 @@ class MapEditorPage(QWidget):
 
     def _forget_map(self) -> None:
         self.number = None
+        self.quest = None
         self.index = None
         self.scene = None
         self.game_tiles = {}
@@ -1412,7 +1779,7 @@ class MapEditorPage(QWidget):
         self._update_look_buttons()
 
     def _read_names(self) -> None:
-        sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
+        sqlite_path = getattr(self.edit_state, "nxd_sqlite_path", None)
         language = names_language(sqlite_path)
         self.surface_name = surface_names(sqlite_path, language)
         self.height_text = height_labels(sqlite_path, language)
@@ -1435,9 +1802,18 @@ class MapEditorPage(QWidget):
 
     def _mark_list(self) -> None:
         edited = self.edited_numbers()
+        quests = getattr(self.state, "quest_maps", None) or {}
+        names = None
         for i in range(self.map_list.count()):
             item = self.map_list.item(i)
-            actions.mark_edited(item, item.data(Qt.UserRole) in edited)
+            data = item.data(Qt.UserRole)
+            if isinstance(data, int):
+                actions.mark_edited(item, data in edited)
+            elif isinstance(data, tuple) and len(data) == 2 and data[0] == QUEST_ITEM and data[1] in quests:
+                # A quest map's tip says what it changes, so it follows its changes.
+                names = map_names(self.state) if names is None else names
+                edits = quests[data[1]]
+                item.setToolTip(quest_tip(edits, names.get(edits.base, "")))
 
     def _update_counter(self) -> None:
         listed = set(self.numbers)
@@ -1446,26 +1822,49 @@ class MapEditorPage(QWidget):
         tiles = self.state.edited_map_tile_count()
         if text and tiles:
             text += f", {tiles:,} tile{'s' if tiles != 1 else ''} in all"
+        quests = len(getattr(self.state, "quest_maps", None) or {})
+        if text and quests:
+            text += f", {quests} quest map{'s' if quests != 1 else ''}"
         self.counter.setText(text)
 
     def _on_filter(self, text: str) -> None:
         needle = text.strip().lower()
+        shown = False
+        header = None
         for i in range(self.map_list.count()):
             item = self.map_list.item(i)
-            item.setHidden(bool(needle) and needle not in item.text().lower())
+            data = item.data(Qt.UserRole)
+            if data is None:
+                header = item
+                continue
+            hidden = bool(needle) and needle not in item.text().lower()
+            item.setHidden(hidden)
+            if isinstance(data, tuple) and not hidden:
+                shown = True
+        if header is not None:
+            header.setHidden(not shown)
 
     def _on_map_item(self, current, _previous) -> None:
-        if current is not None:
-            self._open_map(current.data(Qt.UserRole))
+        if current is None:
+            return
+        data = current.data(Qt.UserRole)
+        if isinstance(data, tuple) and len(data) == 2 and data[0] == QUEST_ITEM:
+            edits = (getattr(self.state, "quest_maps", None) or {}).get(data[1])
+            if edits is not None:
+                self._open_map(edits.base, data[1])
+        elif isinstance(data, int):
+            self._open_map(data)
 
     # -- one map ------------------------------------------------------------------------
 
-    def _open_map(self, number: int) -> None:
+    def _open_map(self, number: int, quest: Optional[str] = None) -> None:
+        """Shows map `number`, or the quest map `quest` made from it (its Base)."""
         folder = self.map_folder()
         if folder is None:
             return
-        new_map = number != self.number
+        new_map = (number, quest) != (self.number, self.quest)
         self.number = number
+        self.quest = quest
         try:
             self.index = mc.read_gns(folder, number)
         except OSError as exc:
@@ -1479,6 +1878,11 @@ class MapEditorPage(QWidget):
         self.enhanced_button.setToolTip("" if has_enhanced else
                                         "This map has no enhanced look in the game's files.")
         if new_map:
+            # Sky colors is the map shown before's: its colors would go to this one (a quest map has its
+            # Base's number, so its number alone doesn't tell them apart).
+            if self.sky_dialog is not None:
+                self.sky_dialog.close()
+                self.sky_dialog = None
             self.picked = []
             self.view.camera = Camera()
             # The new map's lightings come with its scene; until then, none.
@@ -1498,10 +1902,16 @@ class MapEditorPage(QWidget):
         self._load()
 
     def _title(self, number: int) -> str:
-        """"Map 048, Sal Ghidos Slumtown", and the map whose look it has when one was copied there."""
+        """"Map 048, Sal Ghidos Slumtown", and the map whose look it has when one was copied there; a quest map's
+        name, the map it is made from and its title."""
         names = map_names(self.state)
+        quest = self.quest_edits()
+        if quest is not None:
+            place = f", {names[number]}" if names.get(number) else ""
+            text = QUEST_MAP_TITLE.format(name=self.quest, base=number, place=place)
+            return text + (QUEST_SHOWN_AS.format(title=quest.title) if quest.title else "")
         text = f"Map {number:03d}, {names[number]}" if names.get(number) else f"Map {number:03d}"
-        source = (getattr(self.state, "map_copies", None) or {}).get(number)
+        source = (getattr(self.edit_state, "map_copies", None) or {}).get(number)
         return text + (COPY_TITLE.format(source=source) if source is not None else "")
 
     def _fill_arrangements(self) -> None:
@@ -1584,8 +1994,8 @@ class MapEditorPage(QWidget):
         number = self.number if number is None else number
         if number is None:
             return []
-        store = getattr(self.state, "unmodelled_table_edits", None) or {}
-        return mv.read_variants(getattr(self.state, "nxd_sqlite_path", None), number, store.get(mpk.MAP_TABLE))
+        store = getattr(self.edit_state, "unmodelled_table_edits", None) or {}
+        return mv.read_variants(getattr(self.edit_state, "nxd_sqlite_path", None), number, store.get(mpk.MAP_TABLE))
 
     def game_variants(self, number=None) -> list:
         """
@@ -1595,8 +2005,8 @@ class MapEditorPage(QWidget):
         number = self.number if number is None else number
         if number is None:
             return []
-        number = (getattr(self.state, "map_copies", None) or {}).get(number, number)
-        return mv.read_variants(getattr(self.state, "nxd_sqlite_path", None), number)
+        number = (getattr(self.edit_state, "map_copies", None) or {}).get(number, number)
+        return mv.read_variants(getattr(self.edit_state, "nxd_sqlite_path", None), number)
 
     def lighting_events(self, number=None) -> dict:
         """
@@ -1608,8 +2018,8 @@ class MapEditorPage(QWidget):
         variants = self.variants(number)
         if not variants:
             return {}
-        setups = mv.setups(self.game_records(), getattr(self.state, "setup_edits", None))
-        sets = mv.event_sets(getattr(self.state, "nxd_sqlite_path", None))
+        setups = mv.setups(self.game_records(), getattr(self.edit_state, "setup_edits", None))
+        sets = mv.event_sets(getattr(self.edit_state, "nxd_sqlite_path", None))
         return mv.events_by_story_index(variants, setups, number, sets)
 
     def variant_events(self, number=None) -> dict:
@@ -1622,8 +2032,8 @@ class MapEditorPage(QWidget):
         variants = self.variants(number)
         if not variants:
             return {}
-        setups = mv.setups(self.game_records(), getattr(self.state, "setup_edits", None))
-        sets = mv.event_sets(getattr(self.state, "nxd_sqlite_path", None))
+        setups = mv.setups(self.game_records(), getattr(self.edit_state, "setup_edits", None))
+        sets = mv.event_sets(getattr(self.edit_state, "nxd_sqlite_path", None))
         return mv.events_by_variant(variants, setups, number, sets)
 
     def own_sky(self, variant):
@@ -1698,12 +2108,12 @@ class MapEditorPage(QWidget):
         if number is None:
             return
         variants = mv.with_sky(self.variants(number), index, top, bottom)
-        store = self.state.unmodelled_table_edits
+        store = self.edit_state.unmodelled_table_edits
         if store is None:
-            store = self.state.unmodelled_table_edits = {}
+            store = self.edit_state.unmodelled_table_edits = {}
         rows = store.setdefault(mpk.MAP_TABLE, {})
         row = dict(rows.get(number) or {})
-        copied = number in (getattr(self.state, "map_copies", None) or {})
+        copied = number in (getattr(self.edit_state, "map_copies", None) or {})
         game = [v.values for v in self.game_variants(number)]
         if [v.values for v in variants] == game and not copied:
             row.pop(mv.VARIANTS_COLUMN, None)
@@ -1795,7 +2205,7 @@ class MapEditorPage(QWidget):
         """
         mesh_file, picture_files = self.mod_look(number)
         return (str(mesh_file), tuple(sorted((str(k).lower(), str(v)) for k, v in (picture_files or {}).items())),
-                rows_text(self.mod_rows(number)), str(mod_anim(self.state, number)), terrains_of(self.state, number))
+                rows_text(self.mod_rows(number)), str(mod_anim(self.edit_state, number)), terrains_of(self.edit_state, number))
 
     def _start_reading(self) -> None:
         self._running = True
@@ -1810,10 +2220,10 @@ class MapEditorPage(QWidget):
                 for key, fields in found.items():
                     rows.setdefault(table, {}).setdefault(key, {}).update(fields)
         worker = ms.SceneWorker(self._token, self.game_dir(), self.number, self.shown_look,
-                                self.map_state(), getattr(self.state, "nxd_sqlite_path", None),
+                                self.map_state(), getattr(self.edit_state, "nxd_sqlite_path", None),
                                 mesh_file, picture_files, self.lighting, rows,
-                                anim_file=mod_anim(self.state, self.number),
-                                terrains=map_terrains(self.state))
+                                anim_file=mod_anim(self.edit_state, self.number),
+                                terrains=map_terrains(self.edit_state))
         run_in_thread(worker, on_finished=self._scene_ready, on_failed=self._reading_failed)
 
     def _look_changed_while_read(self) -> bool:
@@ -1894,7 +2304,7 @@ class MapEditorPage(QWidget):
             return {}
         prefix = mc.MAP_FOLDER + "/"
         carried = {rel[len(prefix):].lower(): source for rel, source
-                   in (getattr(self.state, "other_file_replacements", {}) or {}).items()
+                   in (getattr(self.edit_state, "other_file_replacements", {}) or {}).items()
                    if rel.lower().startswith(prefix)}
         return {name: Path(carried[name.lower()]) for name in self.scene.grid_files
                 if name.lower() in carried}
@@ -1903,11 +2313,11 @@ class MapEditorPage(QWidget):
 
     def mod_look(self, number) -> tuple:
         """`mod_look` for this page's state."""
-        return mod_look(self.state, number)
+        return mod_look(self.edit_state, number)
 
     def mod_rows(self, number) -> dict:
         """`mod_rows` for this page's state."""
-        return mod_rows(self.state, number)
+        return mod_rows(self.edit_state, number)
 
     def _update_look_buttons(self) -> None:
         enhanced = (self.scene is not None and self.scene.look == ms.ENHANCED
@@ -1915,12 +2325,22 @@ class MapEditorPage(QWidget):
         mesh, pictures = self.mod_look(self.number)
         for button in (self.save_package_button, self.load_package_button, self.light_button):
             button.setEnabled(enhanced and not self._package_busy)
-        # Any enhanced look drawn, a copied one too (a copy of a copy).
+        # Any enhanced look drawn, a copied one too (a copy of a copy); a quest map is a map of its own already.
         looked = self.scene is not None and self.scene.look == ms.ENHANCED and self.number is not None
-        self.copy_button.setEnabled(looked and not self._package_busy)
+        quest = self.quest_edits() is not None
+        self.copy_button.setEnabled(looked and not self._package_busy and not quest)
+        self.copy_button.setToolTip(QUEST_NO_COPY if quest else COPY_TIP)
+        grid = self.has_grid(self.number)
+        self.new_quest_button.setEnabled(self.number is not None and grid and not self._package_busy)
+        self.new_quest_button.setToolTip(QUEST_NEW_TIP if grid or self.number is None
+                                         else QUEST_NO_GRID.format(base=self.number))
+        self.edit_quest_button.setVisible(quest)
+        self.remove_quest_button.setVisible(quest)
+        self.edit_quest_button.setEnabled(not self._package_busy)
+        self.remove_quest_button.setEnabled(not self._package_busy)
         self.sky_button.setEnabled(looked and bool(self.variants()))
         self.put_back_look_button.setVisible(bool(mesh or pictures or self.mod_rows(self.number)
-                                                  or sky_row(self.state, self.number)))
+                                                  or sky_row(self.edit_state, self.number)))
         self.put_back_look_button.setEnabled(not self._package_busy)
         # A copy of a look with none can be given them too: a battle there needs them.
         bare = looked and self.scene.panels == 0
@@ -1960,8 +2380,8 @@ class MapEditorPage(QWidget):
             tiles = {(t.x, t.z, t.level): t for t in self.tiles()}
             grid_file = self.scene.grid_file
         worker = PackageSaveWorker(self.game_dir(), self.number, folder,
-                                   getattr(self.state, "nxd_sqlite_path", None), mesh_file, pictures,
-                                   self.mod_rows(self.number), tiles, grid_file, mod_anim(self.state, self.number))
+                                   getattr(self.edit_state, "nxd_sqlite_path", None), mesh_file, pictures,
+                                   self.mod_rows(self.number), tiles, grid_file, mod_anim(self.edit_state, self.number))
         run_in_thread(worker, on_finished=self._package_saved, on_failed=self._package_failed)
 
     def _package_saved(self, done) -> None:
@@ -1971,7 +2391,7 @@ class MapEditorPage(QWidget):
         folder = Path(done["folder"])
         number = self.number
         # The light Light the map last made for the map travels with it.
-        light = light_file(number) if number is not None else None
+        light = light_file(number, self.working_root()) if number is not None else None
         carried_light = False
         if light is not None and light.is_file():
             try:
@@ -2025,7 +2445,7 @@ class MapEditorPage(QWidget):
         self._update_look_buttons()
         self._say_look(f"Building map {number:03d} from {folder}...")
         mod_mesh, mod_pictures = self.mod_look(number)
-        run_in_thread(PackageLoadWorker(folder, self.game_dir(), mod_mesh, mod_pictures, mod_anim(self.state, number)),
+        run_in_thread(PackageLoadWorker(folder, self.game_dir(), mod_mesh, mod_pictures, mod_anim(self.edit_state, number)),
                       on_finished=self._package_loaded,
                       on_failed=self._package_load_failed)
 
@@ -2035,7 +2455,7 @@ class MapEditorPage(QWidget):
         number = built.number
         rows_before = rows_text(self.mod_rows(number))
         textures_before = set(self._added_textures(number))
-        replaced = self.state.other_file_replacements
+        replaced = self.edit_state.other_file_replacements
         for rel, path in ((mpk.mesh_relative_path(number), mesh_file), (me.anim_relative_path(number), anim_file)):
             if path is not None:
                 replaced[rel] = path
@@ -2046,10 +2466,10 @@ class MapEditorPage(QWidget):
         kept = {name.lower() for names in built.added_groups.values() for name in names}
         for name in self._added_textures(number):
             if name.lower() not in kept:
-                self.state.texture_edits.pop(mpk.picture_relative_path(number, name), None)
+                self.edit_state.texture_edits.pop(mpk.picture_relative_path(number, name), None)
         for name, source in built.pictures.items():
             path = mpk.picture_relative_path(number, name)
-            self.state.texture_edits[path] = {"source_path": Path(source), "is_face_texture": False,
+            self.edit_state.texture_edits[path] = {"source_path": Path(source), "is_face_texture": False,
                                               LOOK_MARK: number}
         rows = self._put_rows(number, built.table_rows)
         what = []
@@ -2152,17 +2572,17 @@ class MapEditorPage(QWidget):
             return ""
         maps = self.game_dir() / mc.MAP_FOLDER
         key = mc.grid_key(maps, number, grid_file)
-        carried = {rel.lower() for rel in (getattr(self.state, "other_file_replacements", {}) or {})}
+        carried = {rel.lower() for rel in (getattr(self.edit_state, "other_file_replacements", {}) or {})}
         if key is None or any(f"{mc.MAP_FOLDER}/{name}".lower() in carried
                               for name in mc.grid_files(maps, number, grid_file)):
             return (" The tiles it was saved with weren't taken: your mod carries this map's grid "
                     "whole.")
-        current = self.state.map_edits.get(key, {})
+        current = self.edit_state.map_edits.get(key, {})
         count = len(edits)
         if current == edits:
             return ""
         if not current:
-            self.state.map_edits[key] = {tile: dict(fields) for tile, fields in edits.items()}
+            self.edit_state.map_edits[key] = {tile: dict(fields) for tile, fields in edits.items()}
             self._mark_list()
             self._update_counter()
             if count == 1:
@@ -2178,7 +2598,7 @@ class MapEditorPage(QWidget):
         if self.package_tiles is None or self.package_tiles[0] != self.number:
             return
         number, key, edits = self.package_tiles
-        self.state.map_edits[key] = {tile: dict(fields) for tile, fields in edits.items()}
+        self.edit_state.map_edits[key] = {tile: dict(fields) for tile, fields in edits.items()}
         self.package_tiles = None
         count = len(edits)
         self._say_look(f"Map {number:03d} has the {count} tile{'s' if count != 1 else ''} the folder "
@@ -2196,7 +2616,7 @@ class MapEditorPage(QWidget):
         source = Path(folder) / mpk.LIGHT
         if not source.is_file():
             return ""
-        target = light_file(number)
+        target = light_file(number, self.working_root())
         try:
             data = source.read_bytes()
             json.loads(data.decode("utf-8"))
@@ -2236,8 +2656,8 @@ class MapEditorPage(QWidget):
         "7 table rows" said, 3 in the mod).
         """
         count = 0
-        store = self.state.unmodelled_table_edits
-        sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
+        store = self.edit_state.unmodelled_table_edits
+        sqlite_path = getattr(self.edit_state, "nxd_sqlite_path", None)
         game = {table: mpk.map_rows(sqlite_path, table, number)[0] for table in (mpk.TEXTURE_TABLE, mpk.NODE_TABLE)}
         game[mpk.ANIM_TABLE] = mpk.anim_rows(sqlite_path, number)[0]
         for table in (mpk.TEXTURE_TABLE, mpk.NODE_TABLE, mpk.ANIM_TABLE):
@@ -2273,7 +2693,7 @@ class MapEditorPage(QWidget):
             return None
         folder = self.game_dir() / mc.MAP_FOLDER
         key = mc.grid_key(folder, number, ground.grid_file)
-        carried = {rel.lower() for rel in (getattr(self.state, "other_file_replacements", {}) or {})}
+        carried = {rel.lower() for rel in (getattr(self.edit_state, "other_file_replacements", {}) or {})}
         if any(f"{mc.MAP_FOLDER}/{name}".lower() in carried
                for name in mc.grid_files(folder, number, ground.grid_file)):
             return None
@@ -2282,7 +2702,7 @@ class MapEditorPage(QWidget):
         except (OSError, mc.MapError):
             return None
         game = {(t.x, t.z, t.level): t for t in terrain.tiles} if terrain else {}
-        edits = self.state.map_edits.get(key, {})
+        edits = self.edit_state.map_edits.get(key, {})
         moving = {}
         for tile_key, fields in ground.tiles.items():
             tile = game.get(tile_key)
@@ -2305,7 +2725,7 @@ class MapEditorPage(QWidget):
         except (OSError, mc.MapError):
             terrain = None
         game = {(t.x, t.z, t.level): t for t in terrain.tiles} if terrain else {}
-        store = self.state.map_edits.setdefault(key, {})
+        store = self.edit_state.map_edits.setdefault(key, {})
         for tile_key, fields in tiles.items():
             tile = game.get(tile_key)
             if tile is None:
@@ -2321,7 +2741,7 @@ class MapEditorPage(QWidget):
             else:
                 store.pop(tile_key, None)
         if not store:
-            self.state.map_edits.pop(key, None)
+            self.edit_state.map_edits.pop(key, None)
         self.ground = None
         moved = len(tiles)
         self._say_look(f"{moved} tile{'s' if moved != 1 else ''} of map {number:03d} follow its model's "
@@ -2369,7 +2789,7 @@ class MapEditorPage(QWidget):
         mesh_file, pictures = self.mod_look(number)
         tiles = {(t.x, t.z, t.level): t for t in self.tiles()} if self.game_tiles else None
         return {"game_dir": self.game_dir(), "number": number,
-                "sqlite_path": getattr(self.state, "nxd_sqlite_path", None), "mesh_file": mesh_file,
+                "sqlite_path": getattr(self.edit_state, "nxd_sqlite_path", None), "mesh_file": mesh_file,
                 "picture_files": pictures, "rows": self.mod_rows(number), "tiles": tiles}
 
     def border_tint(self, number) -> tuple:
@@ -2377,7 +2797,7 @@ class MapEditorPage(QWidget):
         from PIL import Image
         from ... import map_lighting as ml
         _mesh, pictures = self.mod_look(number)
-        entry = me.pictures(self.game_dir(), number, getattr(self.state, "nxd_sqlite_path", None),
+        entry = me.pictures(self.game_dir(), number, getattr(self.edit_state, "nxd_sqlite_path", None),
                             self.mod_rows(number).get(mpk.TEXTURE_TABLE)).get(0)
         if entry is None or not entry.colour:
             return ml.ground_colour(None)
@@ -2404,7 +2824,7 @@ class MapEditorPage(QWidget):
     def put_light(self, number, made, files: dict, which=None) -> None:
         """Light the map's textures and rows into the mod (`map_lighting.light_map`)."""
         for name, path in files.items():
-            self.state.texture_edits[mpk.picture_relative_path(number, name)] = {
+            self.edit_state.texture_edits[mpk.picture_relative_path(number, name)] = {
                 "source_path": Path(path), "is_face_texture": False, LOOK_MARK: number}
         self._merge_rows(number, made.rows)
         self.light_preview = None
@@ -2432,7 +2852,7 @@ class MapEditorPage(QWidget):
         Only Light the map's own (made in its folder): a texture a package
         gave stays. How many went.
         """
-        sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
+        sqlite_path = getattr(self.edit_state, "nxd_sqlite_path", None)
         if not sqlite_path:
             return 0                     # no rows to read: nothing can be said to name none
         rows = self.mod_rows(number)
@@ -2444,10 +2864,10 @@ class MapEditorPage(QWidget):
                     named.update(Path(name).stem.lower() for name in names_in(value))
         if not named:
             return 0
-        made = light_file(number).parent
+        made = light_file(number, self.working_root()).parent
         prefix = mpk.picture_relative_path(number, "").lower()
         dropped = 0
-        for rel, info in list(self.state.texture_edits.items()):
+        for rel, info in list(self.edit_state.texture_edits.items()):
             if not rel.lower().startswith(prefix) or not isinstance(info, dict) or info.get(LOOK_MARK) != number:
                 continue
             source = info.get("source_path")
@@ -2456,7 +2876,7 @@ class MapEditorPage(QWidget):
             except (OSError, ValueError):
                 ours = False
             if ours and Path(rel).stem.lower() not in named:
-                self.state.texture_edits.pop(rel)
+                self.edit_state.texture_edits.pop(rel)
                 dropped += 1
         return dropped
 
@@ -2465,9 +2885,9 @@ class MapEditorPage(QWidget):
         Rows whose columns changed into the mod's: over its own edits, less
         what is the game's already; a row the mod adds takes them as they are.
         """
-        store = self.state.unmodelled_table_edits
+        store = self.edit_state.unmodelled_table_edits
         for table, found in (rows or {}).items():
-            game = mpk.map_rows(getattr(self.state, "nxd_sqlite_path", None), table, number)[0]
+            game = mpk.map_rows(getattr(self.edit_state, "nxd_sqlite_path", None), table, number)[0]
             target = store.setdefault(table, {})
             for key, fields in found.items():
                 existing = target.get(key)
@@ -2505,22 +2925,22 @@ class MapEditorPage(QWidget):
                 self._say_look(PANELS_THERE.format(number=number), "muted")
                 return
             # On the grid a copied look brought, where it has one (`map_terrains`).
-            tiles = mpk.grid_tiles(self.game_dir(), number, self.state.map_edits,
-                                   getattr(self.state, "other_file_replacements", None), map_terrains(self.state))
+            tiles = mpk.grid_tiles(self.game_dir(), number, self.edit_state.map_edits,
+                                   getattr(self.edit_state, "other_file_replacements", None), map_terrains(self.edit_state))
             made, _count = me.with_grid_panels(mesh, list(tiles.values()))
         except (OSError, me.EnhancedMapError, mc.MapError) as exc:
             self._say_look(f"That didn't work: {exc}", "danger")
             return
-        target = panels_file(number)
+        target = panels_file(number, self.working_root())
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(me.write_mesh(made))
         except OSError as exc:
             self._say_look(f"That didn't work: {exc}", "danger")
             return
-        self.state.other_file_replacements[mpk.mesh_relative_path(number)] = target
-        store = self.state.unmodelled_table_edits
-        rows = mpk.grid_panel_rows(getattr(self.state, "nxd_sqlite_path", None), number, made,
+        self.edit_state.other_file_replacements[mpk.mesh_relative_path(number)] = target
+        store = self.edit_state.unmodelled_table_edits
+        rows = mpk.grid_panel_rows(getattr(self.edit_state, "nxd_sqlite_path", None), number, made,
                                    store.get(mpk.NODE_TABLE))
         store.setdefault(mpk.NODE_TABLE, {}).update(rows)
         count = len(me.panel_tiles(tiles.values()))
@@ -2540,8 +2960,8 @@ class MapEditorPage(QWidget):
         if self.number is None:
             return
         number = self.number
-        source = (getattr(self.state, "map_copies", None) or {}).get(number)
-        sky = source is None and bool(sky_row(self.state, number))
+        source = (getattr(self.edit_state, "map_copies", None) or {}).get(number)
+        sky = source is None and bool(sky_row(self.edit_state, number))
         self._drop_look(number, grid=source is not None)
         heights = self._heights_back(number) if source is None else 0
         self.ground = None
@@ -2568,7 +2988,7 @@ class MapEditorPage(QWidget):
         grids = mc.map_grids(game / mc.MAP_FOLDER, number) if game is not None else {}
         count = 0
         for key in grids:
-            tiles = self.state.map_edits.get(key)
+            tiles = self.edit_state.map_edits.get(key)
             if not tiles:
                 continue
             for tile_key, fields in list(tiles.items()):
@@ -2581,7 +3001,7 @@ class MapEditorPage(QWidget):
                 else:
                     tiles.pop(tile_key)
             if not tiles:
-                self.state.map_edits.pop(key, None)
+                self.edit_state.map_edits.pop(key, None)
         return count
 
     def _drop_look(self, number: int, grid: bool = False) -> None:
@@ -2596,18 +3016,18 @@ class MapEditorPage(QWidget):
         that came with it (`map_animations`), the grid's files the mod
         carried whole, and `map_copies`' entry.
         """
-        replaced = self.state.other_file_replacements
+        replaced = self.edit_state.other_file_replacements
         replaced.pop(mpk.mesh_relative_path(number), None)
         replaced.pop(me.anim_relative_path(number), None)
         prefix = mpk.picture_relative_path(number, "").lower()
-        for rel in [r for r in self.state.texture_edits if r.lower().startswith(prefix)]:
-            self.state.texture_edits.pop(rel, None)
-        store = self.state.unmodelled_table_edits
+        for rel in [r for r in self.edit_state.texture_edits if r.lower().startswith(prefix)]:
+            self.edit_state.texture_edits.pop(rel, None)
+        store = self.edit_state.unmodelled_table_edits
         if store is None:
-            store = self.state.unmodelled_table_edits = {}
+            store = self.edit_state.unmodelled_table_edits = {}
         rows = self.mod_rows(number)
         if grid:
-            for table, found in copy_rows_of(self.state, number).items():
+            for table, found in copy_rows_of(self.edit_state, number).items():
                 rows.setdefault(table, {}).update(found)
         for table, found in rows.items():
             for key in found:
@@ -2634,11 +3054,11 @@ class MapEditorPage(QWidget):
         files = {f"{mc.MAP_FOLDER}/{name}".lower() for names in grids.values() for name in names}
         for rel in [r for r in replaced if str(r).replace("\\", "/").lower() in files]:
             replaced.pop(rel)
-        for key in set(grids) | {key for key, _part in terrains_of(self.state, number)}:
-            self.state.map_terrains.pop(key, None)
-            self.state.map_edits.pop(key, None)
-            self.state.map_animations.pop(key, None)
-        self.state.map_copies.pop(number, None)
+        for key in set(grids) | {key for key, _part in terrains_of(self.edit_state, number)}:
+            self.edit_state.map_terrains.pop(key, None)
+            self.edit_state.map_edits.pop(key, None)
+            self.edit_state.map_animations.pop(key, None)
+        self.edit_state.map_copies.pop(number, None)
 
     # -- a look copied to another map number ------------------------------------
 
@@ -2654,8 +3074,8 @@ class MapEditorPage(QWidget):
         if not targets:
             self.copy_menu.addAction(COPY_NONE).setEnabled(False)
             return
-        names = map_names(self.state)
-        copies = getattr(self.state, "map_copies", None) or {}
+        names = map_names(self.edit_state)
+        copies = getattr(self.edit_state, "map_copies", None) or {}
         for n in targets:
             label = map_label(n, names.get(n, ""))
             if n in copies:
@@ -2679,9 +3099,9 @@ class MapEditorPage(QWidget):
         if self.number is None or self.game_dir() is None or self._package_busy:
             return
         source, game = self.number, self.game_dir()
-        if target == source or target in (getattr(self.state, "map_copies", None) or {}):
+        if target == source or target in (getattr(self.edit_state, "map_copies", None) or {}):
             return
-        sqlite_path = getattr(self.state, "nxd_sqlite_path", None)
+        sqlite_path = getattr(self.edit_state, "nxd_sqlite_path", None)
         if not sqlite_path:
             self._say_look(COPY_NEEDS_DATABASE, "attention")
             return
@@ -2698,9 +3118,9 @@ class MapEditorPage(QWidget):
                     own_skies[variant.index] = (own[0], own[1])
         try:
             made = mpk.look_copy(game, source, target, sqlite_path, mesh_file, pictures,
-                                 self.state.unmodelled_table_edits, mod_anim(self.state, source),
-                                 self.state.map_edits, self.state.other_file_replacements,
-                                 self.state.map_terrains, self.state.map_copies, self.state.map_animations)
+                                 self.edit_state.unmodelled_table_edits, mod_anim(self.edit_state, source),
+                                 self.edit_state.map_edits, self.edit_state.other_file_replacements,
+                                 self.edit_state.map_terrains, self.edit_state.map_copies, self.edit_state.map_animations)
         except (mpk.PackageError, OSError, me.EnhancedMapError, mc.MapError) as exc:
             self._say_look(f"That didn't work: {exc}", "danger")
             return
@@ -2719,21 +3139,21 @@ class MapEditorPage(QWidget):
             self._say_look(f"That didn't work: {exc}", "danger")
             return
         self._drop_look(target, grid=True)
-        replaced = self.state.other_file_replacements
+        replaced = self.edit_state.other_file_replacements
         replaced[mpk.mesh_relative_path(target)] = mesh_target
         if made.anim is not None:
             replaced[me.anim_relative_path(target)] = anim_target
         # A texture the mod has for the source in the game's format already
         # (an opened mod's) goes as it is, as it would have.
-        theirs = {rel.lower(): info for rel, info in self.state.texture_edits.items()
+        theirs = {rel.lower(): info for rel, info in self.edit_state.texture_edits.items()
                   if rel.lower().startswith(mpk.picture_relative_path(source, "").lower())}
         for name, path in made.pictures.items():
             entry = {"source_path": Path(path), "is_face_texture": False, LOOK_MARK: target}
             info = theirs.get(mpk.picture_relative_path(source, name).lower())
             if isinstance(info, dict) and info.get("already_staged"):
                 entry["already_staged"] = True
-            self.state.texture_edits[mpk.picture_relative_path(target, name)] = entry
-        store = self.state.unmodelled_table_edits
+            self.edit_state.texture_edits[mpk.picture_relative_path(target, name)] = entry
+        store = self.edit_state.unmodelled_table_edits
         for table, found in made.rows.items():
             rows = store.setdefault(table, {})
             for key, fields in found.items():
@@ -2755,15 +3175,15 @@ class MapEditorPage(QWidget):
             rows[target] = row
         doors_lost = False
         for key, names in mc.map_grids(game / mc.MAP_FOLDER, target).items():
-            self.state.map_terrains[key] = made.terrain
+            self.edit_state.map_terrains[key] = made.terrain
             # The doors' records go where the target's files have room
             # for them (097's, 099's); elsewhere they can't open.
             if made.animations is not None:
                 if animations_fit(game, names):
-                    self.state.map_animations[key] = made.animations
+                    self.edit_state.map_animations[key] = made.animations
                 elif doors_of(made.animations):
                     doors_lost = True
-        self.state.map_copies[target] = source
+        self.edit_state.map_copies[target] = source
         count = sum(len(found) for found in made.rows.values())
         text = COPY_DONE.format(source=source, target=target, pictures=len(made.pictures), rows=count)
         if own_skies:
@@ -2800,7 +3220,7 @@ class MapEditorPage(QWidget):
     def edits(self) -> dict:
         """This grid's edits: `{(x, z, level): {field: value}}`."""
         key = self.scene.grid_key if self.scene is not None else None
-        return self.state.map_edits.get(key, {}) if key and not self.read_only else {}
+        return self.edit_state.map_edits.get(key, {}) if key and not self.read_only else {}
 
     def edited_keys(self) -> set:
         return {k for k, changes in self.edits().items() if changes}
@@ -2916,7 +3336,7 @@ class MapEditorPage(QWidget):
         """A field was changed on the panel: it goes to every tile picked."""
         if self.scene is None or not self.scene.grid_key or not self.picked or self.read_only:
             return
-        store = self.state.map_edits.setdefault(self.scene.grid_key, {})
+        store = self.edit_state.map_edits.setdefault(self.scene.grid_key, {})
         for key in self.picked:
             game = self.game_tiles.get(key)
             if game is None:
@@ -2931,7 +3351,7 @@ class MapEditorPage(QWidget):
             else:
                 store.pop(key, None)
         if not store:
-            self.state.map_edits.pop(self.scene.grid_key, None)
+            self.edit_state.map_edits.pop(self.scene.grid_key, None)
         self._after_edit()
 
     def upper_free(self) -> list:
@@ -2995,7 +3415,7 @@ class MapEditorPage(QWidget):
         under = self.upper_free()
         if not under:
             return []
-        store = self.state.map_edits.setdefault(self.scene.grid_key, {})
+        store = self.edit_state.map_edits.setdefault(self.scene.grid_key, {})
         made = []
         for x, z, _level in under:
             key = (x, z, 1)
@@ -3012,7 +3432,7 @@ class MapEditorPage(QWidget):
                 store.pop(key, None)
             made.append(key)
         if not store:
-            self.state.map_edits.pop(self.scene.grid_key, None)
+            self.edit_state.map_edits.pop(self.scene.grid_key, None)
         self.picked = list(made)
         self.view.set_picked(self.picked)
         self._after_edit()
@@ -3023,11 +3443,11 @@ class MapEditorPage(QWidget):
         """The picked tiles as the game has them."""
         if self.scene is None or not self.scene.grid_key or self.read_only:
             return
-        store = self.state.map_edits.get(self.scene.grid_key, {})
+        store = self.edit_state.map_edits.get(self.scene.grid_key, {})
         for key in self.picked:
             store.pop(key, None)
         if not store:
-            self.state.map_edits.pop(self.scene.grid_key, None)
+            self.edit_state.map_edits.pop(self.scene.grid_key, None)
         # An upper level tile Add an upper level made is no tile again: not picked.
         self.picked = [k for k in self.picked if k in self.game_tiles and ms.shows(self.tile(k))]
         self.view.set_picked(self.picked)
@@ -3122,8 +3542,8 @@ class MapEditorPage(QWidget):
             return {}
         if self._battles is None or self._battles[0] != number:
             try:
-                uses = mb.battle_tiles(self.game_dir(), number, getattr(self.state, "entry_records", None),
-                                       getattr(self.state, "entry_edits", None))
+                uses = mb.battle_tiles(self.game_dir(), number, getattr(self.edit_state, "entry_records", None),
+                                       getattr(self.edit_state, "entry_edits", None))
             except (OSError, ValueError, IndexError):
                 uses = {}
             self._battles = (number, uses)
@@ -3192,7 +3612,7 @@ class MapEditorPage(QWidget):
             path = f"{self.scene.picture_folder}/{name}" if name else None
             if not path or (game is not None and (game / path).is_file()):
                 continue
-            info = self.state.texture_edits.get(mpk.picture_relative_path(self.number, name))
+            info = self.edit_state.texture_edits.get(mpk.picture_relative_path(self.number, name))
             source = info.get("source_path") if isinstance(info, dict) else info
             if source and Path(source).is_file():
                 out.append((label, Path(source)))
@@ -3204,8 +3624,19 @@ class MapEditorPage(QWidget):
 
     def _view_menu(self, point) -> None:
         menu = QMenu(self)
-        for label, path in self.picture_paths(point):
-            menu.addAction(label).triggered.connect(lambda _c=False, p=path: self.jump_to_texture.emit(p))
+        quest = self.quest_edits()
+        if quest is not None:
+            # A quest map's pictures are its own: the Textures page changes the game's.
+            for what, name in self.quest_pictures(point):
+                label = QUEST_TEXTURE if what == "texture" else QUEST_LIGHTING
+                menu.addAction(label).triggered.connect(
+                    lambda _c=False, n=name, w=what: self._ask_quest_picture(n, w))
+                if mpk.picture_relative_path(quest.base, name) in quest.texture_edits:
+                    menu.addAction(QUEST_PICTURE_BACK.format(base=quest.base, what=what)).triggered.connect(
+                        lambda _c=False, n=name, w=what: self.quest_picture(n, None, w))
+        else:
+            for label, path in self.picture_paths(point):
+                menu.addAction(label).triggered.connect(lambda _c=False, p=path: self.jump_to_texture.emit(p))
         for label, path in self.own_texture_files(point):
             menu.addAction(label).triggered.connect(lambda _c=False, p=path: self._open_texture_folder(p))
         key = self.view.tile_at(QPointF(point))

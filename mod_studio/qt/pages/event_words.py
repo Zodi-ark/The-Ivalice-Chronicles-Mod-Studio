@@ -812,7 +812,7 @@ SETUP_BAND = "SETUP"
 SETUP_TITLE = "Event {number:03d} as it starts"
 SETUP_BLURB = ("What the game sets up as the event starts: its map, weather and time of day, music, battle, "
                "where the player's units go and what follows. The game keeps these in its program; your mod "
-               "changes them through Mod Studio Event Setup, which Export adds for you.")
+               "changes them through Mod Studio Framework, which Export adds for you.")
 SETUP_NO_PROGRAM = ("Your game's program ({program}) wasn't found beside the folder of .pac files chosen on "
                     "General Setup, so this is the PlayStation's copy of the event's setup, and can't be "
                     "changed here.")

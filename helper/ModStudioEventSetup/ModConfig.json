@@ -1,9 +1,9 @@
 {
   "ModId": "fftivc.utility.modstudio.eventsetup",
-  "ModName": "Mod Studio Event Setup",
+  "ModName": "Mod Studio Framework",
   "ModAuthor": "Mod Studio",
-  "ModVersion": "1.0.2",
-  "ModDescription": "Applies the event setup changes that mods made with The Ivalice Chronicles Mod Studio list: an event's map, weather, time of day, music, enemy battle, deploy areas, what follows it and its battle rules. Install it with any mod that needs it.",
+  "ModVersion": "1.35.1",
+  "ModDescription": "Needed by mods made with The Ivalice Chronicles Mod Studio: it adds their side quests, places, roads, dungeons, maps and event changes to the game. Place it directly after the mod loader in your load order.",
   "ModDll": "ModStudioEventSetup.dll",
   "ModIcon": "Preview.png",
   "ModR2RManagedDll32": "",
@@ -29,10 +29,26 @@
       "RepositoryName": "Mod-Studio-Event-Setup",
       "UseReleaseTag": true,
       "AssetFileName": "Mod.zip"
+    },
+    "GitHubDependencies": {
+      "IdToConfigMap": {
+        "reloaded.sharedlib.hooks": {
+          "Config": {
+            "UserName": "Sewer56",
+            "RepositoryName": "Reloaded.SharedLib.Hooks.ReloadedII",
+            "UseReleaseTag": true,
+            "AssetFileName": "reloaded.sharedlib.hooks.zip"
+          },
+          "ReleaseMetadataName": "Sewer56.Update.ReleaseMetadata.json"
+        }
+      }
     }
   },
   "IsUniversalMod": false,
-  "ModDependencies": [],
+  "ModDependencies": [
+    "fftivc.utility.modloader",
+    "reloaded.sharedlib.hooks"
+  ],
   "OptionalDependencies": [],
   "SupportedAppId": [
     "fft_enhanced.exe"

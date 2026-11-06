@@ -110,9 +110,13 @@ STAND_X, STAND_Y = 53, 118
 #: A character sheet's width in pixels.
 SHEET_WIDTH = 512
 
-#: A tile's size, by the four bits at 10 of its flags (`Tile.cs`).
+#: A tile's size, by the four bits at 10 of its flags: the game's own table (his program's, 16 pairs of 32 bit
+#: counts of 8 pixels at `0x673940`, read by the sprite frame code at `0x26ABBF`, `0x26AFB3` and `0x26B289`).
+#: FFTPatcher's `Tile.cs` has 48 by 16 for size 12, the game 40 by 16 (3 November, after test 61: Zodi saw the next
+#: look's edge beside a spear's swing); size 12 is the spears' and poles' (43 frames of each weapon file) and 2 of
+#: ARUTE's tiles.
 TILE_SIZES = ((8, 8), (16, 8), (16, 16), (16, 24), (24, 8), (24, 16), (24, 24), (32, 8),
-              (32, 16), (32, 24), (32, 32), (32, 40), (48, 16), (40, 32), (48, 48), (56, 56))
+              (32, 16), (32, 24), (32, 32), (32, 40), (40, 16), (40, 32), (48, 48), (56, 56))
 #: An animation's instructions (`0xFF` and a code) and how many bytes follow
 #: each, beyond its own two (`Sequence.Jumps`). The rest take none. 0xC4
 #: (where a unit holds an item: 2) and 0xFD (holding a weapon: 1) are from
@@ -820,3 +824,297 @@ class UnitSprites:
                     made = Idle(sides["front"], sides["back"], attributes.flying, attributes.height)
         self._idle[key] = made
         return made
+
+
+# =============================================================================
+# A weapon's look in battle (Zodi, 3 November, after test 61: "display how it
+# would look from the items page alongside the Sprite Texture preview and the
+# Art Texture preview")
+# =============================================================================
+
+#: The weapons' file, the PlayStation's WEP.SPR: its first 0x200 bytes the 16
+#: weapon palettes of 16 colours (the ones his program keeps at `0xD35750`),
+#: then the weapons' texture, 256 by 256 at 4 bits (fft_decomp's
+#: `weapon_spr_file_t`, read for facts; its trails' and particles' after it).
+WEAPON_SPR_FILE = f"{UNIT_FOLDER}/battle_wep_spr.bin"
+WEAPON_PIXELS_AT, WEAPON_SIZE = 0x200, 256
+#: The weapons' frames for a TYPE1 unit (WEP1.SHP; WEP2.SHP is a TYPE2 unit's):
+#: 4 bytes, the first frame of each of 32 weapon types (u16s), 512 frame
+#: offsets (s32s, -1 the first) from 0x44, the frames' size at 0x844 and the
+#: frames from 0x846 (fft_decomp's `weapon_shp_file_t`).
+WEAPON_SHAPE_FILE = f"{UNIT_FOLDER}/battle_wep1_shp.bin"
+WEAPON_TYPES, WEAPON_FRAMES = 0x20, 0x200
+WEAPON_FRAMES_AT, WEAPON_FRAME_DATA_AT = 0x44, 0x846
+#: The enhanced look's weapon texture: g2d.dat's entry 161, which his program
+#: gives the weapons' texture page (`0xA1` at `0x2617F1`), 512 by 512 at 4
+#: bits, coloured by the same palettes.
+WEAPON_G2D_ENTRY = 161
+#: A weapon's graphic is its sprite pair's second byte in rows of 8 pixels
+#: from the top of the texture; its first byte's high four bits are the
+#: palette its swing is drawn in (`sprite_item_graphic_t`).
+WEAPON_ROW = 8
+#: The frames an item is drawn with when it is thrown (Throw, and every
+#: item of a type from the shurikens' on): type 0x15's, whatever its own
+#: type (fft_decomp's `sprite_thrown_item_palette_set`); a shield is drawn
+#: guarding with its own type's (19), as a weapon guarding with its own.
+THROWN_TYPE, FIRST_THROWN_CATEGORY, SHIELD_CATEGORY = 0x15, 32, 19
+#: The item a unit holds up (a treasure found, Move-Find Item, an item used
+#: or thrown by Item): its icon in ITEM.BIN (`fftpack/event_item_bin.en.bin`:
+#: a texture of 256 by 256 at 4 bits, then 16 palettes), 16 by 16 at column
+#: its Sprite Id's remainder by 15 and row its quotient, from 32 down, in its
+#: Palette (fft_decomp's `gfx_set_item_icon_sprite`, `sprite_display_store_item`).
+#: The enhanced look's texture is g2d.dat's entry 158, which his program gives
+#: ITEM.BIN's page (`0x9E` at `0x261918`).
+ITEM_BIN_FILES = ("fftpack/event_item_bin.en.bin", "fftpack/event_item_bin.ja.bin")
+ITEM_G2D_ENTRY = 158
+ITEM_ICON, ITEM_COLUMNS, ITEM_TOP, ITEM_PALETTES = 16, 15, 32, 16
+#: The icons' rows under the texture's first two, and so how many icons it
+#: holds (Sprite Id 0 to 209).
+ITEM_ROWS = (WEAPON_SIZE - ITEM_TOP) // ITEM_ICON
+ITEM_ICONS = ITEM_COLUMNS * ITEM_ROWS
+#: (Zodi, 3 November: "I only want to support Enhanced at this time") The
+#: battle sprites are drawn from the enhanced look's textures alone, twice the
+#: classic's size; the classic files give their palettes and frames, as they
+#: give the enhanced game's.
+ENHANCED_SCALE = 2
+
+
+def read_weapon_shape(data: bytes) -> tuple:
+    """
+    The weapons' frames: `(first, frames, turned)`, `first` each weapon
+    type's first frame (32), `frames` 512 lists of `Tile` in drawing order
+    (a frame's three parts at most, each its place, its cut of the weapons'
+    texture, its size and its flips, the file's first ending on top as a
+    unit frame's; None for a frame past the file's data), `turned` whether
+    each frame is turned as it is drawn (its first byte's high five bits).
+    """
+    if len(data) < WEAPON_FRAME_DATA_AT:
+        raise SpriteError(f"a weapon shape file is at least {WEAPON_FRAME_DATA_AT:#x} bytes")
+    first = list(struct.unpack_from(f"<{WEAPON_TYPES}H", data, 4))
+    size = struct.unpack_from("<H", data, WEAPON_FRAME_DATA_AT - 2)[0]
+    frame_data = data[WEAPON_FRAME_DATA_AT:WEAPON_FRAME_DATA_AT + size]
+    frames, turned = [], []
+    for n in range(WEAPON_FRAMES):
+        at = struct.unpack_from("<i", data, WEAPON_FRAMES_AT + 4 * n)[0]
+        at = 0 if at == -1 else at
+        if not 0 <= at < len(frame_data) - 1:
+            frames.append(None)
+            turned.append(False)
+            continue
+        tiles = []
+        turned.append(bool(frame_data[at] >> 3))
+        for k in range(min((frame_data[at] & 7) + 1, 3)):
+            o = at + 2 + 4 * k
+            if o + 4 > len(frame_data):
+                break
+            x, y = struct.unpack_from("<bb", frame_data, o)
+            flags = frame_data[o + 2] | (frame_data[o + 3] << 8)
+            width, height = TILE_SIZES[(flags >> 10) & 0x0F]
+            tiles.append(Tile(x, y, (flags & 0x1F) * 8, ((flags >> 5) & 0x1F) * 8, width, height,
+                              bool(flags & 0x4000), bool(flags & 0x8000)))
+        tiles.reverse()          # drawn last first, as a unit's frames are
+        frames.append(tiles)
+    return first, frames, turned
+
+
+def weapon_frame(first: list, frames: list, turned: list, weapon_type: int) -> Optional[list]:
+    """
+    The frame a weapon type's look is shown with, of its frames (from its
+    first frame to the next type's): the one drawing the most of the
+    texture, then the one drawing the cut its frames draw most, then one
+    drawn as the texture has it (not flipped, not turned), then the first.
+    Its tiles' cuts count from its graphic's top; None for a type with no
+    frames.
+    """
+    if not 0 <= weapon_type < len(first):
+        return None
+    start = first[weapon_type]
+    later = sorted(f for f in set(first) if f > start)
+    end = later[0] if later else len(frames)
+    numbered = [(n, frames[n]) for n in range(start, min(end, len(frames))) if frames[n]]
+    if not numbered:
+        return None
+    counts = {}
+    for _n, tiles in numbered:
+        for tile in tiles:
+            cut = (tile.sheet_x, tile.sheet_y, tile.width, tile.height)
+            counts[cut] = counts.get(cut, 0) + 1
+    most = max(counts, key=lambda c: (counts[c], -c[1], -c[0]))
+
+    def rank(item):
+        n, tiles = item
+        area = sum(t.width * t.height for t in tiles)
+        uses = any((t.sheet_x, t.sheet_y, t.width, t.height) == most for t in tiles)
+        plain = not any(t.flip_x or t.flip_y for t in tiles) and not turned[n]
+        return (area, uses, plain, -n)
+    return max(numbered, key=rank)[1]
+
+
+def sprite_kind(flags, category: int) -> str:
+    """How an item is drawn in battle besides held up, by its type flags' names and its category: "attack" (a weapon),
+    "throw" (a weapon of a type from the shurikens' on), "guard" (a shield), or "" (anything else)."""
+    flags = set(flags or ())
+    if "Weapon" in flags:
+        return "throw" if category >= FIRST_THROWN_CATEGORY else "attack"
+    if "Shield" in flags:
+        return "guard"
+    return ""
+
+
+def frames_type(kind: str, category: int) -> int:
+    """The weapon type whose frames draw an item of `category` as `kind` (`sprite_kind`)."""
+    return THROWN_TYPE if kind == "throw" else category
+
+
+class BattleSprites:
+    """
+    What one unpacked game draws its items with in battle, in the enhanced
+    look (Zodi, 3 November: "I only want to support Enhanced at this time"):
+    a weapon's or a shield's look from the weapons' enhanced texture
+    (`WEAPON_G2D_ENTRY`) in the palettes of `WEAPON_SPR_FILE`, by the frames
+    of `WEAPON_SHAPE_FILE`; the item a unit holds up or throws from the items'
+    enhanced texture (`ITEM_G2D_ENTRY`) in ITEM.BIN's palettes. Each read
+    once. `problem` and `item_problem` say what is missing when one can't be
+    drawn.
+    """
+
+    def __init__(self, game_dir):
+        self.game_dir = Path(game_dir) if game_dir else None
+        self.problem = self.item_problem = ""
+        self._read = self._items_read = False
+        self._palettes = self._shape = self._sheet = None
+        self._item_palettes = self._item_sheet = None
+
+    @property
+    def weapons_drawable(self) -> bool:
+        """Whether the weapons' texture, palettes and frames were read (so a look that can't be drawn is its data's
+        fault, not a missing file's)."""
+        self._load()
+        return self._sheet is not None
+
+    @property
+    def items_drawable(self) -> bool:
+        """Whether the items' texture and palettes were read."""
+        self._load_items()
+        return self._item_sheet is not None
+
+    def _enhanced(self, number: int):
+        """g2d.dat's texture `number` as a sheet, when it is the enhanced look's 512 by 512 at 4 bits; else (None, why)."""
+        try:
+            data = G2d(self.game_dir / G2D_FILE).entry(number)
+        except (OSError, SpriteError):
+            return None, f"{Path(G2D_FILE).name} couldn't be read"
+        size = ENHANCED_SCALE * WEAPON_SIZE
+        if not data or len(data) != size * size // 2:
+            return None, f"{Path(G2D_FILE).name}'s texture {number} isn't there"
+        return join_sheets([data]), ""
+
+    def _load(self) -> None:
+        if self._read:
+            return
+        self._read = True
+        if self.game_dir is None:
+            self.problem = "no unpacked game"
+            return
+        try:
+            spr = (self.game_dir / WEAPON_SPR_FILE).read_bytes()
+            shape = (self.game_dir / WEAPON_SHAPE_FILE).read_bytes()
+        except OSError as exc:
+            self.problem = f"{Path(exc.filename or WEAPON_SPR_FILE).name} couldn't be read"
+            return
+        try:
+            palettes = read_palettes(spr)
+            self._shape = read_weapon_shape(shape)
+        except SpriteError as exc:
+            self.problem = str(exc)
+            return
+        self._sheet, self.problem = self._enhanced(WEAPON_G2D_ENTRY)
+        if self._sheet is not None:
+            self._palettes = palettes
+
+    def attack(self, weapon_type: int, pair: bytes) -> Optional[Picture]:
+        """
+        A weapon's or a shield's look whose sprite pair is `pair`, drawn by a
+        frame of `weapon_type`'s (`weapon_frame`; a shield's own type's as it
+        guards, `frames_type`) in its palette, at the enhanced texture's size;
+        None when it can't be drawn (`problem` says why).
+        """
+        self._load()
+        if self._sheet is None or len(pair) != 2:
+            return None
+        first, frames, turned = self._shape
+        tiles = weapon_frame(first, frames, turned, weapon_type)
+        if tiles is None:
+            self.problem = f"weapon type {weapon_type} has no frames"
+            return None
+        palette = self._palettes[pair[0] >> 4]
+        down = WEAPON_ROW * pair[1]
+        placed = [Tile(t.x, t.y, t.sheet_x, t.sheet_y + down, t.width, t.height, t.flip_x, t.flip_y)
+                  for t in tiles]
+        return draw_frame(self._sheet, placed, palette, ENHANCED_SCALE)
+
+    def _load_items(self) -> None:
+        if self._items_read:
+            return
+        self._items_read = True
+        if self.game_dir is None:
+            self.item_problem = "no unpacked game"
+            return
+        data = None
+        for name in ITEM_BIN_FILES:
+            try:
+                data = (self.game_dir / name).read_bytes()
+                break
+            except OSError:
+                continue
+        if data is None:
+            self.item_problem = f"{Path(ITEM_BIN_FILES[0]).name} couldn't be read"
+            return
+        size = WEAPON_SIZE * WEAPON_SIZE // 2
+        if len(data) < size + 2 * 16 * ITEM_PALETTES:
+            self.item_problem = f"{Path(ITEM_BIN_FILES[0]).name} is too short for the items' palettes"
+            return
+        values = struct.unpack_from(f"<{16 * ITEM_PALETTES}H", data, size)
+        self._item_sheet, self.item_problem = self._enhanced(ITEM_G2D_ENTRY)
+        if self._item_sheet is not None:
+            self._item_palettes = [list(values[16 * n:16 * n + 16]) for n in range(ITEM_PALETTES)]
+
+    def _icon_palette(self, palette: int):
+        """ITEM.BIN's palette `palette`, or None (`item_problem` says why)."""
+        self._load_items()
+        if self._item_sheet is None:
+            return None
+        if not 0 <= palette < ITEM_PALETTES:
+            self.item_problem = f"palette {palette} is past the items' 16"
+            return None
+        return self._item_palettes[palette]
+
+    def held(self, palette: int, sprite: int) -> Optional[Picture]:
+        """
+        The item a unit holds up or throws whose record has `palette` and
+        `sprite` (its Palette and Sprite Id): its icon, 32 by 32 in the
+        enhanced texture; None when it can't be drawn (`item_problem` says
+        why).
+        """
+        colours = self._icon_palette(palette)
+        if colours is None:
+            return None
+        if not 0 <= sprite < ITEM_ICONS:
+            self.item_problem = f"sprite {sprite} is past the items' {ITEM_ICONS}"
+            return None
+        tile = Tile(0, 0, (sprite % ITEM_COLUMNS) * ITEM_ICON, (sprite // ITEM_COLUMNS) * ITEM_ICON + ITEM_TOP,
+                    ITEM_ICON, ITEM_ICON, False, False)
+        return draw_frame(self._item_sheet, [tile], colours, ENHANCED_SCALE)
+
+    def icon_sheet(self, palette: int) -> Optional[Picture]:
+        """
+        (Zodi's Sprite and Palette, 3 November) Every icon of the items'
+        enhanced texture in `palette`, `ITEM_COLUMNS` to a row and `ITEM_ROWS`
+        rows of 32 by 32, Sprite Id 0 at the top left: what a unit may hold
+        up or throw. None when it can't be drawn (`item_problem` says why).
+        """
+        colours = self._icon_palette(palette)
+        if colours is None:
+            return None
+        tile = Tile(0, 0, 0, ITEM_TOP, ITEM_COLUMNS * ITEM_ICON, ITEM_ROWS * ITEM_ICON, False, False)
+        return draw_frame(self._item_sheet, [tile], colours, ENHANCED_SCALE)

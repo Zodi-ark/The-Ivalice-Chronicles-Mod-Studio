@@ -29,6 +29,19 @@ into `state.pzd_edits`, the Sounds page's store, on the scene's text file;
 a Speak node with new words is a new line of that file, in every language
 the game has it in (`pzd_data.ADDED_LINE`), written in the language shown.
 
+**A side quest's scenes** (C, 28 October): listed first, under their
+quest's name (`state.quests`, the Side Quests page's), and changed with the
+same tools: their script and words are the quest's own (`QuestEdits.files`
+and `.words`), written back there (`quest_edits.store_scene_script`), the
+places Mod Studio Framework writes a quest flag's or the battle's
+objective's number into following their instructions; the nodes holding
+them can move but stay as Mod Studio made them. A scene plays with the
+setup the helper gives it (`quest_edits.scene_setup`: a battle's scene with
+its battle's), shown on its setup card, which the Side Quests page changes;
+its units a quest's battle's when its setup names one. A Speak node says
+who says its line, the name over its box (the Speaker table's), for a
+quest's scene and the game's alike.
+
 **The event's setup** (Zodi, 21 October: "Lets go with "One shared helper
 mod""): its map, weather, time of day, two pieces of music, enemy battle,
 deploy areas and what follows, read from the game's own program on this
@@ -39,10 +52,11 @@ can't be). Shown on the card when an event is picked and no node is (and
 by Setup over the nodes), each field a control; a change goes into
 `state.setup_edits` (only what differs from the game's), the map, units
 and music played follow it, and export writes `EventSetup.json` for the
-helper mod, Mod Studio Event Setup.
+helper mod, Mod Studio Framework.
 """
 from __future__ import annotations
 
+import copy
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -61,8 +75,11 @@ from ... import event_setup as su
 from ... import game_install
 from ... import map_classic
 from ... import map_doors as md
+from ... import entd
 from ... import pzd_data
+from ... import quest_edits as qx
 from ... import reference_names
+from ... import side_quests as sq
 from ... import ui_settings
 from ... import unit_sprites as us
 from .. import theme
@@ -142,6 +159,41 @@ TOO_LONG = ("This event is now {size:,} bytes, and the game reads {most:,} of an
             "sectors), so what is past that wouldn't play.")
 #: The language the words are shown and written in.
 LANGUAGE = "en"
+#: (C, 28 October) A side quest's scene: listed by its quest and name, its key `("quest", folder, name)`; its words
+#: the quest's own (no text file of the game's: `QUEST_WORDS` stands for them).
+QUEST = "quest"
+QUEST_WORDS = "quest words"
+QUEST_LIST_LINE = "{quest}: {scene}"
+QUEST_SCENE_TIP = "A scene of your side quest {quest}, changed here and kept in the quest."
+QUEST_GONE = "The scene {scene} isn't in the side quest {quest} any more."
+QUEST_SETUP_BAND, QUEST_SETUP_RIGHT = "SETUP", "Side quest scene"
+QUEST_SETUP_TITLE = "{scene}'s setup"
+QUEST_SETUP_NOTE = "A scene of the side quest {quest}. Its setup is the quest's: change it on the New Content page."
+QUEST_SETUP_BATTLE = " It plays in the battle {battle}, with its setup and units."
+QUEST_SETUP_MAP = " Shown here on map {base:03d}, which its quest map {name} is made from."
+QUEST_BATTLE_CHOICE = "{name}, the quest's battle"
+#: A quest's battle as the Units from box holds it (the game's by their numbers): this and its name.
+QUEST_BATTLE = "quest battle:"
+QUEST_TOO_LONG = ("This scene is now {size:,} bytes, and Mod Studio Framework reads {most:,} of a side quest's "
+                  "script, so it would leave the quest out.")
+QUEST_WORDS_NOTE = ("Kept in the quest's words, line {line}: written here in English, and in each other language "
+                    "that had the same words.")
+HELD_FLAG = ("This node sets the quest's flag {flag} as the scene ends, which Mod Studio Framework gives its "
+             "number: it can move, but stays as Mod Studio made it.")
+HELD_OBJECTIVE = ("This node shows the battle's objective, which Mod Studio Framework gives its number: it can "
+                  "move, but stays as Mod Studio made it.")
+HELD_NO_COPY = "A copy of it would hold nothing of the quest's, so it isn't copied."
+#: Who says a Speak node's line: the name over its box, a row of the game's Speaker table (row 1 names no one).
+SPEAKER_LABEL = "Name over the box"
+NO_SPEAKER = "No one"
+SPEAKER_NOTE = "As the game's Speaker table names its people. The face in the box is its Portrait."
+#: (Zodi's test 69, his choice "Each line changeable") A quest scene's line may be named by the own name of a unit the
+#: scene shows (a mark in its words, which the game reads over the Speaker row: `quest_edits.set_scene_mark`), or by
+#: another mark its words have.
+OWN_SPEAKER = "{name} (own name)"
+MARKED_SPEAKER = "{name} (marked in its words)"
+QUEST_SPEAKER_NOTE = ("As the game's Speaker table names its people, or a unit's own name. The face in the box is its "
+                      "Portrait.")
 #: Nodes drawn as a stack of cards: instructions that run together.
 STACKED = ("together", "camera_path", "add_together")
 #: The panes' first widths: the list, the big node (the map has the rest). At
@@ -218,6 +270,8 @@ class EventEditorPage(QWidget):
     open_sound = Signal(str, str)
     #: Open a piece of music on the Sounds page: its archive's path under the game.
     open_music = Signal(str)
+    #: (C) A side quest's scene changed here: the Side Quests page and Export's summary follow.
+    quests_changed = Signal()
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -530,8 +584,38 @@ class EventEditorPage(QWidget):
         program = self.program()
         return program.records.get(number) if program is not None and number is not None else None
 
-    def setup_record(self, number: Optional[int]) -> Optional[bytes]:
-        """Event `number`'s setup record as the mod has it: the program's with the mod's changes."""
+    def quest_record(self, key) -> Optional[bytes]:
+        """
+        (C) A quest scene's setup as a record, for its preview: the fields
+        Mod Studio Framework gives it (`quest_edits.scene_setup`), the
+        rest 0 as the helper writes them; numbered as the game's event it was
+        copied from (its From) for the map's variant; a quest map by the map
+        it is made from, a quest's battle as none (its units are the quest's,
+        `_quest_battle`).
+        """
+        edits, ev = self.quest_of(key)
+        if ev is None:
+            return None
+        record = bytearray(su.RECORD_BYTES)
+        record[0:2] = int(ev.copied_from or 0).to_bytes(2, "little")
+        changes = {}
+        for field, value in qx.scene_setup(edits.quest, ev.name).items():
+            if su.field_of(field) is None:
+                continue
+            if isinstance(value, str):
+                made = (getattr(self.state, "quest_maps", None) or {}).get(value) if field == "Map" else None
+                value = getattr(made, "base", 0) or 0
+            changes[field] = int(value)
+        try:
+            return su.applied(bytes(record), changes)
+        except su.SetupError:
+            return bytes(record)
+
+    def setup_record(self, number) -> Optional[bytes]:
+        """Event `number`'s setup record as the mod has it: the program's with the mod's changes; (C) a quest
+        scene's as its quest gives it (`quest_record`)."""
+        if self.is_quest(number):
+            return self.quest_record(number)
         record = self.game_setup(number)
         changes = (getattr(self.state, "setup_edits", None) or {}).get(number)
         if record is not None and changes:
@@ -629,7 +713,9 @@ class EventEditorPage(QWidget):
         if record is None:
             return None
         values = su.values(record)
-        return (int(number), int(bool(values.get("Night", 0))), int(values.get("Weather", 0)),
+        # (C) A quest scene's battle is that of the game's event it was copied from.
+        event = su.event_of(record) if self.is_quest(number) else int(number)
+        return (event, int(bool(values.get("Night", 0))), int(values.get("Weather", 0)),
                 int(values.get("Arrangement", 0)))
 
     def map_shown(self) -> Optional[int]:
@@ -647,6 +733,101 @@ class EventEditorPage(QWidget):
             if number is not None:
                 out[number] = bytes(data)
         return out
+
+    # -- (C) a side quest's scenes ------------------------------------------------------
+
+    @staticmethod
+    def is_quest(key) -> bool:
+        """Whether a key is a side quest's scene's, `("quest", folder, name)`."""
+        return isinstance(key, tuple) and len(key) == 3 and key[0] == QUEST
+
+    def quests(self) -> dict:
+        return getattr(self.state, "quests", None) or {}
+
+    def quest_of(self, key=None) -> tuple:
+        """`(QuestEdits, QuestEvent)` of a quest scene's key (the one shown when none is given), else (None, None):
+        a scene only, not a battle."""
+        key = self.number if key is None else key
+        if not self.is_quest(key):
+            return None, None
+        edits = self.quests().get(key[1])
+        ev = edits.quest.event_named(key[2]) if edits is not None else None
+        if ev is None or ev.battle is not None:
+            return None, None
+        return edits, ev
+
+    def quest_keys(self) -> list:
+        """The keys of every scene of the mod's side quests (not their battles): by quest, in each its order."""
+        return [(QUEST, folder, ev.name) for folder in sorted(self.quests())
+                for ev in self.quests()[folder].quest.events if ev.battle is None]
+
+    @staticmethod
+    def _token(key) -> str:
+        """What the list holds for a quest scene's key (a Python tuple doesn't go through Qt as itself)."""
+        return "\x00".join(key)
+
+    def _key_of(self, item):
+        """The event a list item is: a game event's number, or a quest scene's key."""
+        data = item.data(Qt.UserRole) if item is not None else None
+        if isinstance(data, str):
+            parts = tuple(data.split("\x00"))
+            return parts if self.is_quest(parts) else None
+        return int(data) if data is not None else None
+
+    def _quest_text(self, key) -> str:
+        """A quest scene's line in the list: its quest and name, and its first words."""
+        edits, ev = self.quest_of(key)
+        if ev is None:
+            return ""
+        text = QUEST_LIST_LINE.format(quest=edits.quest.name, scene=ev.name)
+        first = ""
+        try:
+            order = qx.lines_in_order(edits.files.get(ev.script, b""), self.lengths) if self.lengths else []
+        except es.ScriptError:
+            order = []
+        lines = {x.line_id: x.line for x in qx.lines_of(edits, ev.name)}
+        if order and lines.get(order[0]):
+            first = words.shown_words(lines[order[0]])
+        return text + (f"\n{words._first_line(first, 48)}" if first else "")
+
+    def _list_quests(self) -> None:
+        """The side quests' scenes first in the list (each in the mod's color), the others as they were."""
+        self.event_list.blockSignals(True)
+        for row in reversed(range(self.event_list.count())):
+            if isinstance(self.event_list.item(row).data(Qt.UserRole), str):
+                self.event_list.takeItem(row)
+        for n, key in enumerate(self.quest_keys()):
+            item = QListWidgetItem(self._quest_text(key))
+            item.setData(Qt.UserRole, self._token(key))
+            item.setToolTip(QUEST_SCENE_TIP.format(quest=self.quests()[key[1]].quest.name))
+            self.event_list.insertItem(n, item)
+            if key == self.number:
+                self.event_list.setCurrentItem(item)
+        self.event_list.blockSignals(False)
+        self._mark_list()
+        self._filter_events(self.event_search.text())
+
+    def refresh_quests(self) -> None:
+        """The side quests changed (on the Side Quests page, or a mod opened): their scenes listed again, and the
+        scene shown read again (or let go, with why, when the quest has it no more)."""
+        self._list_quests()
+        if not self.is_quest(self.number):
+            return
+        key = self.number
+        edits, ev = self.quest_of(key)
+        if ev is None:
+            self._clear_event()
+            self._show_message(QUEST_GONE.format(scene=key[2], quest=key[1]))
+            return
+        self.show_event(key)
+
+    def select_record(self, record) -> None:
+        """The shell's jump here (`open_tab`): a game event's number, or a quest scene's key."""
+        if isinstance(record, (list, tuple)):
+            record = tuple(record)
+            self._list_quests()
+        if not self.pick_event(record):
+            self.show_event(record)
 
     def refresh_tree(self) -> None:
         """Reads the game's events again (after an unpack, an opened mod, a new mod)."""
@@ -716,8 +897,8 @@ class EventEditorPage(QWidget):
             if number == current:
                 self.event_list.setCurrentItem(item)
         self.event_list.blockSignals(False)
-        self._mark_list()
-        self._filter_events(self.event_search.text())
+        # (C) The side quests' scenes first.
+        self._list_quests()
 
     @staticmethod
     def _list_text(number: int, place: str, first: str, placeholder: bool) -> str:
@@ -756,18 +937,21 @@ class EventEditorPage(QWidget):
     def _event_picked(self, item, _previous=None) -> None:
         if item is None:
             return
-        self.show_event(int(item.data(Qt.UserRole)))
+        key = self._key_of(item)
+        if key is not None:
+            self.show_event(key)
 
     def _event_clicked(self, item) -> None:
         """The event shown clicked again in the list: its setup on the card."""
-        if item is not None and item.data(Qt.UserRole) == self.number:
+        if item is not None and self._key_of(item) == self.number:
             self.pick_setup()
 
-    def pick_event(self, number: int) -> bool:
-        """Picks event `number` in the list, as a click would; False if the list hasn't it."""
+    def pick_event(self, number) -> bool:
+        """Picks event `number` (or a quest scene's key) in the list, as a click would; False if the list hasn't
+        it."""
         for row in range(self.event_list.count()):
             item = self.event_list.item(row)
-            if item.data(Qt.UserRole) == number:
+            if self._key_of(item) == number:
                 self.event_list.setCurrentItem(item)
                 return True
         return False
@@ -797,21 +981,29 @@ class EventEditorPage(QWidget):
         except OSError:
             return None
 
-    def show_event(self, number: int) -> None:
-        """Reads event `number` (the mod's copy, else the game's) and plays it on its map."""
+    def show_event(self, number) -> None:
+        """Reads event `number` (the mod's copy, else the game's), or (C) a side quest's scene by its key (its
+        script the quest's), and plays it on its map."""
         if self.lengths is None:
             return
-        data = self.own_scripts().get(number)
-        if data is None:
-            data = self.game_script(number)
+        quest = self.is_quest(number)
+        if quest:
+            edits, ev = self.quest_of(number)
+            data = edits.files.get(ev.script) if ev is not None else None
+        else:
+            data = self.own_scripts().get(number)
+            if data is None:
+                data = self.game_script(number)
         if data is None:
             self._clear_event()
+            if quest:
+                self._show_message(QUEST_GONE.format(scene=number[2], quest=number[1]))
             return
         try:
             script = es.read_script(data, self.lengths, self.mode)
         except es.ScriptError as exc:
             self._clear_event()
-            self._show_message(f"Event {number:03d} can't be read: {exc}")
+            self._show_message(f"{number[2] if quest else f'Event {number:03d}'} can't be read: {exc}")
             return
         changed_event = number != self.number
         self.number, self.script = number, script
@@ -819,7 +1011,7 @@ class EventEditorPage(QWidget):
             self.picked = -1
             self.map.pause()
             self.map.frame = 0.0
-        self.text_files = es.scene_text_files(self.sqlite_path(), number)
+        self.text_files = [QUEST_WORDS] if quest else es.scene_text_files(self.sqlite_path(), number)
         self.speakers = es.speaker_names(self.sqlite_path(), LANGUAGE)
         self.map.caption_words = es.caption_words(self.sqlite_path(), LANGUAGE)
         if self._music_titles_from != self.sqlite_path():
@@ -832,6 +1024,8 @@ class EventEditorPage(QWidget):
         chosen_map = self.chosen_map.get(number, own_map[0] if own_map else None)
         self.map.fill_maps(own_map, chosen_map)
         battle = self.chosen_battle.get(number)
+        if battle is None and quest:
+            battle = self._quest_battle(number)
         if battle is None and scenario is not None:
             battle = scenario.battle or scenario.scene or None
         self.map.fill_battles(self._battle_choices(scenario), battle)
@@ -846,16 +1040,33 @@ class EventEditorPage(QWidget):
         self.map.set_event(None, {}, {}, {}, lambda line: None, lambda line: None, lambda u: None)
         self._fill_form()
 
+    def _quest_battle(self, key) -> Optional[str]:
+        """The quest's battle a quest scene's units are (its setup's EnemyBattle, else SceneUnits, naming one), as
+        the Units from box holds it, or None."""
+        edits, ev = self.quest_of(key)
+        if ev is None:
+            return None
+        setup = qx.scene_setup(edits.quest, ev.name)
+        for field in ("EnemyBattle", "SceneUnits"):
+            value = setup.get(field)
+            if isinstance(value, str) and value:
+                return QUEST_BATTLE + value
+        return None
+
     def _battle_choices(self, scenario) -> list:
         names = encounter_names.EncounterNames.load()
         game = self.game_dir()
+        edits, _ev = self.quest_of()
+        # (C) A quest scene's own battles first: their units are the quest's.
+        own = [(QUEST_BATTLE + b.name, QUEST_BATTLE_CHOICE.format(name=b.name)) for b in edits.quest.battles] \
+            if edits is not None else []
         first = []
         if scenario is not None:
             for battle in (scenario.battle, scenario.scene):
                 if battle and battle not in first:
                     first.append(battle)
         count = 512 + es.fifth_battle_count(game) if game is not None else 512
-        out = [(None, PICK_A_BATTLE)] if not first else []
+        out = own + ([(None, PICK_A_BATTLE)] if not first and not own else [])
         for battle in first + [b for b in range(count) if b not in first]:
             out.append((battle, f"Battle {names.label_for(battle)}"))
         return out
@@ -882,9 +1093,17 @@ class EventEditorPage(QWidget):
 
     # -- the scene's units ---------------------------------------------------------------
 
-    def _scene(self, battle: Optional[int]) -> None:
+    def _scene(self, battle) -> None:
         self.battle = battle
-        entd_units = es.battle_units(self.game_dir(), battle) if battle is not None else []
+        if isinstance(battle, str) and battle.startswith(QUEST_BATTLE):
+            # (C) One of the quest's own battles: its units the quest's file.
+            edits, _ev = self.quest_of()
+            name = battle[len(QUEST_BATTLE):]
+            own = next((b for b in edits.quest.battles if b.name == name), None) if edits is not None else None
+            block = edits.files.get(own.units) if own is not None else None
+            entd_units = [u for u in entd.battle_units(block) if u.occupied] if block else []
+        else:
+            entd_units = es.battle_units(self.game_dir(), battle) if battle is not None else []
         # The story characters the player deploys (Zodi, 19 October: "the
         # player can choose where to place him at the map at the start of the
         # battle"): on the battle's deployment tiles when the event is shown on
@@ -954,7 +1173,11 @@ class EventEditorPage(QWidget):
         return None
 
     def _read_text(self, stem: str, language: str = LANGUAGE) -> list:
-        """A scene's text file's lines as the mod has them: its copy or the game's, edits applied."""
+        """A scene's text file's lines as the mod has them: its copy or the game's, edits applied; (C) a quest
+        scene's its quest's words."""
+        if stem == QUEST_WORDS:
+            edits, ev = self.quest_of()
+            return [copy.copy(x) for x in qx.lines_of(edits, ev.name, language)] if ev is not None else []
         relative = self.text_relative(stem, language)
         path = self._carried(relative)
         game = self.game_dir()
@@ -1030,7 +1253,7 @@ class EventEditorPage(QWidget):
                                 object_frames=doors.object_frames if doors is not None else None)
         self._music_of = self._music_started(self.script, self.timeline)
         self.picked = min(self.picked, len(self.nodes) - 1)
-        title = f"{self.number:03d}"
+        title = self.number[2] if self.is_quest(self.number) else f"{self.number:03d}"
         scenario = self.scenario(self.number)
         shown = scenario.map if scenario is not None else self.map.map_number
         place = self._map_names().get(shown, "") if shown is not None else ""
@@ -1122,7 +1345,23 @@ class EventEditorPage(QWidget):
     # =========================================================================
 
     def _store(self, script: es.Script) -> None:
-        """The script after a change: kept in the mod if it differs from the game's, and played again."""
+        """The script after a change: kept in the mod if it differs from the game's, and played again; (C) a
+        quest scene's in its quest, its marks following their instructions and the lines it shows no more out of
+        its words."""
+        if self.is_quest(self.number):
+            edits, ev = self.quest_of()
+            if ev is None:
+                return
+            qx.store_scene_script(edits, ev.name, self.script, script, self.lengths)
+            self.script = script
+            size = len(script.to_bytes())
+            self._show_message(QUEST_TOO_LONG.format(size=size, most=sq.MOST_SCRIPT) if size > sq.MOST_SCRIPT
+                               else "")
+            self._read_lines()
+            self._replay()
+            self._list_quests()
+            self.quests_changed.emit()
+            return
         rel = es.script_relative(self.number, self.mode)
         data = script.to_bytes()
         if data == self.game_script(self.number):
@@ -1137,8 +1376,9 @@ class EventEditorPage(QWidget):
         self._mark_list()
 
     def edited_events(self) -> set:
-        """The listed events the mod changed: their scripts, their setup, or the words of a line they show."""
-        out = set(self.own_scripts())
+        """The listed events the mod changed: their scripts, their setup, or the words of a line they show; (C)
+        every scene of its side quests, which are the mod's own."""
+        out = set(self.own_scripts()) | set(self.quest_keys())
         out |= {number for number, changes in (getattr(self.state, "setup_edits", None) or {}).items() if changes}
         changed: dict = {}
         for relative, lines in (getattr(self.state, "pzd_edits", {}) or {}).items():
@@ -1156,12 +1396,30 @@ class EventEditorPage(QWidget):
         edited = self.edited_events()
         for row in range(self.event_list.count()):
             item = self.event_list.item(row)
-            mine = item.data(Qt.UserRole) in edited
+            mine = self._key_of(item) in edited
             actions.mark_edited(item, mine)
-            item.setToolTip("Changed in this mod" if mine else "")
+            if not self.is_quest(self._key_of(item)):
+                item.setToolTip("Changed in this mod" if mine else "")
 
     def _can_change(self) -> bool:
         return self.script is not None and self.lengths is not None
+
+    def held(self) -> dict:
+        """(C) `{instruction index: the quest flag it holds, or "" for the battle's objective}` of the quest scene
+        shown (`quest_edits.held_instructions`); empty for the game's events."""
+        edits, ev = self.quest_of()
+        if ev is None or self.script is None:
+            return {}
+        return qx.held_instructions(ev, list(self.script.instructions))
+
+    def _held_words(self, node) -> str:
+        """Why a node holding a quest's flag or objective stays (the first it holds), or "" for one that holds
+        none."""
+        held = self.held()
+        for index in node.indexes():
+            if index in held:
+                return HELD_FLAG.format(flag=held[index]) if held[index] else HELD_OBJECTIVE
+        return ""
 
     def move_node(self, index: int, before: int) -> None:
         if not self._can_change():
@@ -1185,6 +1443,9 @@ class EventEditorPage(QWidget):
         if any(self.script.instructions[i].opcode == es.END for i in node.indexes()):
             self._show_message(END_STAYS)
             return
+        if self._held_words(node):
+            self._show_message(self._held_words(node))
+            return
         script = es.replace_node(self.script, self.nodes, index, [])
         if not es.ends_properly(script, self.lengths):
             self._show_message(CANT_WRITE.format("a jump would lose its mark."))
@@ -1195,6 +1456,9 @@ class EventEditorPage(QWidget):
 
     def copy_node(self, index: int) -> None:
         if not self._can_change() or not 0 <= index < len(self.nodes):
+            return
+        if self._held_words(self.nodes[index]):
+            self._show_message(f"{self._held_words(self.nodes[index])} {HELD_NO_COPY}")
             return
         items = list(es.node_instructions(self.script, self.nodes[index]))
         copied = []
@@ -1260,13 +1524,23 @@ class EventEditorPage(QWidget):
         if not self._can_change() or self._loading_form:
             return
         items = list(self.script.instructions)
+        was = items[instruction]
         try:
             items[instruction] = es.with_operands(items[instruction], self.mode, **{name: value})
         except es.ScriptError as exc:
             self._show_message(CANT_WRITE.format(exc))
             return
         self._show_message("")
+        if name == "unit" and was.opcode == 0x10 and self.is_quest(self.number):
+            # (His test 69) A quest line said by another unit: the name over its box follows its own name.
+            edits, ev = self.quest_of()
+            if ev is not None:
+                qx.speaker_moved(edits, ev.name, es.operand(was, "line", self.mode), es.operand(was, "unit", self.mode),
+                                 int(value))
+                self.quests_changed.emit()
         self._store(self.script.with_instructions(items))
+        if name == "unit" and was.opcode == 0x10 and self.is_quest(self.number):
+            self._read_lines()
 
     def set_button_wait(self, waits: bool) -> None:
         """A Speak node's "Wait for a button press": the wait for the message after it, or none."""
@@ -1282,7 +1556,10 @@ class EventEditorPage(QWidget):
     # -- words ------------------------------------------------------------------------
 
     def text_languages(self, stem: str) -> list:
-        """The languages a scene's text file is in, in the game or the mod."""
+        """The languages a scene's text file is in, in the game or the mod; (C) a quest scene's words'."""
+        if stem == QUEST_WORDS:
+            edits, ev = self.quest_of()
+            return sorted(edits.words.get(ev.name, {})) or [LANGUAGE] if ev is not None else [LANGUAGE]
         out = []
         game = self.game_dir()
         for language in pzd_data.PZD_LANGUAGES:
@@ -1293,7 +1570,14 @@ class EventEditorPage(QWidget):
         return out or [LANGUAGE]
 
     def new_line(self, text: str, like: Optional[int] = None) -> int:
-        """A new line of the scene's text with `text`, in every language: its id."""
+        """A new line of the scene's text with `text`, in every language: its id; (C) a quest scene's in its words,
+        said as line `like` is, else by no one."""
+        if self.is_quest(self.number):
+            edits, ev = self.quest_of()
+            line = qx.add_scene_line(edits, ev.name, text, like)
+            self._read_lines()
+            self.quests_changed.emit()
+            return line
         stems = self.text_files or self._scene_stems()
         if not stems:
             stems = [f"nxd/text/scenario/scenario{9000 + (self.number or 0):04d}"]
@@ -1304,7 +1588,10 @@ class EventEditorPage(QWidget):
             highest = max(highest, es.next_line_id(self._read_text(stem, language)))
         line = max(highest, es.next_line_id(list(self.lines.values())))
         model = self.lines.get(like) if like is not None else None
-        fields = {pzd_data.ADDED_LINE: True, "line": text}
+        # Said by no one (Speaker row 1) until somebody picks who, as a quest's new line is (trap 285: not the 0
+        # and 0 a line has by default; every line of the game's has a Speaker key).
+        fields = {pzd_data.ADDED_LINE: True, "line": text, "speaker_type": qx.SPEAKER_TYPE,
+                  "speaker_value": qx.NO_ONE}
         if model is not None:
             fields.update(speaker_type=model.speaker_type, speaker_value=model.speaker_value)
         for language in self.text_languages(stem):
@@ -1314,7 +1601,17 @@ class EventEditorPage(QWidget):
         return line
 
     def set_words(self, line: int, text: str) -> None:
-        """A line's words changed in the big node, in the language shown (a new line's in every one)."""
+        """A line's words changed in the big node, in the language shown (a new line's in every one); (C) a quest
+        scene's in its words, and in each other language that had the same words."""
+        if self.is_quest(self.number):
+            edits, ev = self.quest_of()
+            if ev is None:
+                return
+            qx.set_scene_words(edits, ev.name, line, text)
+            self._read_lines()
+            self._words_timer.start()
+            self.quests_changed.emit()
+            return
         stem = self._line_file.get(line) if hasattr(self, "_line_file") else None
         if stem is None:
             return
@@ -1343,8 +1640,8 @@ class EventEditorPage(QWidget):
         self._mark_list()
         self._words_timer.start()
 
-    def _game_text(self, stem: str) -> list:
-        relative = self.text_relative(stem)
+    def _game_text(self, stem: str, language: str = LANGUAGE) -> list:
+        relative = self.text_relative(stem, language)
         path = self._carried(relative)
         game = self.game_dir()
         if path is None and game is not None and (game / relative).is_file():
@@ -1468,8 +1765,23 @@ class EventEditorPage(QWidget):
             if node.shape == "speak":
                 self._speak_fields(node, items)
             else:
+                held = self.held()
                 for offset, item in enumerate(items):
+                    before = self.fields.count()
                     self._instruction_fields(node.first + offset, item, len(items) > 1)
+                    if node.first + offset in held:
+                        # (C) A quest's flag or the battle's objective: its fields as Mod Studio made them.
+                        for n in range(before, self.fields.count()):
+                            widget = self.fields.itemAt(n).widget()
+                            if widget is not None:
+                                widget.setEnabled(False)
+                held_note = self._held_words(node)
+                if held_note:
+                    note = QLabel(held_note)
+                    note.setProperty("role", "muted")
+                    note.setWordWrap(True)
+                    self.fields.addWidget(note)
+                    self.field_widgets["held"] = note
             self._say_status(node)
         finally:
             self._loading_form = False
@@ -1500,6 +1812,9 @@ class EventEditorPage(QWidget):
         event shown: the program's, else the PlayStation's copy (not to be changed); None for neither."""
         if self.number is None:
             return None
+        if self.is_quest(self.number):
+            record = self.setup_record(self.number)
+            return (record, record, False, self._quest_setup_note()) if record is not None else None
         game = self.game_setup(self.number)
         if game is not None:
             return self.setup_record(self.number), game, True, ""
@@ -1511,6 +1826,22 @@ class EventEditorPage(QWidget):
         note = (words.SETUP_UNREADABLE.format(problem=self.program_problem) if self.program_problem
                 else words.SETUP_NO_PROGRAM.format(program=su.PROGRAM))
         return row, row, False, note
+
+    def _quest_setup_note(self) -> str:
+        """What a quest scene's setup card says of it: whose it is and where it changes, the battle it plays in,
+        the quest map it is shown on in place of."""
+        edits, ev = self.quest_of()
+        if ev is None:
+            return ""
+        note = QUEST_SETUP_NOTE.format(quest=edits.quest.name)
+        fight = edits.quest.fight_of(ev.name)
+        if fight is not None:
+            note += QUEST_SETUP_BATTLE.format(battle=fight.name)
+        named = qx.scene_setup(edits.quest, ev.name).get("Map")
+        made = (getattr(self.state, "quest_maps", None) or {}).get(named) if isinstance(named, str) else None
+        if made is not None:
+            note += QUEST_SETUP_MAP.format(base=made.base, name=named)
+        return note
 
     def pick_setup(self, _checked=False) -> None:
         """The event's setup on the card, no node picked."""
@@ -1611,9 +1942,13 @@ class EventEditorPage(QWidget):
         from .map_editor import COPY_TITLE, arrangement_word
         number = self.number
         colour = words.KIND_COLOURS["story"]
-        self.band.set_words(words.SETUP_BAND, f"Event {number:03d}", colour)
+        if self.is_quest(number):
+            self.band.set_words(QUEST_SETUP_BAND, QUEST_SETUP_RIGHT, colour)
+            self.node_title.setText(QUEST_SETUP_TITLE.format(scene=number[2]))
+        else:
+            self.band.set_words(words.SETUP_BAND, f"Event {number:03d}", colour)
+            self.node_title.setText(words.SETUP_TITLE.format(number=number))
         self.form.setStyleSheet(f"#bigNode {{ border: 2px solid {colour}; border-radius: 8px; }}")
-        self.node_title.setText(words.SETUP_TITLE.format(number=number))
         self.node_blurb.setText(note or words.SETUP_BLURB)
         values = su.values(record)
         changed = su.changes_between(game, record)
@@ -1748,8 +2083,17 @@ class EventEditorPage(QWidget):
         who.currentIndexChanged.connect(lambda _i, b=who: self.set_operand(index, "unit", b.currentData()))
         self._row("Who speaks", who)
         self.field_widgets["unit"] = who
+        # (C) Who says the line: the name over its box, the game's Speaker table's.
+        speaker = self._speaker_box(v["line"])
+        speaker.currentIndexChanged.connect(lambda _i, b=speaker, l=v["line"]: self.set_speaker(l, b.currentData()))
+        self._row(SPEAKER_LABEL, speaker)
+        self.field_widgets["speaker"] = speaker
         text = QPlainTextEdit()
-        text.setPlainText(self.words_of(v["line"]) or "")
+        # (His test 69) A quest line's mark naming its box is Name over the box's, not the words'.
+        shown = self.words_of(v["line"]) or ""
+        if self.is_quest(self.number):
+            shown = qx.without_mark(shown)
+        text.setPlainText(shown)
         text.setMinimumHeight(64)
         text.setMaximumHeight(84)
         line = v["line"]
@@ -1759,12 +2103,13 @@ class EventEditorPage(QWidget):
         stem = getattr(self, "_line_file", {}).get(line)
         relative = self.text_relative(stem) if stem else None
         added = bool(relative and (self.state.pzd_edits.get(relative, {}).get(line) or {}).get(pzd_data.ADDED_LINE))
-        note = QLabel(NEW_WORDS_NOTE.format(file=Path(stem).name) if added else
+        note = QLabel(QUEST_WORDS_NOTE.format(line=line) if stem == QUEST_WORDS else
+                      NEW_WORDS_NOTE.format(file=Path(stem).name) if added else
                       (WORDS_NOTE.format(line=line, file=Path(stem).name) if stem else NO_TEXT_FILE))
         note.setProperty("role", "muted")
         note.setWordWrap(True)
         self.fields.addWidget(note)
-        if "<" in (self.words_of(line) or ""):
+        if "<" in shown:
             marks = QLabel(MARKS_NOTE)
             marks.setProperty("role", "muted")
             marks.setWordWrap(True)
@@ -1842,6 +2187,77 @@ class EventEditorPage(QWidget):
         self.fields.addWidget(waits)
         self.field_widgets["waits"] = waits
         self.field_widgets["dx"], self.field_widgets["dy"] = dx, dy
+
+    def _speaker_box(self, line: int) -> QComboBox:
+        """Who says a line, the name over its box: no one (Speaker row 1), (his test 69) in a quest scene the own
+        names of the units it shows (a mark in the line's words: the name, a text), then each name of the game's
+        Speaker table once (its first row), the line's own row kept when another of its name or none is shown; a
+        quest line's mark is what it shows when it has one."""
+        box = _combo()
+        box.addItem(NO_SPEAKER, qx.NO_ONE)
+        quest = self.is_quest(self.number)
+        edits, ev = self.quest_of() if quest else (None, None)
+        if ev is not None:
+            for name in qx.scene_own_names(edits, ev.name):
+                box.addItem(OWN_SPEAKER.format(name=name), name)
+        seen = set()
+        for key, name in sorted(self.speakers.items(), key=lambda kv: (kv[1].lower(), kv[0])):
+            if name not in seen:
+                seen.add(name)
+                box.addItem(name, key)
+        entry = self.lines.get(line)
+        current = int(entry.speaker_value) if entry is not None and entry.speaker_value else qx.NO_ONE
+        mark = qx.mark_of(entry.line) if ev is not None and entry is not None else None
+        if mark is not None:
+            current = mark
+            if box.findData(current) < 0:
+                box.addItem(MARKED_SPEAKER.format(name=mark), mark)
+        elif box.findData(current) < 0:
+            box.addItem(self.speakers.get(current) or f"Speaker {current}", current)
+        box.setCurrentIndex(box.findData(current))
+        box.setToolTip(QUEST_SPEAKER_NOTE if quest else SPEAKER_NOTE)
+        return box
+
+    def set_speaker(self, line: int, speaker) -> None:
+        """(C) Who says a line, in every language its words are in: a quest scene's in its words (his test 69: a
+        name, a text, as its mark); the game's as the mod's change to its text file's line (none, where it is the
+        game's own)."""
+        if not self._can_change() or self._loading_form or speaker is None:
+            return
+        if self.is_quest(self.number):
+            edits, ev = self.quest_of()
+            if ev is None:
+                return
+            if isinstance(speaker, str):
+                # (His test 69) An own name, or a mark the words had: the line's mark.
+                qx.set_scene_mark(edits, ev.name, line, speaker)
+            else:
+                qx.set_scene_speaker(edits, ev.name, line, int(speaker))
+            self.quests_changed.emit()
+        else:
+            stem = getattr(self, "_line_file", {}).get(line)
+            if stem is None:
+                return
+            for language in self.text_languages(stem):
+                relative = self.text_relative(stem, language)
+                edits = self.state.pzd_edits.setdefault(relative, {})
+                current = dict(edits.get(line, {}))
+                game = next((e for e in self._game_text(stem, language) if e.line_id == line), None)
+                # The game's own speaker picked again (the box shows a line's speaker whatever its type): no change.
+                if game is not None and not current.get(pzd_data.ADDED_LINE) and game.speaker_value == int(speaker):
+                    current.pop("speaker_type", None)
+                    current.pop("speaker_value", None)
+                else:
+                    current.update(speaker_type=qx.SPEAKER_TYPE, speaker_value=int(speaker))
+                if current:
+                    edits[line] = current
+                else:
+                    edits.pop(line, None)
+                if not edits:
+                    self.state.pzd_edits.pop(relative, None)
+            self._mark_list()
+        self._read_lines()
+        self._replay()
 
     def voice_of(self, line: int) -> str:
         """A line's recording (its `VoiceSoundPath`, without a language), or "" when it has none."""

@@ -27,6 +27,8 @@ better than an empty pane that looks broken.
 """
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -333,6 +335,14 @@ class ModContentsPane(QWidget):
                  "tables' .nxd files with FF16Tools.",
                  True, self._look_summary,
                  lambda: bool(self._map_looks())),
+                # Zodi, 28 October: "Edit quest maps directly".
+                ("Quest maps",
+                 "Each is a folder of the mod's under ModStudioMaps, a map of its "
+                 "own made from one of the game's with your changes to it, which "
+                 "Mod Studio Framework gives a map number of its own as the "
+                 "game starts.",
+                 True, self._quest_map_summary,
+                 lambda: bool(getattr(state, "quest_maps", None))),
             ]),
             ("Event Editor", [
                 ("Changed events",
@@ -344,11 +354,47 @@ class ModContentsPane(QWidget):
                 # Zodi, 21 October: "Lets go with "One shared helper mod"".
                 ("EventSetup.json",
                  "Each event's setup this mod changes (its map, music, battle "
-                 "and the rest), beside ModConfig.json, for Mod Studio Event "
-                 "Setup to apply as the game starts. Export lists that mod "
+                 "and the rest), beside ModConfig.json, for Mod Studio "
+                 "Framework to apply as the game starts. Export lists that mod "
                  "among your mod's dependencies and puts it beside your mod.",
                  True, self._setup_summary,
                  lambda: state.has_any_setup_edits()),
+            ]),
+            # Zodi, 28 October: "Side quest page" (named New Content on 3 November).
+            ("New Content", [
+                ("Side quests",
+                 "Each is a folder of the mod's under ModStudioQuests: its quest "
+                 "file, its events' scripts and its battles' units, with its "
+                 "events' words beside the game's scenes' words. Mod Studio "
+                 "Framework gives every name in it a number of its own as the "
+                 "game starts.",
+                 True, self._quest_summary,
+                 lambda: bool(getattr(state, "quests", None))),
+                # Zodi, 28 October: "Places and roads made on the page".
+                ("Places and roads",
+                 "Each place is a folder of the mod's under ModStudioPlaces and "
+                 "each road one under ModStudioRoads, a town's own texture and "
+                 "each road's texture beside the game's world map textures. Mod "
+                 "Studio Framework gives each place and road a number of its "
+                 "own as the game starts.",
+                 True, self._place_summary,
+                 lambda: state.has_places()),
+                # (1.26.0) Zodi's list of 3 November, his first: "Adding new items to go into the new towns outfitter".
+                ("Items",
+                 "Each is a folder of the mod's under ModStudioItems, an item of "
+                 "its own sold at its towns' Outfitters, its own icon's textures "
+                 "beside the game's item icons. Mod Studio Framework gives each a "
+                 "number of its own as the game starts.",
+                 True, self._item_summary,
+                 lambda: state.has_items()),
+                # (1.28.0) Zodi, 3 November, after test 60: "users can also change the vanilla items look and palette".
+                # (5 November) A shield's look as it guards too.
+                ("Weapons' and shields' looks in battle",
+                 "The game's own weapons and shields given another look in "
+                 "battle, in the mod's ModStudioItemLooks.json: Mod Studio "
+                 "Framework gives each to the game as it starts.",
+                 True, self._looks_summary,
+                 lambda: state.has_item_looks()),
             ]),
         ])
 
@@ -976,6 +1022,147 @@ class ModContentsPane(QWidget):
                 what = "; ".join(said[f](v) if f in said else f"{f.replace('_', ' ')} {int(v)}"
                                  for f, v in changes.items())
                 lines.append(f"    {where}: {what}")
+        return "\n".join(lines)
+
+    def _quest_map_summary(self) -> str:
+        """Each quest map: the game's map it is made from, its title, and what it changes of that map."""
+        from ... import quest_map_edits as qe
+        maps = getattr(self.state, "quest_maps", None) or {}
+        if not maps:
+            return "No quest maps."
+        lines = [f"{len(maps)} quest map(s), each a folder of ModStudioMaps by its name.", ""]
+        for name in sorted(maps, key=str.lower):
+            edits = maps[name]
+            counted = qe.summary(edits)
+            said = [text for count, text in (
+                (counted["tiles"], f"{counted['tiles']} tile(s) edited"),
+                (counted["grids"], f"{counted['grids']} grid(s) put there whole"),
+                (counted["textures"], f"{counted['textures']} texture(s) of its own"),
+                (counted["model"], "a model of its own"),
+                (counted["anims"], "an anim file of its own"),
+                (counted["rows"], f"{counted['rows']} row(s) of its own in the tables")) if count]
+            title = f", titled {edits.title}" if edits.title else ""
+            lines.append(f"{name}: made from map {edits.base:03d}{title}; "
+                         + (", ".join(said) if said else "the same as that map"))
+        return "\n".join(lines)
+
+    def _quest_summary(self) -> str:
+        """Each side quest: its steps, where each waits, and how many events and battles of its own it has, (1.15.0)
+        and its tavern rumors."""
+        from ... import quest_edits as qx
+        from ... import map_roads as mr
+        quests = getattr(self.state, "quests", None) or {}
+        if not quests:
+            return "No side quests."
+        lines = [f"{len(quests)} side quest(s), each a folder of ModStudioQuests by its name.", ""]
+        for folder, edits in quests.items():
+            quest = edits.quest
+            places = []
+            for step in qx.steps(quest):
+                place = quest.starts[step.start].place
+                places.append(place if isinstance(place, str) else mr.GAME_PLACES.get(place, (f"place {place}",))[0])
+            where = f", waiting at {', then '.join(places)}" if places else ""
+            lines.append(f"{folder}: {len(quest.starts)} step(s){where}; {len(quest.events)} event(s), "
+                         f"{len(quest.battles)} battle(s) of its own, {len(quest.flags)} flag(s)"
+                         + (f", {len(quest.rumors)} tavern rumor(s)" if quest.rumors else "")
+                         + (f", its marker {quest.marker}" if quest.marker else ""))
+        return "\n".join(lines)
+
+    def _item_summary(self) -> str:
+        """(1.26.0) Each item: its kind, the game item it is a copy of, its price, its icon and the towns selling it;
+        (1.27.0) its own small icon when it has one, and the game's towns ticked on its card."""
+        from ... import mod_items as mi
+        from ... import place_edits as pe
+        items = getattr(self.state, "items", None) or {}
+        if not items:
+            return "No items."
+        places = getattr(self.state, "places", None) or {}
+        lines = [f"{len(items)} item(s), each a folder of ModStudioItems.", ""]
+        for edit in items.values():
+            item = edit.item
+            price = mi.number(item, *mi.PRICE[1:4])
+            icon = (("its own icon and small icon" if getattr(edit, "small_png", b"") else "its own icon")
+                    if edit.icon_png else f"the game item {item.icon}'s icon")
+            copied = f", a copy of the game item {edit.copied_from}" if edit.copied_from else ""
+            towns = pe.towns_selling_item(places, item.name) + [mi.GAME_TOWNS[t] for t in sorted(item.shops)]
+            sold = f", sold at {', '.join(towns)}" if towns else ", sold at no town yet"
+            lines.append(f"{item.name}: {mi.KIND_WORDS[item.kind]}{copied}, {price} gil, {icon}{sold}")
+        return "\n".join(lines)
+
+    def _looks_summary(self) -> str:
+        """(1.28.0) Each game weapon (and, 5 November, shield) whose look in battle the mod changes: its name, its
+        palette and its sprite pair."""
+        from ... import mod_items as mi
+        from ... import nxd_data
+        looks = getattr(self.state, "item_looks", None) or {}
+        if not looks:
+            return "No weapon's or shield's look changed."
+        try:
+            names = nxd_data.effective_names(self.state, "item", "en")
+        except Exception:                                     # noqa: BLE001
+            names = {}
+
+        def name_of(number: int) -> str:
+            # The game's name (its converted database), else the item table's own name comment.
+            if names.get(number):
+                return names[number]
+            try:
+                record = self.state.item_table_records_by_id("item").get(number)
+            except Exception:                                 # noqa: BLE001
+                record = None
+            shown = record.display_name() if record is not None else ""
+            return re.sub(r"^\d+ - ", "", shown or "") or str(number)
+        # (5 November) A shield's look as it guards is among them too.
+        lines = [f"{len(looks)} game weapon(s) and shield(s) given another look in battle, in {mi.LOOKS_FILE}.", ""]
+        for number in sorted(looks):
+            pair = bytes(looks[number])
+            lines.append(f"{name_of(number)} ({number}): palette {pair[0] >> 4}, sprite pair {pair[0]} and "
+                         f"{pair[1]}")
+        return "\n".join(lines)
+
+    def _place_summary(self) -> str:
+        """Each place: its kind, where it is and what it shows ((1.17.0) a battle ground's random battles of its
+        own: how many, and how often one starts; (1.18.0) a town's menu of its own; (1.20.0) what darkens a town;
+        (1.21.0) a dungeon's floors and their battles); each road: the places it joins and its turns."""
+        from ... import place_edits as pe
+        places = getattr(self.state, "places", None) or {}
+        roads = getattr(self.state, "roads", None) or {}
+        if not places and not roads:
+            return "No places or roads."
+        lines = [f"{len(places)} place(s), each a folder of ModStudioPlaces, and {len(roads)} road(s), each a "
+                 f"folder of ModStudioRoads.", ""]
+        for place in places.values():
+            shown = ("its own texture" if place.texture else f"the game's town texture {place.icon}") \
+                if place.town else "the game's point"
+            dungeon = getattr(place, "dungeon", False)
+            battles = [b for b in getattr(place, "battles", None) or [] if not getattr(b, "floor", "")]
+            fought = (f", {len(battles)} random battle{'s' if len(battles) != 1 else ''} of its own, one on "
+                      f"{place.chance} of 100 arrivals") if battles and not place.town else ""
+            # (1.21.0) A dungeon's floors and their battles.
+            if dungeon:
+                floors = getattr(place, "floors", None) or []
+                below = [b for b in place.battles if getattr(b, "floor", "")]
+                fought = (f", {len(floors)} floor{'s' if len(floors) != 1 else ''} with {len(below)} random battle"
+                          f"{'s' if len(below) != 1 else ''} among them")
+            # (1.18.0) A town's own menu: its Outfitter's items and its Poachers' Den.
+            menu = getattr(place, "menu", None)
+            sold = len(menu.shop) + len(getattr(menu, "own", None) or []) if menu is not None else 0
+            entered = (f", a menu of its own (an Outfitter selling {sold} item"
+                       f"{'s' if sold != 1 else ''}" + (", a Poachers' Den" if menu.poachers else "")
+                       + (", its own art)" if getattr(place, "art", b"") else ")")
+                       ) if menu is not None and place.town and not dungeon else ""
+            # (1.20.0) A town darkened once a quest's flag is set.
+            dark = getattr(place, "darkened", None)
+            if dark is not None and place.town and not dungeon:
+                entered += ", " + pe.DARK_SHORT.format(flag=dark.flag, quest=dark.quest)
+            kind = "a dungeon" if dungeon else "a town" if place.town else "a battle ground"
+            lines.append(f"{place.name}: {kind} at {place.x}, {place.y}, "
+                         f"shown with {shown}" + (", with a description" if place.description else "") + fought
+                         + entered)
+        for road in roads.values():
+            turns = len(road.via)
+            lines.append(f"{road.name}: from {pe.place_words(road.start)} to {pe.place_words(road.end)}, "
+                         f"{turns} turn{'s' if turns != 1 else ''}")
         return "\n".join(lines)
 
     def _script_summary(self) -> str:

@@ -88,7 +88,7 @@ class ModMetadata:
     built_against_table_versions: dict = field(default_factory=dict)
     built_against_clean_unpack: Optional[bool] = None
     # Whether the mod changes events' setup records (`state.setup_edits`),
-    # which the helper mod, Mod Studio Event Setup, applies: it is then
+    # which the helper mod, Mod Studio Framework, applies: it is then
     # among the mod's dependencies, with where Reloaded-II fetches it.
     event_setup: bool = False
 

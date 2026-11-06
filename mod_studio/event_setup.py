@@ -49,9 +49,11 @@ ENTD battle), deploy areas 1 and 2 (16 bits at 9 and 11, the squads below),
 a portrait and its unit (13, 14), the scene's units (16 bits at 15, a second
 ENTD battle), Ramza required (17), the next event (16 bits at 18), what
 follows (20: `WORLD_MAP` 0x80, `NEXT_EVENT` 0x81, `START_OVER` 0x82, 0 the
-script's say) and the battle rules (22, `EnhancedBattleEvent`'s Key; 0 to
-235 in Zodi's program). Bytes 21 and 23 are 0 in every record and aren't
-fields.
+script's say) and the battle rules (16 bits at 22, `EnhancedBattleEvent`'s
+Key, as the program reads them; 0 to 235 in Zodi's program, so byte 23 is
+0 in every record, as is byte 21, which isn't a field). Until the helper's
+1.1.0 the battle rules were byte 22 alone; the side quests' framework gives
+openings battle rules from 16384.
 
 **The deploy areas** are the program's squads (ATTACK.OUT's
 `deploy_squad_t`, `event_scripts.Squad`): 768 of 12 bytes, each ending in
@@ -62,7 +64,7 @@ deployment can be drawn, not only the PlayStation's.
 **What a mod gives the helper** (`FILE_NAME`): `EventSetup.json` at its top,
 per event only the fields it changes, named as `FIELDS` names them
 (`file_text`, `read_file_text`), and the helper among its dependencies
-(`modconfig`). The helper, Mod Studio Event Setup (`HELPER_ID`, its source in
+(`modconfig`). The helper, Mod Studio Framework (`HELPER_ID`, its source in
 `helper/`, built into `tools/ModStudioEventSetup/`), applies every enabled
 mod's file as the game starts, the later in Reloaded-II's order winning a
 field two mods change, and the game's own values kept where no mod says
@@ -107,10 +109,16 @@ SQUAD_BYTES, SQUAD_MOST = 12, 0x300
 SQUADS_IN_A_ROW = re.compile(rb".{10}\x00\x01.{10}\x01\x01.{10}\x02\x01", re.DOTALL)
 
 #: The helper (Zodi, 21 October: its name "Mod Studio Event Setup", its own
-#: release and a copy in Mod Studio).
+#: release and a copy in Mod Studio; 2 November, his eighth: renamed Mod
+#: Studio Framework, "now that it is more of a modding framework", its mod
+#: id kept, so every mod made before still names it).
 HELPER_ID = "fftivc.utility.modstudio.eventsetup"
-HELPER_NAME = "Mod Studio Event Setup"
-HELPER_VERSION = "1.0.2"
+HELPER_NAME = "Mod Studio Framework"
+#: (1.22.0) Its description in Reloaded-II, his: short, and where it goes in the load order.
+HELPER_DESCRIPTION = ("Needed by mods made with The Ivalice Chronicles Mod Studio: it adds their side quests, places, "
+                      "roads, dungeons, maps and event changes to the game. Place it directly after the mod loader in "
+                      "your load order.")
+HELPER_VERSION = "1.35.1"
 #: Where Mod Studio keeps its built copy, from the project's folder.
 HELPER_FOLDER = "tools/ModStudioEventSetup"
 #: Where Reloaded-II fetches it for a player whose mod needs it: its own
@@ -179,7 +187,7 @@ FIELDS = (
     Field("RamzaRequired", 17),
     Field("NextEvent", 18, 2),
     Field("AfterEvent", 20),
-    Field("BattleRules", 22),
+    Field("BattleRules", 22, 2),
 )
 #: The fields by name, without case (as the helper matches them).
 FIELD_BY_KEY = {f.key.lower(): f for f in FIELDS}
@@ -608,7 +616,10 @@ def install_helper(project_root, mods_folder) -> str:
         return "kept"
     target = Path(mods_folder) / HELPER_ID
     target.mkdir(parents=True, exist_ok=True)
-    for path in sorted(source.iterdir()):
+    # Its files and, since 1.2.5, its folders' (the side quests' marker's picture, at the game's paths).
+    for path in sorted(source.rglob("*")):
         if path.is_file():
-            shutil.copy2(path, target / path.name)
+            copy = target / path.relative_to(source)
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, copy)
     return "installed" if there is None else "updated"

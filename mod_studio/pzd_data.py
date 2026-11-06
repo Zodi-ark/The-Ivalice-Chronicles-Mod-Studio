@@ -182,6 +182,45 @@ def read_pzd(path: Path) -> list:
     return read_pzd_bytes(Path(path).read_bytes())
 
 
+def write_pzd_bytes(lines: list) -> bytes:
+    """
+    (28 October) A `.pzd` holding `lines` (`PzdLine`s), laid out as the game's
+    scene words files and WotL Restoration's are: the header (0x30 bytes), the
+    entries (0x20 each, their strings pointed at from the entry's own start),
+    then each string once, NUL-terminated, the empty one first. The side
+    quests' words files (`quest_edits`) are written so, by Mod Studio itself:
+    the layout was read from WotL Restoration's 15 scene files as data, and
+    this gives every one of them back byte for byte
+    (`dev/research/sidequests/scene_words.py`, whose writer this is).
+    `read_pzd_bytes` reads back what it wrote.
+    """
+    count = len(lines)
+    head = bytearray(PZD_ARRAY_HEADER_OFFSET + 0x10)
+    head[0:4] = PZD_MAGIC
+    struct.pack_into("<i", head, 4, PZD_VERSION)
+    struct.pack_into("<ii", head, PZD_ARRAY_HEADER_OFFSET, len(head), count)
+    entries = bytearray(PZD_ENTRY_SIZE * count)
+    pool = bytearray(b"\0")
+    pool_at = len(head) + PZD_ENTRY_SIZE * count
+    where = {"": pool_at}
+
+    def place(text: str) -> int:
+        if text not in where:
+            where[text] = pool_at + len(pool)
+            pool.extend(text.encode("utf-8") + b"\0")
+        return where[text]
+
+    texts = [place(line.line) for line in lines]
+    voices = [place(line.voice_sound_path) for line in lines]
+    shorts = [place(line.short_voice_sound_path) for line in lines]
+    for index, line in enumerate(lines):
+        entry = len(head) + PZD_ENTRY_SIZE * index
+        struct.pack_into("<IiHHIiiii", entries, PZD_ENTRY_SIZE * index, line.line_id, texts[index] - entry,
+                         line.speaker_type & 0xFFFF, 0, line.speaker_value & 0xFFFFFFFF, voices[index] - entry,
+                         line.show_type, shorts[index] - entry, int(bool(line.is_shortened)))
+    return bytes(head + entries + pool)
+
+
 def _yaml_scalar(value) -> str:
     """
     One YAML scalar, always double-quoted for strings.

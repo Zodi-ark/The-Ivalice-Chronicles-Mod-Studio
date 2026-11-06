@@ -96,6 +96,10 @@ EDIT_TABS = [
     # After the Map Editor, where the mock-up Zodi approved put it (13 and
     # 19 October): the events played on the maps it draws.
     "Event Editor",
+    # After the Event Editor, where the mock-up Zodi signed off put it (28
+    # October): a mod's side quests, their events, battles and places; named
+    # New Content on 3 November (his choice: it makes items and rumors too).
+    "New Content",
     "Sounds",
 
     # Last, and one entry rather than 550. The tables above have hand-built

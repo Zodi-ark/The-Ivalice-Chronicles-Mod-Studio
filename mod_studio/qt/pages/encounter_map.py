@@ -33,6 +33,12 @@ mock-up the same day.
   says so; Trade a row is beside it. A drag anywhere else turns the map, as
   in the Map Editor.
 
+- **Deploy areas** (the Side Quests page's battles, Mod Studio Framework
+  1.14.0): the page may give the squares where the player's units start
+  (`set_deploy`), drawn under the units in each area's colour with a wedge
+  the way they face, and take a tile clicked where no unit was
+  (`tile_clicked`) to add a square or take one out.
+
 The page supplies the units (`units_of`): their place, facing and sprite
 are its effective values, pending edits included. Everything is read from
 the unpacked game; without the Textures unpack there is no map, as on
@@ -152,6 +158,25 @@ class MapUnit:
     empty: bool = False
 
 
+@dataclass
+class DeployMark:
+    """(The Side Quests page, Mod Studio Framework 1.14.0) A deploy area drawn under the units: the squares the
+    player's units may start on, the way they face there."""
+    number: int                # 1 or 2
+    squares: list              # [(x, y)]
+    upper: bool                # on its squares' upper level
+    facing: int                # 0 south, 1 west, 2 north, 3 east
+    picked: bool               # the area a tile clicked adds to or takes from
+    own: bool                  # the battle's own (else a squad of the game's, drawn as it is)
+    label: str = ""            # its words in the legend: "Deploy area 1, 4 units facing north"
+
+
+#: A deploy area's colour, by its number, and how strong its squares are drawn: the area a click changes, the other.
+DEPLOY_COLOURS = {1: "#4f9cf2", 2: "#f0b43c"}
+DEPLOY_PICKED, DEPLOY_OTHER = 120, 70
+OFF_MAP = "Deploy area {n}'s square {x}, {y} isn't on this map, so no unit can start there."
+
+
 class SpriteWorker(Worker):
     """Draws units' waiting animations off the GUI thread: `({(sprite, palette): Idle or None}, problem)`."""
 
@@ -184,6 +209,8 @@ class EncounterMap(QWidget):
     unit_picked = Signal(tuple)
     #: A unit was dropped on another tile: its `(battle, slot)`, then X, Y and level.
     unit_moved = Signal(tuple, int, int, int)
+    #: (1.14.0) A tile was clicked where no unit was taken (or with Ctrl held): its X, Y and level.
+    tile_clicked = Signal(int, int, int)
 
     def __init__(self, state, units_of: Callable[[int], list], name_of: Callable[[int], str],
                  parent=None):
@@ -214,6 +241,7 @@ class EncounterMap(QWidget):
         self.view.show_info = False
         self.view.overlay = self.paint_units
         self.view.grabber = self
+        self.view.tile_clicked.connect(self._tile_clicked)
         self.view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.view.setMinimumSize(MAP_LEAST, MAP_LEAST)
         column.addWidget(self.view, 1)
@@ -237,6 +265,8 @@ class EncounterMap(QWidget):
         #: The battle shown, its units, the slot picked, and the map drawn.
         self.battle = None
         self.units: list = []
+        #: (1.14.0) Its deploy areas drawn under its units (`DeployMark`), the page's to give (`set_deploy`).
+        self.deploy: list = []
         self.selected = None
         self.shown_map = None
         self._shown_look = None
@@ -470,12 +500,14 @@ class EncounterMap(QWidget):
 
     def _update_legend(self) -> None:
         shown = [u for u in self.units if not u.empty]
-        if self.view.scene is None or not shown:
+        if self.view.scene is None or not (shown or self.deploy):
             self.legend.setText("")
             self.legend.setVisible(False)
             return
         parts = [f'<span style="color:{TEAM_COLOURS[team]};">&#9679;</span>&nbsp;{TEAM_NAMES[team]}'
                  for team in sorted({u.team for u in shown})]
+        parts += [f'<span style="color:{DEPLOY_COLOURS.get(mark.number, DEPLOY_COLOURS[1])};">&#9632;</span>'
+                  f'&nbsp;{mark.label}' for mark in self.deploy if mark.label]
         if any(u.randomly_present for u in shown):
             parts.append("<b>?</b>&nbsp;Randomly present: may not appear in the battle")
         if any(u.disabled for u in shown):
@@ -502,8 +534,59 @@ class EncounterMap(QWidget):
                 notes.append(NO_PICTURE.format(where, picked.sprite))
         if self.sprite_problem and self.units:
             notes.append(NO_SPRITES.format(self.sprite_problem))
+        if self.view.scene is not None:
+            notes += [OFF_MAP.format(n=mark.number, x=x, y=y)
+                      for mark, (x, y), tile in self.deploy_tiles() if tile is None][:2]
         self.note.setText(" ".join(notes))
         self.note.setVisible(bool(notes))
+
+    # -- deploy areas (1.14.0) -------------------------------------------------------------
+
+    def set_deploy(self, marks: list) -> None:
+        """The deploy areas drawn under the battle's units (`DeployMark`), none to draw none."""
+        self.deploy = list(marks)
+        self._update_legend()
+        self._say_note()
+        self.view.update()
+
+    def deploy_tiles(self) -> list:
+        """`[(mark, (x, y), tile or None)]`: each deploy area's squares and the map's tile it is drawn on (on the
+        upper level its squares' level is, else the ground, as a unit's), None off the map."""
+        out = []
+        for mark in self.deploy:
+            for x, y in mark.squares:
+                tile = None
+                if self.view.scene is not None:
+                    tile = self.view.tile((x, y, int(mark.upper)))
+                    if mark.upper and (tile is None or not ms.shows(tile) or tile.no_cursor):
+                        tile = self.view.tile((x, y, 0))
+                    if tile is not None and not ms.shows(tile):
+                        tile = None
+                out.append((mark, (x, y), tile))
+        return out
+
+    def _paint_deploy(self, p: QPainter) -> None:
+        """Each deploy area's squares in its colour (the area a click changes the stronger, a squad of the game's
+        edged with dashes), a wedge on each the way its units face."""
+        for mark, _square, tile in self.deploy_tiles():
+            if tile is None:
+                continue
+            colour = QColor(DEPLOY_COLOURS.get(mark.number, DEPLOY_COLOURS[1]))
+            fill = QColor(colour)
+            fill.setAlpha(DEPLOY_PICKED if mark.picked else DEPLOY_OTHER)
+            pen = QPen(colour, 2.0 if mark.picked else 1.4)
+            if not mark.own:
+                pen.setStyle(Qt.DashLine)
+            p.setPen(pen)
+            p.setBrush(fill)
+            p.drawPolygon(QPolygonF([self._project(c) for c in ms.tile_corners(tile, 0.3)]))
+            edge = QColor(colour)
+            edge.setAlpha(230)
+            self._wedge(p, tile, mark.facing, edge)
+
+    def _tile_clicked(self, key, _add: bool) -> None:
+        if key is not None and self.battle is not None:
+            self.tile_clicked.emit(int(key[0]), int(key[1]), int(key[2]))
 
     # -- sprites ------------------------------------------------------------------------
 
@@ -614,6 +697,8 @@ class EncounterMap(QWidget):
         ticks = int((self.clock() - self._started) * TICKS_A_SECOND)
         placed = self.placed_units()
         drawn = []
+        # (1.14.0) The deploy areas' squares under everything.
+        self._paint_deploy(p)
         # The tiles first: the picked one gold, shared ones outlined.
         shared = {}
         for unit, world, tile, n, count in placed:
@@ -735,12 +820,19 @@ class EncounterMap(QWidget):
         _point, tile = self._ground(unit)
         if tile is None:
             return None
+        fill = QColor(PICKED_EDGE) if unit.address == self.selected else QColor(colour)
+        fill.setAlpha(245 if unit.address == self.selected else 140)
+        return self._wedge(p, tile, unit.facing, fill)
+
+    def _wedge(self, p: QPainter, tile, facing: int, fill: QColor) -> QPointF:
+        """A small wedge on `tile`, from its middle towards the edge `facing` (0 south, 1 west, 2 north, 3 east): its
+        tip."""
         corners = ms.tile_corners(tile, 0.6)
         middle = tuple(sum(c[i] for c in corners) / 4 for i in range(3))
         # The tile's corners are (x0, z0), (x1, z0), (x1, z1), (x0, z1): its
         # south edge is the first two, west the last and first, north the
         # last two, east the middle two.
-        a, b = {0: (0, 1), 1: (3, 0), 2: (2, 3), 3: (1, 2)}[unit.facing & 3]
+        a, b = {0: (0, 1), 1: (3, 0), 2: (2, 3), 3: (1, 2)}[facing & 3]
         edge = tuple((corners[a][i] + corners[b][i]) / 2 for i in range(3))
         towards = tuple(edge[i] - middle[i] for i in range(3))
         across = tuple((corners[b][i] - corners[a][i]) * 0.16 for i in range(3))
@@ -748,8 +840,6 @@ class EncounterMap(QWidget):
         base = tuple(middle[i] + towards[i] * 0.55 for i in range(3))
         points = [self._project(tip), self._project(tuple(base[i] + across[i] for i in range(3))),
                   self._project(tuple(base[i] - across[i] for i in range(3)))]
-        fill = QColor(PICKED_EDGE) if unit.address == self.selected else QColor(colour)
-        fill.setAlpha(245 if unit.address == self.selected else 140)
         p.setPen(QPen(QColor(20, 20, 20, 170), 1))
         p.setBrush(fill)
         p.drawPolygon(QPolygonF(points))

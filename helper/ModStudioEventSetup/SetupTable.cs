@@ -1,4 +1,4 @@
-// Mod Studio Event Setup: finding the game's event setup table and changing
+// Mod Studio Framework: finding the game's event setup table and changing
 // its records. Part of The Ivalice Chronicles Mod Studio, GPL-3.0.
 //
 // Everything here works on the game's program as it lies in memory (each
@@ -74,7 +74,9 @@ namespace ModStudioEventSetup
             new Field("RamzaRequired", 17),
             new Field("NextEvent", 18, 2),
             new Field("AfterEvent", 20),
-            new Field("BattleRules", 22),
+            // Bytes 22 and 23, one 16-bit number as the program reads it (1.1.0; 1.0.x wrote byte
+            // 22 alone, every record of the game's having 23 zero).
+            new Field("BattleRules", 22, 2),
         };
 
         /// <summary>A field by its name, without case; null for none.</summary>

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -32,8 +33,10 @@ LIGHT_FILE = "light.json"
 EVERY = "Every lighting"
 
 
-def light_folder(number: int) -> Path:
-    return paths.local_data_dir() / LIGHT_FOLDER / f"map_{number:03d}"
+def light_folder(number: int, root: Optional[Path] = None) -> Path:
+    """Where map `number`'s light and the textures made with it are kept: in Mod Studio's own folder, or a quest
+    map's working folder (`root`, `MapEditorPage.working_root`)."""
+    return (root or paths.local_data_dir()) / LIGHT_FOLDER / f"map_{number:03d}"
 
 
 #: The key `light.json` keeps the border's color under, beside the light's
@@ -41,26 +44,28 @@ def light_folder(number: int) -> Path:
 BORDER_KEY = "border_colour"
 
 
-def saved_light(number: int) -> ml.Light:
-    """The light last made for map `number`, or the default."""
+def saved_light(number: int, root: Optional[Path] = None) -> ml.Light:
+    """The light last made for map `number` (in `root`, as `light_folder`), or the default."""
     try:
-        return ml.Light.from_dict(json.loads((light_folder(number) / LIGHT_FILE).read_text(encoding="utf-8")))
+        return ml.Light.from_dict(json.loads((light_folder(number, root) / LIGHT_FILE).read_text(
+            encoding="utf-8")))
     except (OSError, ValueError, TypeError):
         return ml.Light()
 
 
-def saved_border(number: int):
-    """The border's color last made for map `number` (`(r, g, b)`), or None."""
+def saved_border(number: int, root: Optional[Path] = None):
+    """The border's color last made for map `number` (`(r, g, b)`; in `root`, as `light_folder`), or None."""
     try:
-        colour = json.loads((light_folder(number) / LIGHT_FILE).read_text(encoding="utf-8")).get(BORDER_KEY)
+        colour = json.loads((light_folder(number, root) / LIGHT_FILE).read_text(encoding="utf-8")).get(BORDER_KEY)
         return tuple(int(c) for c in colour)[:3] if colour and len(colour) >= 3 else None
     except (OSError, ValueError, TypeError, AttributeError):
         return None
 
 
-def save_light(number: int, light: ml.Light, border=None) -> None:
-    """Keeps map `number`'s light, and the border's color when given (`saved_border`)."""
-    folder = light_folder(number)
+def save_light(number: int, light: ml.Light, border=None, root: Optional[Path] = None) -> None:
+    """Keeps map `number`'s light (in `root`, as `light_folder`), and the border's color when given
+    (`saved_border`)."""
+    folder = light_folder(number, root)
     folder.mkdir(parents=True, exist_ok=True)
     data = light.to_dict()
     if border is not None:
@@ -132,10 +137,13 @@ class LightDialog(QDialog):
         super().__init__(page)
         self.page = page
         self.number = page.number
+        #: The quest map lit, if one is shown (its light kept in its working folder), else None.
+        self.quest = getattr(page, "quest", None)
+        self.root = page.working_root() if hasattr(page, "working_root") else None
         self.busy = False
         self.setWindowTitle(f"Light map {self.number:03d}")
         self.setModal(False)
-        light = saved_light(self.number)
+        light = saved_light(self.number, self.root)
         layout = QVBoxLayout(self)
         intro = QLabel("Makes the map's lighting textures, its border texture and its units' lighting "
                        "from a sun, the sky and lamps. Preview draws them on the map; Make puts them "
@@ -214,7 +222,7 @@ class LightDialog(QDialog):
         row.setContentsMargins(0, 0, 0, 0)
         self.make_border = QCheckBox("The border's texture, in")
         self.make_border.setChecked(True)
-        self.border_colour = ColourButton(saved_border(self.number) or self._ground_colour(), "The border's color")
+        self.border_colour = ColourButton(saved_border(self.number, self.root) or self._ground_colour(), "The border's color")
         row.addWidget(self.make_border)
         row.addWidget(self.border_colour)
         row.addStretch(1)
@@ -301,10 +309,12 @@ class LightDialog(QDialog):
     # -- making it -------------------------------------------------------------------
 
     def run(self, preview: bool) -> None:
-        if self.busy or self.page.number != self.number:
-            if self.page.number != self.number:
+        moved = (self.page.number, getattr(self.page, "quest", None)) != (self.number, self.quest)
+        if self.busy or moved:
+            if moved:
                 self.note.setText(f"The Map Editor shows another map now: open Light the map from map "
-                                  f"{self.page.number:03d}.")
+                                  f"{self.page.number:03d}." if self.page.number is not None
+                                  else "The Map Editor shows no map now.")
             return
         if not (self.make_lighting.isChecked() or self.make_border.isChecked() or self.make_units.isChecked()):
             self.note.setText("Tick at least one thing to make.")
@@ -318,7 +328,7 @@ class LightDialog(QDialog):
                          border=self.make_border.isChecked(), border_tint=self.border_colour.colour,
                          units=self.make_units.isChecked(),
                          quality="preview" if preview else "full", resolution=256 if preview else 1024)
-        folder = light_folder(self.number) / ("preview" if preview else "made")
+        folder = light_folder(self.number, self.root) / ("preview" if preview else "made")
         self.busy = True
         self._buttons()
         self.progress.setVisible(True)
@@ -341,12 +351,16 @@ class LightDialog(QDialog):
         self.busy = False
         self._buttons()
         self.progress.setVisible(False)
+        if (self.page.number, getattr(self.page, "quest", None)) != (self.number, self.quest):
+            # Another map shown while it was made: what was made is for this dialog's, so it isn't put in.
+            self.note.setText("The Map Editor shows another map now, so what was made isn't put in.")
+            return
         which = self.which.currentData()
         if self._preview:
             self.page.set_light_preview(self.number, files, made.rows, which)
             self.note.setText(f"Preview drawn: {len(files)} textures. Make puts them in your mod.")
         else:
-            save_light(self.number, self.light(), self.border_colour.colour)
+            save_light(self.number, self.light(), self.border_colour.colour, self.root)
             self.page.put_light(self.number, made, files, which)
             self.note.setText(f"Made {len(files)} textures" + (f" and {sum(len(f) for f in made.rows.values())} "
                                                               f"table rows" if made.rows else "")

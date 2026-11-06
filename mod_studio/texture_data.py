@@ -878,6 +878,42 @@ def tex_as_dds(tex: bytes, max_packed: Optional[int] = None) -> bytes:
     return bytes(header) + bytes(first_mip)
 
 
+#: (26 October) The .tex Mod Studio writes itself (`rgba_tex`): laid out as the plain-RGBA .tex files
+#: mods ship (FF16Tools' img-conv's, e.g. a texture pack's 48x48 button icons): the header, the
+#: picture's flags and colour as theirs, its rows padded to 256 bytes, one chunk.
+_RGBA_TEX_HEADER = b"TEX \x04\x01\x0b\x00"
+_RGBA_TEX_FLAGS, _RGBA_TEX_FORMAT, _RGBA_TEX_DATA = 0xFFFFFF01, 0xA1450, 0x60
+
+
+def rgba_tex(img) -> bytes:
+    """
+    A .tex of one picture (a `PIL.Image`), plain RGBA (R8G8B8A8_UNORM), one
+    mip, in one chunk stored as it is: its packed size given as its size,
+    which is how a stored chunk is told from a packed one (FF16Tools: "This
+    is how the game checks"; `tex_as_dds` reads it so). Written for Mod Studio
+    Framework's quest marker (1.2.5), FF16Tools not being at hand where the
+    helper is built; whether the game takes a stored chunk is checked by the
+    first test that ships one (Zodi's test 20).
+    """
+    img = img.convert("RGBA")
+    width, height = img.size
+    if not (0 < width <= 0xFFFF and 0 < height <= 0xFFFF):
+        raise ValueError(f"a picture of {width}x{height} can't be a .tex")
+    pitch = width * 4
+    stride = (pitch + 255) & ~255
+    pixels = img.tobytes()
+    data = b"".join(pixels[row * pitch:(row + 1) * pitch] + bytes(stride - pitch) for row in range(height))
+    head = bytearray(_RGBA_TEX_DATA)
+    head[0:8] = _RGBA_TEX_HEADER
+    head[8] = 1                                                  # one picture
+    struct.pack_into("<H", head, 10, 1)                          # one chunk
+    struct.pack_into("<I", head, 0x14, 3)
+    struct.pack_into("<IIHHHHIIIHH", head, 0x28, _RGBA_TEX_FLAGS, _RGBA_TEX_FORMAT, 1, width, height, 1,
+                     _RGBA_TEX_DATA, len(data), 0xFFFFFFFF, 0, 1)
+    struct.pack_into("<IIII", head, 0x48, _RGBA_TEX_DATA, len(data) << 2, len(data), 0)
+    return bytes(head) + data
+
+
 def decode_tex_in_process(path: Path, max_packed: Optional[int] = IN_PROCESS_MAX_PACKED_BYTES):
     """
     A .tex as an RGBA `PIL.Image`, read in Python - the same pixels

@@ -1,16 +1,24 @@
 """
-Builds Mod Studio Event Setup, the helper mod (Zodi, 21 October: "One
+Builds Mod Studio Framework, the helper mod (Zodi, 21 October: "One
 shared helper mod", called "Mod Studio Event Setup", "Its own release, and
-in Mod Studio"), into `tools/ModStudioEventSetup/`: the copy Mod Studio
+in Mod Studio"; renamed 2 November, his eighth, its mod id and its files'
+names kept), into `tools/ModStudioEventSetup/`: the copy Mod Studio
 ships and puts in Reloaded-II for an author's own testing, and what its own
 release is made from.
 
-    python3 helper/build.py <Reloaded.Mod.Interfaces.dll>
+    python3 helper/build.py <Reloaded.Mod.Interfaces.dll> \
+        <Reloaded.Hooks.Definitions.dll> <Reloaded.Hooks.ReloadedII.Interfaces.dll>
 
-Needs the .NET 8 SDK. The DLL is Reloaded-II's interfaces (GPL-3.0): the
-one in `reloaded.mod.interfaces.2.5.0.nupkg`, a zip, under
-`lib/netcoreapp3.1/` (or 2.4.0's). Built in a copy of the source in a
-scratch folder, so no `bin/` or `obj/` lands in the project.
+Needs the .NET 8 SDK. The first DLL is Reloaded-II's interfaces (GPL-3.0):
+the one in `reloaded.mod.interfaces.2.5.0.nupkg`, a zip, under
+`lib/netcoreapp3.1/` (or 2.4.0's). The other two (1.1.0, for the side
+quests' hooks) are Reloaded-II's shared hooks' interfaces (LGPL-3.0), which
+ship beside the helper as WotL Restoration carries them:
+`reloaded.hooks.definitions.1.11.0.nupkg`'s `lib/net6.0/` and
+`reloaded.sharedlib.hooks.1.9.0.nupkg`'s `lib/netstandard2.0/`, with their
+license (LGPL-3.0's text, in the helper's `NOTICE.md`) and the helper's own
+(`LICENSE`, Mod Studio's GPL-3.0) beside them. Built in a copy of the source
+in a scratch folder, so no `bin/` or `obj/` lands in the project.
 Deterministic: the same source makes the same DLL byte for byte wherever it
 is built (`dev/test_event_setup.py` checks that the shipped one is this
 source's).
@@ -23,9 +31,11 @@ Reloaded-II from before 1.30, so the build compiles against a copy of the
 interfaces whose own version reads 2.4.0 (`interfaces_reference`). The
 helper uses nothing 2.5.0 added (2.5.0 added to mods' configuration
 settings): its mod entry, the loader's GetLogger, GetActiveMods,
-ModLoaded, OnModLoaderInitialized and GetDirectoryForModId, the mod
-configuration's ModId and ModName, and the logger's WriteLine and
-PrintMessage, all there since Reloaded-II's interfaces 2.0. The copy is
+ModLoaded, OnModLoaderInitialized, GetController and
+GetDirectoryForModId, the mod configuration's ModId and ModName, and the
+logger's WriteLine and PrintMessage, all there since Reloaded-II's
+interfaces 2.0; and, where the loader has it, GetModConfigDirectory (the
+side quests' numbers' folder, 1.1.0), else its own folder. The copy is
 made in the scratch folder and never ships.
 """
 from __future__ import annotations
@@ -39,8 +49,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 #: What the build puts in Mod Studio's copy.
-SHIPPED = ("ModConfig.json", "ModStudioEventSetup.dll", "ModStudioEventSetup.deps.json", "Preview.png")
+SHIPPED = ("ModConfig.json", "ModStudioEventSetup.dll", "ModStudioEventSetup.deps.json", "Preview.png",
+           "Reloaded.Hooks.Definitions.dll", "Reloaded.Hooks.ReloadedII.Interfaces.dll")
+#: The licenses it carries (1.2.0): each one's name beside it and its file in Mod Studio's folder. The
+#: hooks' interfaces are LGPL-3.0, whose text goes with them, and the GPL's with it.
+LICENSES = {"LICENSE": "LICENSE", "NOTICE.md": "helper/NOTICE.md"}
+#: (1.2.5) What it gives the game besides its program, at the game's paths (the mod loader serves a mod's
+#: FFTIVC folder): the side quests' marker's picture and its part list
+#: (dev/research/sidequests/make_marker_picture.py).
+DATA = {
+    "FFTIVC/data/enhanced/ui/ffto/worldmap/texture/msq_quest_marker_uitx.tex": "helper/marker/msq_quest_marker_uitx.tex",
+    "FFTIVC/data/enhanced/ui/ffto/worldmap/textureparts/msq_quest_marker_uitx.utexpt":
+        "helper/marker/msq_quest_marker_uitx.utexpt",
+}
 INTERFACES_NAME = "Reloaded.Mod.Interfaces"
+#: The shared hooks' interfaces the helper carries (1.1.0): each DLL's name and version.
+HOOKS = {"Reloaded.Hooks.Definitions": (1, 11, 0, 0), "Reloaded.Hooks.ReloadedII.Interfaces": (1, 9, 0, 0)}
 #: The interfaces version the helper asks Reloaded-II for (see above).
 REFERENCE_VERSION = (2, 4, 0, 0)
 
@@ -239,11 +263,38 @@ def interfaces_reference(interfaces: Path, folder: Path) -> Path:
     return copy
 
 
-def build(root: Path, interfaces: Path, out: Path, project: str = "ModStudioEventSetup") -> subprocess.CompletedProcess:
+def hooks_folder(hooks: list, folder: Path) -> Path:
+    """
+    A folder in `folder` holding the shared hooks' two interface DLLs, each
+    checked to be the one `HOOKS` names at its version.
+    """
+    found = {}
+    for path in hooks:
+        name, version = assembly(Path(path).read_bytes())
+        if HOOKS.get(name) != version:
+            raise ValueError(f"{path} is {name} {'.'.join(map(str, version))}, not one of the shared hooks' "
+                             f"interfaces the helper carries")
+        found[name] = Path(path)
+    if set(found) != set(HOOKS):
+        raise ValueError(f"the shared hooks' interfaces given are {sorted(found)}, not {sorted(HOOKS)}")
+    target = folder / "hooks"
+    target.mkdir(parents=True, exist_ok=True)
+    for name, path in found.items():
+        shutil.copy2(path, target / f"{name}.dll")
+    return target
+
+
+def build(root: Path, interfaces: Path, out: Path, project: str = "ModStudioEventSetup",
+          hooks: list | None = None) -> subprocess.CompletedProcess:
     """
     Builds `helper/<project>` of the project at `root` into `out`, in a
     scratch copy laid out as the project is (the helper beside `assets/`).
+    `hooks`: the shared hooks' two interface DLLs (the helper's project needs
+    them; the checks' don't). Paths are taken from where this runs: `dotnet`
+    runs in the scratch copy, so `out` and `interfaces` are made absolute
+    first (a relative `out` would build into the copy, deleted after).
     """
+    out, interfaces = Path(out).resolve(), Path(interfaces).resolve()
     with tempfile.TemporaryDirectory(prefix="helper_build_") as scratch:
         copy = Path(scratch) / "project"
         shutil.copytree(root / "helper", copy / "helper",
@@ -251,19 +302,22 @@ def build(root: Path, interfaces: Path, out: Path, project: str = "ModStudioEven
         (copy / "assets").mkdir()
         shutil.copy2(root / "assets" / "icon_256.png", copy / "assets" / "icon_256.png")
         reference = interfaces_reference(interfaces, Path(scratch)) if interfaces.is_file() else interfaces
-        return subprocess.run(
-            ["dotnet", "build", "-c", "Release", "-nologo", "-o", str(out),
-             f"-p:ReloadedInterfaces={reference}"],
-            cwd=str(copy / "helper" / project), capture_output=True, text=True, timeout=600)
+        command = ["dotnet", "build", "-c", "Release", "-nologo", "-o", str(out),
+                   f"-p:ReloadedInterfaces={reference}"]
+        if hooks:
+            command.append(f"-p:ReloadedHooks={hooks_folder(hooks, Path(scratch))}")
+        return subprocess.run(command, cwd=str(copy / "helper" / project), capture_output=True, text=True,
+                              timeout=600)
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    if len(sys.argv) != 4:
         print(__doc__)
         return 2
     interfaces = Path(sys.argv[1]).resolve()
+    hooks = [Path(p).resolve() for p in sys.argv[2:4]]
     with tempfile.TemporaryDirectory(prefix="helper_out_") as out:
-        done = build(ROOT, interfaces, Path(out))
+        done = build(ROOT, interfaces, Path(out), hooks=hooks)
         if done.returncode != 0:
             print(done.stdout + done.stderr)
             return 1
@@ -273,7 +327,12 @@ def main() -> int:
         target.mkdir(parents=True)
         for name in SHIPPED:
             shutil.copy2(Path(out) / name, target / name)
-    print(f"Built into {target}: {', '.join(SHIPPED)}")
+        for name, source in LICENSES.items():
+            shutil.copy2(ROOT / source, target / name)
+        for name, source in DATA.items():
+            (target / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / source, target / name)
+    print(f"Built into {target}: {', '.join(SHIPPED + tuple(LICENSES) + tuple(DATA))}")
     return 0
 
 

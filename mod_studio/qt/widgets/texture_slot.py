@@ -151,10 +151,14 @@ class InlineTextureSlot(QWidget):
         view.setAlignment(Qt.AlignCenter)
         view.setMinimumSize(SLOT_PREVIEW_SIZE, SLOT_PREVIEW_SIZE)
         # The picture is a control, not decoration - the context menu is the
-        # gesture Zodi asked for.
-        view.setContextMenuPolicy(Qt.CustomContextMenu)
-        view.customContextMenuRequested.connect(
-            lambda point, source=view: self._show_menu(source, point))
+        # gesture Zodi asked for. (4 November, of the New Content page's
+        # item card: "right clicking anywhere in it's preview box should
+        # bring up the context menu not just directly on the image") The
+        # whole panel answers it, its caption and margins too.
+        for source in (box, view):
+            source.setContextMenuPolicy(Qt.CustomContextMenu)
+            source.customContextMenuRequested.connect(
+                lambda point, s=source: self._show_menu(s, point))
         inner.addWidget(view)
         return {"box": box, "view": view}
 

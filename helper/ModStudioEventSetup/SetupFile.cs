@@ -1,4 +1,4 @@
-// Mod Studio Event Setup: reading a mod's EventSetup.json. Part of The
+// Mod Studio Framework: reading a mod's EventSetup.json. Part of The
 // Ivalice Chronicles Mod Studio, GPL-3.0.
 //
 // The file Mod Studio writes (mod_studio/event_setup.py's file_text), read

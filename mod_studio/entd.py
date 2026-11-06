@@ -284,7 +284,99 @@ def read_unit(block: bytes, event_id: int = -1, slot: int = -1) -> EventUnit:
     values["always_present"] = bool(block[24] & 0x80)
     values["randomly_present"] = bool(block[24] & 0x40)
     values["team"] = (block[24] >> 4) & 0x03
+    # (28 October) Every other flag too, by its name (`FLAG_FIELDS`).
+    for name, (offset, mask) in FLAG_FIELDS.items():
+        values[name] = bool(block[offset] & mask)
     return EventUnit(event_id=event_id, slot=slot, values=values)
+
+
+# =============================================================================
+# Writing a unit (28 October: a side quest's own battles, every field of a unit
+# the Side Quests page changes; Zodi: "they should have every option available
+# to them")
+# =============================================================================
+
+#: Each flag of a unit's 40 bytes by its name: `(byte, bit)`. FFTPatcher's
+#: `EventUnit` (Glain, GPL-3, `Datatypes/ENTD/EventUnit.cs`, read for its
+#: facts as the table above was), whose `CopyByteToBooleans` takes a byte's
+#: top bit first: byte 1 is Male, Female, Monster, JoinAfterEvent,
+#: LoadFormation, ZodiacMonster, Blank2, SaveFormation; byte 24 AlwaysPresent,
+#: RandomlyPresent, the team's two bits, Control, Immortal, Blank6, Blank7;
+#: byte 35 Blank8, FocusUnit, StayNearXY, Aggressive, Defensive, Blank9 to 11;
+#: byte 38 Blank12 to 16, SaveCT, Blank17, Blank18. Byte 27's top bit is the
+#: upper level. FFTPatcher's "blanks" are flags nobody has named: here they
+#: are kept by their byte and bit (`flag_35_80`), as nothing invents a meaning.
+FLAG_FIELDS = {
+    "male": (1, 0x80), "female": (1, 0x40), "monster": (1, 0x20), "join_after_event": (1, 0x10),
+    "load_formation": (1, 0x08), "zodiac_monster": (1, 0x04), "flag_1_02": (1, 0x02), "save_formation": (1, 0x01),
+    "always_present": (24, 0x80), "randomly_present": (24, 0x40), "control": (24, 0x08), "immortal": (24, 0x04),
+    "flag_24_02": (24, 0x02), "flag_24_01": (24, 0x01),
+    "upper_level": (27, 0x80),
+    "flag_35_80": (35, 0x80), "focus_unit": (35, 0x40), "stay_near_xy": (35, 0x20), "aggressive": (35, 0x10),
+    "defensive": (35, 0x08), "flag_35_04": (35, 0x04), "flag_35_02": (35, 0x02), "flag_35_01": (35, 0x01),
+    "flag_38_80": (38, 0x80), "flag_38_40": (38, 0x40), "flag_38_20": (38, 0x20), "flag_38_10": (38, 0x10),
+    "flag_38_08": (38, 0x08), "save_ct": (38, 0x04), "flag_38_02": (38, 0x02), "flag_38_01": (38, 0x01),
+}
+#: The flags nobody has named, in their bytes' order.
+UNNAMED_FLAGS = tuple(name for name in FLAG_FIELDS if name.startswith("flag_"))
+#: The team (byte 24's two bits under its top two): 0 blue, 1 red, 2 green, 3 light blue.
+TEAM_OFFSET, TEAM_MASK, TEAM_SHIFT = 24, 0x30, 4
+#: The facing: byte 27 but its top bit (the upper level).
+FACING_OFFSET, FACING_MASK = 27, 0x7F
+#: Every field a unit is written by (`unit_with`): the bytes, the 16-bit ones, the flags, the team and the facing.
+WRITABLE_FIELDS = (tuple(name for name in BYTE_FIELDS if name not in ("flags1", "flags2", "facing_raw", "ai_flags",
+                                                                      "flags3"))
+                   + tuple(USHORT_FIELDS) + tuple(FLAG_FIELDS) + ("team", "facing"))
+
+
+def unit_with(block: bytes, **changes) -> bytes:
+    """
+    A unit's 40 bytes with fields changed by their names (`WRITABLE_FIELDS`):
+    a byte field 0 to 255, a 16-bit one 0 to 65535, a flag True or False, the
+    team 0 to 3 and the facing 0 to 127 (its upper level kept). Read back by
+    `read_unit`, each has the value written and every other byte is as it was.
+    """
+    if len(block) != UNIT_BYTES:
+        raise ValueError(f"a unit slot is {UNIT_BYTES} bytes, got {len(block)}")
+    out = bytearray(block)
+    for name, value in changes.items():
+        if name in FLAG_FIELDS:
+            offset, mask = FLAG_FIELDS[name]
+            out[offset] = (out[offset] | mask) if value else (out[offset] & ~mask & 0xFF)
+        elif name == "team":
+            if not 0 <= int(value) <= 3:
+                raise ValueError(f"a team is 0 to 3, not {value}")
+            out[TEAM_OFFSET] = (out[TEAM_OFFSET] & ~TEAM_MASK & 0xFF) | (int(value) << TEAM_SHIFT)
+        elif name == "facing":
+            if not 0 <= int(value) <= FACING_MASK:
+                raise ValueError(f"a facing is 0 to {FACING_MASK}, not {value}")
+            out[FACING_OFFSET] = (out[FACING_OFFSET] & ~FACING_MASK & 0xFF) | int(value)
+        elif name in USHORT_FIELDS:
+            if not 0 <= int(value) <= 0xFFFF:
+                raise ValueError(f"{name} is 0 to 65535, not {value}")
+            out[USHORT_FIELDS[name]:USHORT_FIELDS[name] + 2] = int(value).to_bytes(2, "little")
+        elif name in BYTE_FIELDS and name in WRITABLE_FIELDS:
+            if not 0 <= int(value) <= 0xFF:
+                raise ValueError(f"{name} is 0 to 255, not {value}")
+            out[BYTE_FIELDS[name]] = int(value)
+        else:
+            raise ValueError(f"a unit has no field {name} to write")
+    return bytes(out)
+
+
+def battle_with(block: bytes, slot: int, **changes) -> bytes:
+    """A battle's 640 bytes with one of its 16 units' fields changed (`unit_with`)."""
+    if len(block) != EVENT_BYTES or not 0 <= slot < UNITS_PER_EVENT:
+        raise ValueError(f"a battle is {EVENT_BYTES} bytes of {UNITS_PER_EVENT} units")
+    at = slot * UNIT_BYTES
+    return block[:at] + unit_with(block[at:at + UNIT_BYTES], **changes) + block[at + UNIT_BYTES:]
+
+
+def battle_units(block: bytes, battle: int = -1) -> list:
+    """A battle's 16 units (`EventUnit`), each slot whether it holds a unit or not."""
+    if len(block) != EVENT_BYTES:
+        raise ValueError(f"a battle is {EVENT_BYTES} bytes, got {len(block)}")
+    return [read_unit(block[s * UNIT_BYTES:(s + 1) * UNIT_BYTES], battle, s) for s in range(UNITS_PER_EVENT)]
 
 
 def find_entd_files(unpacked_dir) -> list:

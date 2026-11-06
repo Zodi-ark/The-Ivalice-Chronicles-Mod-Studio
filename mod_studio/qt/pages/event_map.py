@@ -26,7 +26,8 @@ second mock-up he answered "Yes build it" to).
 - **The speech box is the game's** (`event_balloon`): its pictures, laid
   out by its own layout files, as wide as its words, over the speaker with
   its tail to them; the name over its top left edge (a `<speaker="...">`
-  mark's, else the scene's), the words without their marks
+  mark's, else its Speaker row's, none for row 1's: Zodi's test 69 showed
+  the game names no box by its unit), the words without their marks
   (`event_words.spoken`), the face at its right blinking and talking. The
   face is `ui/ffto/common/face/texture/wldface_<sprite>_08_uitx.tex`'s
   eyes over its mouth, from the mod's own copy if it has one: WotL
@@ -509,7 +510,8 @@ class EventMap(QWidget):
     map_ready = Signal()
     #: Another map or battle was picked in the boxes.
     map_chosen = Signal(int)
-    battle_chosen = Signal(int)
+    #: A battle of the game's by its number, or (a side quest's scene, C) one of the quest's own ("battle", name).
+    battle_chosen = Signal(object)
     #: Playing forward with Voices ticked, a box opened: its `BoxShown`.
     voice_wanted = Signal(object)
     #: Paused, jumped or Voices unticked: what is playing stops.
@@ -791,7 +793,7 @@ class EventMap(QWidget):
     def _battle_picked(self, index: int) -> None:
         battle = self.battle_box.itemData(index)
         if battle is not None:
-            self.battle_chosen.emit(int(battle))
+            self.battle_chosen.emit(battle if isinstance(battle, str) else int(battle))
 
     # -- the map ----------------------------------------------------------------------
 
@@ -1967,7 +1969,9 @@ class EventMap(QWidget):
         face = None
         if pieces is not None:
             face = eb.face_image(pieces, eb.eye_part(since), self.mouth_now(box, said))
-        name = said.name or self.speaker(box.line) or self.names.get(box.unit)
+        # The name over the box as the game gives it (Zodi's test 69): its words' mark, else its Speaker row's (row
+        # 1's none), never its unit's.
+        name = said.name or self.speaker(box.line)
         kind = "round" if box.box & 0x04 else "normal"
         drawn = eb.draw(p, self.screen(), placed, kind, self._sheets, said.rich, name, face, since,
                         self.balloon_text, said.runs)

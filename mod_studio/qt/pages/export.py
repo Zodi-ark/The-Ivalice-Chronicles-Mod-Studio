@@ -34,6 +34,8 @@ from ... import constants as c
 from ... import map_classic as mc
 from ... import map_enhanced as me
 from ... import map_package as mpk
+from ... import quest_map_edits as qe
+from ... import quest_maps as qm
 from ... import modconfig, paths, reloaded, xml_io
 from ... import sound_data as sd, texture_data as td
 from ... import uib
@@ -54,17 +56,34 @@ from ..widgets.actions import reveal_in_file_manager, zip_folder
 CATEGORY_SUGGESTIONS = ["gameplay", "graphics", "audio", "characters",
                         "balance", "other"]
 
-#: The Event Editor's setup changes and their helper mod, Mod Studio Event
-#: Setup (Zodi, 21 October: "One shared helper mod", shipped "in Mod Studio").
+#: The Event Editor's setup changes and their helper mod, Mod Studio
+#: Framework (Zodi, 21 October: "One shared helper mod", shipped "in Mod Studio").
 SETUP_REMOVED = "Removed {file}: no event's setup is changed in this mod now."
-HELPER_PUT = ("Put {name} beside your mod, in {folder}: it applies your mod's event setup as the game "
-              "starts, and Reloaded-II loads it with your mod.")
+#: (1.28.0) Said when the game's weapons' looks file is taken out of the mod.
+LOOKS_REMOVED = "Removed {file}: the mod changes no game weapon's look now."
+HELPER_PUT = ("Put {name} beside your mod, in {folder}: as the game starts it applies your mod's event setup "
+              "and gives its side quests, quest maps and places numbers of their own, and Reloaded-II loads it "
+              "with your mod.")
 HELPER_UPDATED = "Updated {name} beside your mod, in {folder}, to version {version}."
 HELPER_NOT_PUT = ("{name} couldn't be put beside your mod ({problem}). Your mod needs it to change events' "
-                  "setup: copy Mod Studio's {folder} folder into Reloaded-II's mods.")
+                  "setup and to load its side quests, quest maps, places and roads: copy Mod Studio's {folder} "
+                  "folder into Reloaded-II's mods.")
 HELPER_NOTE = ("{name} ({helper}) is added for you too when the mod changes an event's setup on the Event "
-               "Editor: it applies those changes as the game starts.")
+               "Editor, or has side quests, quest maps, places or roads: it applies them as the game starts.")
 SETUP_FILE_LINE = "{file}, the events' setup this mod changes, which {name} applies"
+#: The mod's quest maps (`state.quest_maps`), in the summary of what the mod holds.
+QUEST_MAPS_LINE = "Quest maps ({folder}), which Mod Studio Framework gives map numbers of their own"
+#: The mod's side quests (`state.quests`), in the summary of what the mod holds.
+QUESTS_LINE = ("Side quests ({folder}) and their words (nxd/text/scenario), which Mod Studio Framework gives "
+               "numbers of their own")
+#: The mod's own places and roads (`state.places`, `state.roads`), in the summary of what the mod holds.
+PLACES_LINE = ("Places ({places}) and roads ({roads}) on the world map, their textures beside the game's world map "
+               "textures, which Mod Studio Framework gives numbers of their own")
+#: (1.26.0) The mod's own items (`state.items`), in the summary of what the mod holds.
+ITEMS_LINE = ("Items ({folder}), their own icons' textures beside the game's item icons, which Mod Studio Framework "
+              "gives numbers of their own")
+#: (1.28.0) The game's own weapons' looks in battle (`state.item_looks`), in the summary of what the mod holds.
+LOOKS_LINE = "The game's weapons' looks in battle ({file}), which Mod Studio Framework gives the game as it starts"
 
 
 def copy_into(source, destination) -> None:
@@ -130,8 +149,29 @@ class AssetExportWorker(Worker):
                  sound_file_replacements=None, other_file_replacements=None,
                  uib_edits=None, utexpt_edits=None, map_edits=None,
                  own_files=None, script_edits=None, map_terrains=None, map_copies=None,
-                 map_animations=None):
+                 map_animations=None, quest_maps=None, sqlite_path=None, mod_id="", quests=None, places=None,
+                 roads=None, items=None, item_looks=None):
         super().__init__()
+        # The mod's own places and roads (`state.places`, `state.roads`: the Side Quests page's Places), each
+        # written into the mod's `ModStudioPlaces/` and `ModStudioRoads/` with its textures (`place_edits`).
+        from ... import mod_items as mi
+        from ... import place_edits as pe
+        self.places, self.roads = pe.copied(places or {}, roads or {})
+        # (1.26.0) The mod's own items (`state.items`: the Side Quests page's Items), each written into the mod's
+        # `ModStudioItems/` with its own icon's textures (`mod_items.write_item`).
+        self.items = mi.copied(items or {})
+        # (1.28.0) The game's own weapons' looks in battle (`state.item_looks`: the Items page's In battle), written
+        # as the mod's `ModStudioItemLooks.json` (`mod_items.write_looks`).
+        self.item_looks = {int(n): bytes(pair) for n, pair in (item_looks or {}).items()}
+        # The mod's side quests (`state.quests`, Zodi, 28 October, "Side quest page"), each written into the
+        # mod's `ModStudioQuests/` with its words files (`quest_edits.write`), named by the mod (`mod_id`).
+        self.quests = {folder: edits.copy() for folder, edits in (quests or {}).items()}
+        # The mod's quest maps (`state.quest_maps`, Zodi, 28 October: "Edit quest maps directly"), each
+        # written into the mod's `ModStudioMaps/` with its own files (`quest_map_edits.parts`) from Mod
+        # Studio's database (`sqlite_path`), its own files named by the mod (`mod_id`).
+        self.quest_maps = dict(quest_maps or {})
+        self.sqlite_path = Path(sqlite_path) if sqlite_path else None
+        self.mod_id = mod_id or ""
         # Grids replaced whole (`state.map_terrains`: a look copied to another
         # map number brought its source's), written before the tile edits,
         # the texture animation records a copy brought its doors' with
@@ -191,6 +231,11 @@ class AssetExportWorker(Worker):
                   "layouts": 0, "layout_total": len(self.uib_edits),
                   "part_lists": 0, "part_list_total": len(self.utexpt_edits),
                   "maps": 0, "map_total": 0,
+                  "quest_maps": 0, "quest_map_total": len(self.quest_maps),
+                  "quests": 0, "quest_total": len(self.quests),
+                  "places": 0, "place_total": len(self.places) + len(self.roads),
+                  "items": 0, "item_total": len(self.items),
+                  "looks": 0, "look_total": len(self.item_looks),
                   "scripts": 0, "script_total": len(self.script_edits),
                   "carried": 0,
                   "carried_total": len(self.other_file_replacements),
@@ -261,6 +306,10 @@ class AssetExportWorker(Worker):
         # a battle reads is not known. Needs only the unpacked game.
         if self.map_edits or self.map_terrains or self.map_animations:
             self._write_maps(dest_root, result)
+
+        # Quest maps: each a folder of the mod's own (`ModStudioMaps/<name>/`), its pictures, model and anims
+        # in the enhanced data folder; one taken out of the mod since it was opened goes, with its files.
+        self._write_quest_maps(result)
 
         # Event scripts: written whole where the game reads them
         # (`script/<mode>/eventNNN.e`), as the Event Editor made them. They
@@ -432,12 +481,310 @@ class AssetExportWorker(Worker):
             except Exception as exc:                          # noqa: BLE001
                 result["errors"].append(f"{relative_path}: {exc}")
 
+        # Places and roads: each a folder of the mod's own (`ModStudioPlaces/<folder>/`,
+        # `ModStudioRoads/<folder>/`) and its textures, after the files carried through so nothing carried writes
+        # over them; one taken out of the mod since it was opened goes, with its textures.
+        self._write_places(result)
+        # (1.26.0) Items: each a folder of the mod's own (`ModStudioItems/<folder>/`) and its own icon's textures.
+        self._write_items(result)
+        # (1.28.0) The game's weapons' looks in battle: the mod's ModStudioItemLooks.json.
+        self._write_looks(result)
+
+        # Side quests: each a folder of the mod's own (`ModStudioQuests/<folder>/`) and its words files,
+        # after the files carried through so nothing carried writes over them; one taken out of the mod since
+        # it was opened goes, with its words.
+        self._write_quests(result)
+
         # After the files carried through: a mesh the mod carries (a map
         # package's) gets its panels moved in the mod, not the game's.
         if self.game_dir is not None and self.mode != "classic" and (
                 self.map_edits or self.map_terrains or self._carried_meshes()):
             self._write_panels(dest_root, result)
         return result
+
+    def _quest_own_files(self, data_root: Path, folder: Path) -> list:
+        """
+        The files of the mod's data folder that the quest map in `folder` (as
+        an export wrote it before: its map.json) has as its own: the pictures
+        its rows name by names of its own (`quest_maps.own_texture_name`) in
+        its Base's folder, its model and anims at its own paths. Only those,
+        though another's names begin as its do ("Old" and "Old Town").
+        """
+        from ... import helper_json as hj
+        try:
+            data = hj.loads(hj.read_text(folder / qm.FILE_NAME))
+        except (OSError, ValueError):
+            return []
+        if not isinstance(data, dict):
+            return []
+        name = folder.name
+        out = [data_root / own for key, own in (("Mesh", qm.own_mesh_path(self.mod_id, name)),
+                                                ("Anims", qm.own_anims_path(self.mod_id, name)))
+               if hj.get(data, key) == own]
+        base = hj.get(data, "Base")
+        prefix = qm.own_texture_name(self.mod_id, name, "").lower()
+        names = set()
+
+        def walk(value) -> None:
+            if isinstance(value, dict):
+                for _key, inner in hj.pairs(value):
+                    walk(inner)
+            elif isinstance(value, list):
+                for inner in value:
+                    walk(inner)
+            elif (isinstance(value, str) and value.lower().startswith(prefix) and len(value) > len(prefix)
+                  and re.fullmatch(r"[A-Za-z0-9_.]+", value)):
+                names.add(value)
+        if isinstance(base, int) and not isinstance(base, bool) and 0 <= base < qm.GAME_MAPS:
+            walk(hj.get(data, "Rows"))
+            out += [data_root / "bg" / "textures" / f"{base:03d}" / f"{n}.tga" for n in sorted(names)]
+        return [f for f in out if f.is_file()]
+
+    def _write_quest_maps(self, result: dict) -> None:
+        """
+        The mod's quest maps (`quest_map_edits.parts`): each written afresh as
+        `ModStudioMaps/<name>/` (its map.json and its own grid files) with its
+        pictures, model and anims under `FFTIVC/data/enhanced/`, the files it
+        wrote before taken out first. A quest map folder that isn't one of the
+        mod's quest maps now (taken out on the Map Editor, or renamed) goes
+        with its files, unless the mod carries it as a file of its own (one
+        Mod Studio couldn't read, kept as it is).
+
+        Every quest map is made before any file is taken out, as one may be
+        made from files another wrote before (a quest map renamed on the Map
+        Editor reads its pictures from the files its old name wrote); and
+        none is taken out unless every one was made.
+        """
+        import shutil
+
+        root = self.mod_root / qm.FOLDER
+        data_root = self.mod_root / "FFTIVC" / "data" / "enhanced"
+        carried = {rel.split("/")[1].lower() for rel in self.own_files
+                   if rel.lower().startswith(qm.FOLDER.lower() + "/") and rel.count("/") >= 2}
+        if self.quest_maps and self.game_dir is None:
+            result["errors"].append("The unpacked game folder isn't set, and writing a quest map needs the "
+                                    "game's own map files to start from.")
+            return
+        staging = paths.local_data_dir() / "texture_export_staging"
+
+        def stage(relative_path, info) -> bytes:
+            if isinstance(info, dict) and info.get("already_staged"):
+                return Path(info["source_path"]).read_bytes()
+            source = info.get("source_path") if isinstance(info, dict) else info
+            return td.stage_texture_replacement(relative_path, Path(source), staging, self.cli_path).read_bytes()
+
+        made, failed, written = {}, False, []
+        for name, edits in self.quest_maps.items():
+            like = next((other for other in written if qm.same_files(name, other)), None)
+            if like is not None:
+                result["errors"].append(f"the quest map {name}: its files would have the names of the quest map "
+                                        f"{like}'s, so it isn't written; give it another name on the Map Editor")
+                continue
+            written.append(name)
+            self.log.emit(f"Making the quest map {name}...")
+            try:
+                made[name] = qe.parts(self.game_dir, self.sqlite_path, self.mod_id, name, edits, stage)
+            except Exception as exc:                          # noqa: BLE001
+                failed = True
+                result["errors"].append(f"the quest map {name}: {exc}")
+        # What was written before: the quest maps' own files taken out, and the folders of those the mod hasn't now.
+        if root.is_dir():
+            for folder in sorted(root.iterdir()):
+                if not folder.is_dir() or not (folder / qm.FILE_NAME).is_file():
+                    continue
+                if folder.name in made:
+                    old = self._quest_own_files(data_root, folder)
+                elif folder.name in self.quest_maps or folder.name.lower() in carried:
+                    continue
+                elif failed:
+                    result["errors"].append(f"{qm.FOLDER}/{folder.name} is kept, as a quest map wasn't made and "
+                                            f"may need its files")
+                    continue
+                else:
+                    old = self._quest_own_files(data_root, folder)
+                try:
+                    for file in old:
+                        file.unlink()
+                    shutil.rmtree(folder)
+                    if folder.name not in made:
+                        self.log.emit(f"Removed {qm.FOLDER}/{folder.name}: it isn't one of the mod's quest maps "
+                                      f"now.")
+                except OSError as exc:
+                    result["errors"].append(f"{qm.FOLDER}/{folder.name}: {exc}")
+        for name, (quest_map, own, data, problems) in made.items():
+            self.log.emit(f"Writing the quest map {name}...")
+            try:
+                qm.write_map(self.mod_root, name, quest_map, own)
+                for relative_path, bytes_ in data.items():
+                    destination = data_root / relative_path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(bytes_)
+                result["quest_maps"] += 1
+                result["errors"] += [f"the quest map {name}: {p}" for p in problems]
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"the quest map {name}: {exc}")
+
+    def _write_places(self, result: dict) -> None:
+        """
+        The mod's own places and roads (`place_edits.write_place`,
+        `write_road`): each written afresh as `ModStudioPlaces/<folder>/` and
+        `ModStudioRoads/<folder>/`, a town's own texture and every road's
+        texture (drawn from its places and turns) at the game's world map
+        paths in the mod, named of the mod and the place or road. What they
+        wrote before and don't now goes first: a folder that isn't one of the
+        mod's places or roads now (taken out on the Side Quests page, or
+        renamed), unless the mod carries it as a file of its own (one Mod
+        Studio couldn't read, kept as it is), with the textures its file
+        named; and the textures an old file of a place or road still had
+        named (the mod given another id).
+        """
+        import shutil
+        from ... import map_places as mp
+        from ... import map_roads as mr
+        from ... import place_edits as pe
+
+        for kind, store, folder_name, file_name in (("place", self.places, mp.FOLDER, mp.FILE_NAME),
+                                                    ("road", self.roads, mr.FOLDER, mr.FILE_NAME)):
+            root = self.mod_root / folder_name
+            carried = {rel.split("/")[1].lower() for rel in self.own_files
+                       if rel.lower().startswith(folder_name.lower() + "/") and rel.count("/") >= 2}
+            if not root.is_dir():
+                continue
+            for folder in sorted(root.iterdir()):
+                if not folder.is_dir() or not (folder / file_name).is_file() or folder.name.lower() in carried:
+                    continue
+                try:
+                    for rel in pe.named_files(folder, file_name):
+                        if (self.mod_root / rel).is_file():
+                            (self.mod_root / rel).unlink()
+                    shutil.rmtree(folder)
+                    if folder.name not in store:
+                        self.log.emit(f"Removed {folder_name}/{folder.name}: it isn't one of the mod's {kind}s now.")
+                except OSError as exc:
+                    result["errors"].append(f"{folder_name}/{folder.name}: {exc}")
+        for folder, place in self.places.items():
+            self.log.emit(f"Writing the place {place.name}...")
+            try:
+                pe.write_place(self.mod_root, self.mod_id, place)
+                result["places"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"the place {place.name}: {exc}")
+        for folder, road in self.roads.items():
+            self.log.emit(f"Writing the road {road.name}...")
+            try:
+                pe.write_road(self.mod_root, self.mod_id, road, self.places)
+                result["places"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"the road {road.name}: {exc}")
+
+    def _write_items(self, result: dict) -> None:
+        """
+        (1.26.0) The mod's own items (`mod_items.write_item`): each written
+        afresh as `ModStudioItems/<folder>/` with its own icon's textures at
+        the game's item icons' paths in the mod, named of the mod and the item.
+        What they wrote before goes first: a folder that isn't one of the
+        mod's items now (taken out on the Side Quests page, or renamed),
+        unless the mod carries it as a file of its own (one Mod Studio
+        couldn't read, kept as it is), with the icon files its file named.
+        """
+        import shutil
+        from ... import mod_items as mi
+
+        root = self.mod_root / mi.FOLDER
+        carried = {rel.split("/")[1].lower() for rel in self.own_files
+                   if rel.lower().startswith(mi.FOLDER.lower() + "/") and rel.count("/") >= 2}
+        if root.is_dir():
+            for folder in sorted(root.iterdir()):
+                if not folder.is_dir() or not (folder / mi.FILE_NAME).is_file() or folder.name.lower() in carried:
+                    continue
+                try:
+                    for rel in mi.named_files(folder):
+                        if (self.mod_root / rel).is_file():
+                            (self.mod_root / rel).unlink()
+                    shutil.rmtree(folder)
+                    if folder.name not in self.items:
+                        self.log.emit(f"Removed {mi.FOLDER}/{folder.name}: it isn't one of the mod's items now.")
+                except OSError as exc:
+                    result["errors"].append(f"{mi.FOLDER}/{folder.name}: {exc}")
+        for folder, edit in self.items.items():
+            self.log.emit(f"Writing the item {edit.item.name}...")
+            try:
+                mi.write_item(self.mod_root, self.mod_id, edit)
+                result["items"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"the item {edit.item.name}: {exc}")
+
+    def _write_looks(self, result: dict) -> None:
+        """
+        (1.28.0) The game's own weapons' looks in battle (`mod_items.write_looks`): the mod's
+        `ModStudioItemLooks.json` written afresh, or taken away when the mod changes none now, unless it is carried
+        as a file of the mod's own (one Mod Studio couldn't read, kept as it is).
+        """
+        from ... import mod_items as mi
+        if not self.item_looks and any(rel.lower() == mi.LOOKS_FILE.lower() for rel in self.own_files):
+            return
+        try:
+            had = (self.mod_root / mi.LOOKS_FILE).is_file()
+            mi.write_looks(self.mod_root, self.item_looks)
+            if self.item_looks:
+                self.log.emit(f"Writing the looks in battle of {len(self.item_looks)} of the game's weapon(s)...")
+                result["looks"] = len(self.item_looks)
+            elif had:
+                self.log.emit(LOOKS_REMOVED.format(file=mi.LOOKS_FILE))
+        except OSError as exc:
+            result["errors"].append(f"{mi.LOOKS_FILE}: {exc}")
+
+    def _write_quests(self, result: dict) -> None:
+        """
+        The mod's side quests (`quest_edits.write`): each written afresh as
+        `ModStudioQuests/<folder>/` (its quest.json, its events' scripts, its
+        battles' units) with its events' words files. What the quests wrote
+        before and don't now goes first: a quest folder that isn't one of the
+        mod's quests now (taken out on the Side Quests page, or renamed), unless
+        the mod carries it as a file of its own (one Mod Studio couldn't read,
+        kept as it is), and each words file an old quest file named that no
+        quest writes now (an event renamed or taken out, the mod given another
+        id).
+        """
+        import shutil
+        from ... import helper_json as hj
+        from ... import quest_edits as qx
+        from ... import side_quests as sq
+
+        root = self.mod_root / sq.FOLDER
+        carried = {rel.split("/")[1].lower() for rel in self.own_files
+                   if rel.lower().startswith(sq.FOLDER.lower() + "/") and rel.count("/") >= 2}
+        kept = {rel.lower() for edits in self.quests.values() for rel in qx.words_files(self.mod_id, edits)}
+        if root.is_dir():
+            for folder in sorted(root.iterdir()):
+                if not folder.is_dir() or not (folder / sq.FILE_NAME).is_file() or folder.name.lower() in carried:
+                    continue
+                try:
+                    top = hj.loads(hj.read_text(folder / sq.FILE_NAME))
+                    events = sq._get(top, "Events", []) if isinstance(top, dict) else []
+                    named = [sq._get(e, "Words", "") for e in (events if isinstance(events, list) else [])
+                             if isinstance(e, dict)]
+                except (OSError, ValueError):
+                    named = []
+                try:
+                    for words in [w for w in named if isinstance(w, str) and w.endswith(".pzd") and ".." not in w]:
+                        for language in qx.LANGUAGES:
+                            rel = sq.words_file(words, language)
+                            if rel.lower() not in kept and (self.mod_root / rel).is_file():
+                                (self.mod_root / rel).unlink()
+                    shutil.rmtree(folder)
+                    if folder.name not in self.quests:
+                        self.log.emit(f"Removed {sq.FOLDER}/{folder.name}: it isn't one of the mod's side quests "
+                                      f"now.")
+                except OSError as exc:
+                    result["errors"].append(f"{sq.FOLDER}/{folder.name}: {exc}")
+        for folder, edits in self.quests.items():
+            self.log.emit(f"Writing the side quest {folder}...")
+            try:
+                qx.write(self.mod_root, self.mod_id, edits)
+                result["quests"] += 1
+            except Exception as exc:                          # noqa: BLE001
+                result["errors"].append(f"the side quest {folder}: {exc}")
 
     def _carried_meshes(self) -> dict:
         """`{map number: relative path}` of the enhanced meshes this mod carries (a look of its own)."""
@@ -1373,8 +1720,11 @@ class ExportPage(QWidget):
              + state.replaced_sound_file_count(), "replacement"),
             ("UI Layouts", state.edited_uib_file_count(), "screen"),
             ("Texture parts", state.edited_utexpt_file_count(), "part list"),
-            ("Map Editor", len(set(state.edited_map_numbers()) | set(self._map_looks())), "map"),
+            # A quest map is a map the Map Editor made, so it counts as one.
+            ("Map Editor", len(set(state.edited_map_numbers()) | set(self._map_looks()))
+             + len(getattr(state, "quest_maps", None) or {}), "map"),
             ("Event Editor", self._event_editor_count(), "event"),
+            ("New Content",) + self._side_quests_count(),
             ("Subtitles", state.edited_pzd_line_count(), "line"),
             ("Game data (no tab)", self._merged_table_count(), "merged table"),
             ("Carried through", len(self._carried_files()), "file"),
@@ -1384,6 +1734,20 @@ class ExportPage(QWidget):
             # under every new mod would only puzzle.
             [("Mod's own files", len(state.mod_own_files), "file")]
             if getattr(state, "mod_own_files", None) else [])
+
+    def _side_quests_count(self) -> tuple:
+        """(how many, what): the Side Quests page's quests, places and roads, each kind named when the mod has
+        another ("3 side quest things" reads as nothing: "1 quest, 2 places")."""
+        counts = [(len(getattr(self.state, "quests", None) or {}), "quest", "quests"),
+                  (len(getattr(self.state, "places", None) or {}), "place", "places"),
+                  (len(getattr(self.state, "roads", None) or {}), "road", "roads"),
+                  (len(getattr(self.state, "items", None) or {}), "item", "items")]
+        present = [(n, one, many) for n, one, many in counts if n]
+        total = sum(n for n, _one, _many in present)
+        if len(present) <= 1:
+            _n, one, _many = present[0] if present else counts[0]
+            return total, one
+        return total, ("", ", ".join(f"{n} {one if n == 1 else many}" for n, one, many in present))
 
     def _event_editor_count(self) -> int:
         """The events the Event Editor changes: their scripts, their setup, or both."""
@@ -1457,6 +1821,11 @@ class ExportPage(QWidget):
                              or self.state.uib_edits
                              or self.state.utexpt_edits
                              or self.state.has_any_map_edits()
+                             or getattr(self.state, "quest_maps", None)
+                             or getattr(self.state, "quests", None)
+                             or self.state.has_places()
+                             or self.state.has_items()
+                             or self.state.has_item_looks()
                              or self.state.has_any_script_edits()
                              or self.state.has_any_setup_edits()
                              or self.state.sound_edits
@@ -1484,6 +1853,10 @@ class ExportPage(QWidget):
             # case where the export cannot carry that work would be the
             # least helpful moment to withhold it.
             for label, count, noun in touched:
+                if isinstance(noun, tuple):
+                    # Several kinds in one page's count: each said with its own number ("1 quest, 2 places").
+                    lines.append(f"  {label:<18} {noun[1]}")
+                    continue
                 plural = "" if count == 1 else "s"
                 lines.append(f"  {label:<18} {count} {noun}{plural}")
             lines.append("")
@@ -1535,6 +1908,21 @@ class ExportPage(QWidget):
             names.append("Map models (bg/meshes)")
         if any(look.get("anim") for look in self._map_looks().values()):
             names.append("Map anim files, the frames that move (bg/anims)")
+        if getattr(self.state, "quest_maps", None):
+            names.append(QUEST_MAPS_LINE.format(folder=qm.FOLDER))
+        if getattr(self.state, "quests", None):
+            from ... import side_quests as sq
+            names.append(QUESTS_LINE.format(folder=sq.FOLDER))
+        if self.state.has_places():
+            from ... import map_places as mp
+            from ... import map_roads as mr
+            names.append(PLACES_LINE.format(places=mp.FOLDER, roads=mr.FOLDER))
+        if self.state.has_items():
+            from ... import mod_items as mi
+            names.append(ITEMS_LINE.format(folder=mi.FOLDER))
+        if self.state.has_item_looks():
+            from ... import mod_items as mi
+            names.append(LOOKS_LINE.format(file=mi.LOOKS_FILE))
         if self.state.has_any_script_edits():
             names.append("Event scripts (script/)")
         if self.state.has_any_setup_edits():
@@ -1572,17 +1960,32 @@ class ExportPage(QWidget):
     def _write_setup(self, root: Path) -> list:
         """
         The Event Editor's setup changes: `EventSetup.json` beside the mod's
-        ModConfig.json, which Mod Studio Event Setup applies as the game
+        ModConfig.json, which Mod Studio Framework applies as the game
         starts, and that helper put beside the mod (in Reloaded-II's mods
         when the mod goes there), never over a newer copy. With no changes
         left, a file an earlier export wrote is taken out. Returns the
         file's name when written, for the log's list.
         """
         from ... import event_setup as su
+        from ... import mod_items as mi
         #: What it did, for the log after the files written (`export`).
         self._setup_said = []
+        # (1.28.0) The game's weapons' looks file an earlier export wrote, taken out once the mod changes none (the
+        # assets' stage, which writes it, may not run then), unless the mod carries it as a file of its own.
+        looks_path = root / mi.LOOKS_FILE
+        if (not self.state.has_item_looks() and looks_path.is_file()
+                and not any(rel.lower() == mi.LOOKS_FILE.lower() for rel in (self.state.mod_own_files or {}))):
+            try:
+                looks_path.unlink()
+                self._setup_said.append(LOOKS_REMOVED.format(file=mi.LOOKS_FILE))
+            except OSError as exc:
+                self._setup_said.append(f"{mi.LOOKS_FILE} couldn't be removed: {exc}")
         path = root / su.FILE_NAME
         edits = {number: changes for number, changes in (self.state.setup_edits or {}).items() if changes}
+        # Quest maps and side quests need the helper too (it gives them their numbers), with or without setup
+        # changes.
+        quests = (bool(getattr(self.state, "quest_maps", None)) or bool(getattr(self.state, "quests", None))
+                  or self.state.has_places() or self.state.has_items() or self.state.has_item_looks())
         if not edits:
             if path.is_file():
                 try:
@@ -1590,8 +1993,10 @@ class ExportPage(QWidget):
                     self._setup_said.append(SETUP_REMOVED.format(file=su.FILE_NAME))
                 except OSError as exc:
                     self._setup_said.append(f"{su.FILE_NAME} couldn't be removed: {exc}")
-            return []
-        path.write_text(su.file_text(edits), encoding="utf-8")
+            if not quests:
+                return []
+        else:
+            path.write_text(su.file_text(edits), encoding="utf-8")
         try:
             done = su.install_helper(paths.bundled_root(), root.parent)
         except (OSError, ValueError) as exc:
@@ -1600,7 +2005,7 @@ class ExportPage(QWidget):
             if done != "kept":
                 self._setup_said.append((HELPER_PUT if done == "installed" else HELPER_UPDATED).format(
                     name=su.HELPER_NAME, folder=root.parent, version=su.HELPER_VERSION))
-        return [su.FILE_NAME]
+        return [su.FILE_NAME] if edits else []
 
     def _remove_unedited_tables(self, destination: Path, meta, written: set) -> list:
         """
@@ -1840,6 +2245,11 @@ class ExportPage(QWidget):
                     or state.has_any_uib_edits()
                     or state.has_any_utexpt_edits()
                     or state.has_any_map_edits()
+                    or bool(getattr(state, "quest_maps", None))
+                    or bool(getattr(state, "quests", None))
+                    or state.has_places()
+                    or state.has_items()
+                    or state.has_item_looks()
                     or state.has_any_script_edits())
 
     def _nxd_backed_edit_count(self) -> int:
@@ -2150,9 +2560,11 @@ class ExportPage(QWidget):
             },
             built_against_clean_unpack=bool(
                 getattr(self.state, "clean_unpack", False)),
-            # The Event Editor's setup changes need Mod Studio Event Setup:
+            # The Event Editor's setup changes need Mod Studio Framework:
             # among the dependencies, with where Reloaded-II fetches it.
-            event_setup=self.state.has_any_setup_edits(),
+            event_setup=(self.state.has_any_setup_edits() or bool(getattr(self.state, "quest_maps", None))
+                         or bool(getattr(self.state, "quests", None)) or self.state.has_places()
+                         or self.state.has_items() or self.state.has_item_looks()),
         )
 
     def _extra_table_files(self) -> dict:
@@ -2357,7 +2769,15 @@ class ExportPage(QWidget):
                 script_edits=getattr(self.state, "script_edits", None),
                 map_terrains=getattr(self.state, "map_terrains", None),
                 map_copies=getattr(self.state, "map_copies", None),
-                map_animations=getattr(self.state, "map_animations", None))
+                map_animations=getattr(self.state, "map_animations", None),
+                quest_maps=getattr(self.state, "quest_maps", None),
+                sqlite_path=getattr(self.state, "nxd_sqlite_path", None),
+                mod_id=meta.mod_id,
+                quests=getattr(self.state, "quests", None),
+                places=getattr(self.state, "places", None),
+                roads=getattr(self.state, "roads", None),
+                items=getattr(self.state, "items", None),
+                item_looks=getattr(self.state, "item_looks", None))
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -2454,6 +2874,21 @@ class ExportPage(QWidget):
         if result.get("map_total"):
             parts.append(f"{result.get('maps', 0)} of "
                          f"{result['map_total']} battle map file(s)")
+        if result.get("quest_map_total"):
+            parts.append(f"{result.get('quest_maps', 0)} of "
+                         f"{result['quest_map_total']} quest map(s)")
+        if result.get("quest_total"):
+            parts.append(f"{result.get('quests', 0)} of "
+                         f"{result['quest_total']} side quest(s)")
+        if result.get("place_total"):
+            parts.append(f"{result.get('places', 0)} of "
+                         f"{result['place_total']} place(s) and road(s)")
+        if result.get("item_total"):
+            parts.append(f"{result.get('items', 0)} of "
+                         f"{result['item_total']} item(s)")
+        if result.get("look_total"):
+            parts.append(f"the looks of {result.get('looks', 0)} of "
+                         f"{result['look_total']} game weapon(s)")
         if result.get("script_total"):
             parts.append(f"{result.get('scripts', 0)} of "
                          f"{result['script_total']} event script(s)")
@@ -2476,6 +2911,11 @@ class ExportPage(QWidget):
                  and result.get("layouts", 0) == result.get("layout_total", 0)
                  and result.get("part_lists", 0) == result.get("part_list_total", 0)
                  and result.get("maps", 0) == result.get("map_total", 0)
+                 and result.get("quest_maps", 0) == result.get("quest_map_total", 0)
+                 and result.get("quests", 0) == result.get("quest_total", 0)
+                 and result.get("places", 0) == result.get("place_total", 0)
+                 and result.get("items", 0) == result.get("item_total", 0)
+                 and result.get("looks", 0) == result.get("look_total", 0)
                  and result.get("scripts", 0) == result.get("script_total", 0)
                  and result.get("carried", 0) == result.get("carried_total", 0)
                  and result.get("own", 0) == result.get("own_total", 0))

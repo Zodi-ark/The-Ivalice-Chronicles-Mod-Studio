@@ -43,6 +43,7 @@ from .pages.sounds import SoundsPage
 from . import wheel_guard
 from .pages.map_editor import MapEditorPage
 from .pages.event_editor import EventEditorPage
+from .pages.side_quests import SideQuestsPage
 from .pages.textures import TexturesPage
 from .pages.ui_layouts import UiLayoutsPage
 from .shell import MainWindow, application_icon
@@ -364,6 +365,7 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     pages["UI Layouts"] = UiLayoutsPage(state)
     pages["Map Editor"] = MapEditorPage(state)
     pages["Event Editor"] = EventEditorPage(state)
+    pages["New Content"] = SideQuestsPage(state)
     pages["Unit Names"] = UnitNamesPage(state)
     pages["All Game Data"] = DataBrowserPage(state)
     # Built unconditionally like the rest, for the reason recorded above:
@@ -603,6 +605,14 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     # recording (Zodi, 19 October: "a jump button to the correlating sound
     # track in case a modder wanted to edit it as well").
     events_page = pages.get("Event Editor")
+    # (C, 28 October) A side quest's scenes on the Event Editor: a change there shows on the Side Quests page and in
+    # Export's summary (the Side Quests page says nothing back: the change was the Event Editor's own), and a change
+    # on the Side Quests page lists the quests' scenes there again.
+    quests_page = pages.get("New Content")
+    if events_page is not None and quests_page is not None:
+        events_page.quests_changed.connect(quests_page.quests_changed_elsewhere)
+        events_page.quests_changed.connect(export.refresh_summary)
+        quests_page.edits_changed.connect(events_page.refresh_quests)
     if events_page is not None and sounds_page is not None:
         def _open_sound(voice, language):
             window.open_tab("Sounds")

@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Mod Studio Event Setup, a Reloaded-II mod. Part of The Ivalice
+  <!-- Mod Studio Framework, a Reloaded-II mod. Part of The Ivalice
        Chronicles Mod Studio, GPL-3.0. Built for .NET 8, which the game's
        Reloaded-II (running the mod loader, a .NET 9 mod) loads. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>ModStudioEventSetup</AssemblyName>
     <RootNamespace>ModStudioEventSetup</RootNamespace>
-    <Version>1.0.2</Version>
+    <Version>1.11.0</Version>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -33,6 +33,29 @@
     <Reference Include="Reloaded.Mod.Interfaces">
       <HintPath>$(ReloadedInterfaces)</HintPath>
       <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- Reloaded-II's shared hooks' interfaces (LGPL-3.0; 1.1.0, for the side
+       quests): Reloaded.SharedLib.Hooks 1.9.0 and the Reloaded.Hooks
+       definitions 1.11.0 it asks for, copied beside the mod as WotL
+       Restoration carries them (the definitions' net6.0 build). Online from
+       NuGet; offline, helper/build.py gives -p:ReloadedHooks=<folder> holding
+       Reloaded.Hooks.Definitions.dll and
+       Reloaded.Hooks.ReloadedII.Interfaces.dll, out of
+       reloaded.hooks.definitions.1.11.0.nupkg (lib/net6.0) and
+       reloaded.sharedlib.hooks.1.9.0.nupkg (lib/netstandard2.0). -->
+  <ItemGroup Condition="'$(ReloadedHooks)' == ''">
+    <PackageReference Include="Reloaded.SharedLib.Hooks" Version="1.9.0" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ReloadedHooks)' != ''">
+    <Reference Include="Reloaded.Hooks.Definitions">
+      <HintPath>$(ReloadedHooks)/Reloaded.Hooks.Definitions.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Reloaded.Hooks.ReloadedII.Interfaces">
+      <HintPath>$(ReloadedHooks)/Reloaded.Hooks.ReloadedII.Interfaces.dll</HintPath>
+      <Private>true</Private>
     </Reference>
   </ItemGroup>
 

@@ -1,7 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Mod Studio's checks of the helper, run by dev/test_event_setup.py: the
-       helper's own finding and changing code over a program's file laid out
-       as it lies in memory. Not shipped. -->
+  <!-- Mod Studio's checks of the helper, run by dev/test_event_setup.py and
+       dev/test_side_quests.py: the helper's own finding, changing and
+       planning code over a program's file laid out as it lies in memory, and
+       over tables as the game loads them; (1.2.5) its markers' painting,
+       (1.3.0) the mods' own places' pieces and (1.4.0) their roads' pictures
+       over a stand-in for the world map screen (MarkerChecks.cs,
+       PlaceChecks.cs, RoadChecks.cs); (1.7.0) the mods' places the game goes
+       to (DestinationChecks.cs), (1.7.1) with their homes and a save's
+       fallback (SaveFallback.cs); (1.13.0) the numbers' three copies and a
+       save's mark (NumberChecks.cs); (1.23.0) a mod's dungeon's list's looks over a
+       stand-in for the Deep's list (LooksChecks.cs); (1.26.0) a mod's own items over his program
+       (ItemChecks.cs), and (1.28.0) the game's weapons' looks (ItemLooks.cs); (1.29.0) the numbers given as
+       each game starts and freed, and the settings' file (NumberChecks.cs). Not shipped. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
@@ -14,5 +24,33 @@
   <ItemGroup>
     <Compile Include="..\ModStudioEventSetup\SetupTable.cs" Link="SetupTable.cs" />
     <Compile Include="..\ModStudioEventSetup\SetupFile.cs" Link="SetupFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\Nxd.cs" Link="Nxd.cs" />
+    <Compile Include="..\ModStudioEventSetup\Numbers.cs" Link="Numbers.cs" />
+    <Compile Include="..\ModStudioEventSetup\NumbersCopies.cs" Link="NumbersCopies.cs" />
+    <Compile Include="..\ModStudioEventSetup\QuestFile.cs" Link="QuestFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\Framework.cs" Link="Framework.cs" />
+    <Compile Include="..\ModStudioEventSetup\Places.cs" Link="Places.cs" />
+    <Compile Include="..\ModStudioEventSetup\Thunks.cs" Link="Thunks.cs" />
+    <Compile Include="..\ModStudioEventSetup\Marker.cs" Link="Marker.cs" />
+    <Compile Include="..\ModStudioEventSetup\PlaceFile.cs" Link="PlaceFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapPieces.cs" Link="MapPieces.cs" />
+    <Compile Include="..\ModStudioEventSetup\RoadFile.cs" Link="RoadFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapRoads.cs" Link="MapRoads.cs" />
+    <Compile Include="..\ModStudioEventSetup\Travel.cs" Link="Travel.cs" />
+    <Compile Include="..\ModStudioEventSetup\Destinations.cs" Link="Destinations.cs" />
+    <Compile Include="..\ModStudioEventSetup\SaveFallback.cs" Link="SaveFallback.cs" />
+    <Compile Include="..\ModStudioEventSetup\EventRoom.cs" Link="EventRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapFile.cs" Link="MapFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapRows.cs" Link="MapRows.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapRoom.cs" Link="MapRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapTables.cs" Link="MapTables.cs" />
+    <Compile Include="..\ModStudioEventSetup\MapAnimations.cs" Link="MapAnimations.cs" />
+    <Compile Include="..\ModStudioEventSetup\DeploySquads.cs" Link="DeploySquads.cs" />
+    <Compile Include="..\ModStudioEventSetup\MenuArt.cs" Link="MenuArt.cs" />
+    <Compile Include="..\ModStudioEventSetup\DungeonLooks.cs" Link="DungeonLooks.cs" />
+    <Compile Include="..\ModStudioEventSetup\ItemFile.cs" Link="ItemFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\ItemLooks.cs" Link="ItemLooks.cs" />
+    <Compile Include="..\ModStudioEventSetup\ItemRoom.cs" Link="ItemRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\Settings.cs" Link="Settings.cs" />
   </ItemGroup>
 </Project>

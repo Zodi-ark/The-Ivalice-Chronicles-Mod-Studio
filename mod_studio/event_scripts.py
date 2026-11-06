@@ -782,17 +782,17 @@ EVTCHR_ANIMATIONS = (500, 600)
 TEAM_GROUPS = range(0x100, 0x110)
 
 
-def battle_units(game_dir, battle: int) -> list:
-    """The units of ENTD battle `battle` (`entd.EventUnit`, the occupied
-    slots), from the four `battle_entd` files or, from 512, the fifth."""
+def battle_block(game_dir, battle: int) -> Optional[bytes]:
+    """ENTD battle `battle`'s 640 bytes (16 units of 40), from the four `battle_entd` files or, from 512, the
+    fifth; None when the game folder hasn't it."""
     if not game_dir or battle is None or battle < 0:
-        return []
+        return None
     game = Path(game_dir)
     if battle < FIFTH_FIRST:
         name = entd.ENTD_FILENAMES[battle // entd.EVENTS_PER_FILE] if battle // entd.EVENTS_PER_FILE < len(
             entd.ENTD_FILENAMES) else None
         if name is None:
-            return []
+            return None
         path, base = game / entd.ENTD_FOLDER / name, (battle % entd.EVENTS_PER_FILE) * entd.EVENT_BYTES
     else:
         path, base = game / FIFTH_ENTD, (battle - FIFTH_FIRST) * entd.EVENT_BYTES
@@ -801,8 +801,15 @@ def battle_units(game_dir, battle: int) -> list:
             handle.seek(base)
             block = handle.read(entd.EVENT_BYTES)
     except OSError:
-        return []
-    if len(block) < entd.EVENT_BYTES:
+        return None
+    return block if len(block) == entd.EVENT_BYTES else None
+
+
+def battle_units(game_dir, battle: int) -> list:
+    """The units of ENTD battle `battle` (`entd.EventUnit`, the occupied
+    slots), from the four `battle_entd` files or, from 512, the fifth."""
+    block = battle_block(game_dir, battle)
+    if block is None:
         return []
     units = [entd.read_unit(block[s * entd.UNIT_BYTES:(s + 1) * entd.UNIT_BYTES], battle, s)
              for s in range(entd.UNITS_PER_EVENT)]

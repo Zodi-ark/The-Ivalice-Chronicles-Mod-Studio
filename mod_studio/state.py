@@ -179,6 +179,15 @@ class WizardState:
         self.map_terrains = {}
         self.map_animations = {}
         self.map_copies = {}
+        # And the working folders of its quest maps (`quest_map_edits.forget`).
+        from . import quest_map_edits
+        quest_map_edits.forget(getattr(self, "quest_maps", None) or {})
+        self.quest_maps = {}
+        self.quests = {}
+        self.places = {}
+        self.roads = {}
+        self.items = {}
+        self.item_looks = {}
         self.script_edits = {}
         self.setup_edits = {}
         self.sound_file_replacements = {}
@@ -725,6 +734,56 @@ class WizardState:
     #: `map_terrains`).
     map_copies: dict = field(default_factory=dict)
 
+    #: The mod's quest maps (Zodi, 28 October: "Edit quest maps directly"):
+    #: `{name: quest_map_edits.QuestMapEdits}`, in the order made, each a map
+    #: of the mod's own for its side quests' battles, made from one of the
+    #: game's maps and edited on the Map Editor apart from it: its changes kept
+    #: in stores of its own shaped as the five above and `texture_edits`,
+    #: `other_file_replacements` and `unmodelled_table_edits` are. At export
+    #: each goes into the mod as `ModStudioMaps/<name>/` (`quest_maps.py`),
+    #: with Mod Studio Framework beside it; opening the mod brings them back.
+    quest_maps: dict = field(default_factory=dict)
+
+    #: The mod's side quests (Zodi, 28 October, "Side quest page": made on
+    #: the Side Quests page by names): `{folder: quest_edits.QuestEdits}`, in
+    #: their folders' order, each its quest.json, its files' bytes (its
+    #: events' scripts and its battles' units) and its events' words. At export
+    #: each goes into the mod as `ModStudioQuests/<folder>/` with its words
+    #: files (`side_quests.py`), with Mod Studio Framework beside it; opening
+    #: the mod brings them back.
+    quests: dict = field(default_factory=dict)
+
+    #: The mod's own places and roads on the world map (Zodi, 28 October, "Side quest page", its second part:
+    #: "Places and roads made on the page"): `{folder: place_edits.PlaceEdit}` and `{folder:
+    #: place_edits.RoadEdit}`, in their folders' order. At export each goes into the mod as
+    #: `ModStudioPlaces/<folder>/` (a town's own texture beside the game's world map textures) and
+    #: `ModStudioRoads/<folder>/` (its texture and walk drawn from its places and turns), with Mod Studio
+    #: Framework beside it; opening the mod brings them back.
+    places: dict = field(default_factory=dict)
+    roads: dict = field(default_factory=dict)
+    #: (1.26.0) The mod's own items (Zodi's list of 3 November, his first: "Adding new items to go into the new towns
+    #: outfitter"): `{folder: mod_items.ItemEdit}`, in their folders' order. At export each goes into the mod as
+    #: `ModStudioItems/<folder>/` (its own icon's textures beside the game's item icons), with Mod Studio Framework
+    #: beside it; opening the mod brings them back.
+    items: dict = field(default_factory=dict)
+    #: (1.28.0) The game's own weapons' looks in battle (Zodi, 3 November, after test 60: "users can also change the
+    #: vanilla items look and palette"): `{item number: its sprite pair, 2 bytes}`, set on the Items page. At export the
+    #: mod's `ModStudioItemLooks.json` (`mod_items.LOOKS_FILE`), with Mod Studio Framework beside it, which writes
+    #: each where the game's program keeps it; opening the mod brings them back.
+    item_looks: dict = field(default_factory=dict)
+
+    def has_places(self) -> bool:
+        """Whether the mod has places or roads of its own (the Side Quests page's Places)."""
+        return bool(getattr(self, "places", None)) or bool(getattr(self, "roads", None))
+
+    def has_items(self) -> bool:
+        """(1.26.0) Whether the mod has items of its own (the Side Quests page's Items)."""
+        return bool(getattr(self, "items", None))
+
+    def has_item_looks(self) -> bool:
+        """(1.28.0) Whether the mod changes a game weapon's look in battle (the Items page's In battle)."""
+        return bool(getattr(self, "item_looks", None))
+
     def edited_map_numbers(self) -> list:
         """The maps with a tile edit or a grid replaced whole, as numbers."""
         out = set()
@@ -765,7 +824,7 @@ class WizardState:
     #: {field name: value}}`, only the fields the mod holds otherwise than
     #: the game's program (`event_setup.tidy`), e.g. `{9: {"Music1": 51}}`.
     #: Export writes them into the mod's `EventSetup.json`, which the helper
-    #: mod, Mod Studio Event Setup, applies as the game starts (Zodi, 21
+    #: mod, Mod Studio Framework, applies as the game starts (Zodi, 21
     #: October: "Lets go with "One shared helper mod"").
     setup_edits: dict = field(default_factory=dict)
 

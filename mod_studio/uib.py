@@ -624,6 +624,31 @@ def read_part_list(data: bytes) -> PartList:
     return PartList(texture_path, parts)
 
 
+def part_list_file(texture_path: str, parts: list) -> bytes:
+    """
+    A .utexpt, laid out as the game's (all 9 of the bar screens' come out
+    byte for byte): where its texture's path is, where its table is (12), how
+    many parts; each part's 20 bytes (its name's place from its own start,
+    then x1, y1, x2, y2); its texture's path, then the parts' names, each
+    ended by a 0. `parts` is (name, (x1, y1, x2, y2)) pairs, the first
+    `TexturePart`, the whole sheet. Written for Mod Studio Framework's
+    quest marker (1.2.5): a list of its own, beside the game's.
+    """
+    table = 12
+    path_at = table + _PART_SIZE * len(parts)
+    out = bytearray(path_at)
+    strings = bytearray(texture_path.encode("ascii") + b"\0")
+    names = []
+    for name, _rect in parts:
+        names.append(path_at + len(strings))
+        strings += name.encode("ascii") + b"\0"
+    struct.pack_into("<III", out, 0, path_at, table, len(parts))
+    for n, (_name, rect) in enumerate(parts):
+        at = table + _PART_SIZE * n
+        struct.pack_into("<iiiii", out, at, names[n] - at, *rect)
+    return bytes(out + strings)
+
+
 # =============================================================================
 # Editing, in place
 # =============================================================================
