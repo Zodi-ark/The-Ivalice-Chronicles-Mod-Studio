@@ -12,6 +12,9 @@
 # contributors, GPL-3, github.com/Glain/FFTPatcher) names the file there.
 # The sheets were found by comparing each classic sprite with every sheet:
 # the HD sheets are the classic ones at twice the size, colour for colour.
+# Each number's sheets are then the ones the game's own sprites' table gives
+# it (FFT_enhanced.exe's 0x7151F0: the upper, the lower the next): several
+# sheets are one picture, and the game draws a sprite from its own.
 #
 # number|file|sheets
 1|ramuza|830,831
@@ -43,7 +46,7 @@
 27|eru|874,875
 28|furaia|876,877
 29|bariten|878,879
-30|kanba|880,881
+30|kanba|914,915
 31|beio|882,883
 32|wigu|884,885
 33|baru|886,887
@@ -59,31 +62,31 @@
 43|h81|902,903
 44|h82|904
 45|h83|926
-46|arufu|926
+46|arufu|928
 47|h85|905,906
 48|aruma|907,908
 49|ajora|909
 50|cloud|910,911
 51|zaru2|912,913
-52|aguri|880,881
+52|aguri|914,915
 53|item_w|916,917
 54|siro_w|918,919
 55|kuro_m|920,921
 56|onmyo_m|922,923
 57|mina_m|924,925
 58|seria|926
-59|ledy|926
+59|ledy|928
 60|veri|930,931
 61|knight_m|1000,1001
 62|zarue|932,933
 63|yumi_m|934,935
 64|hasyu|936,937
 65|arute|938,939
-66|kuro_m|920,921
+66|kuro_m|940,941
 67|kyuku|942,943
 68|toki_w|944,945
 69|adora|946,947
-70|onmyo_m|922,923
+70|onmyo_m|948,949
 71|syou_w|1026,1027
 72|reze_d|950,951
 73|kanzen|952,953
@@ -95,40 +98,40 @@
 79|40w|964,965
 80|60m|966,967
 81|60w|968,969
-82|cyomon1|966,967
-83|cyomon2|968
+82|cyomon1|970,971
+83|cyomon2|972
 84|cyomon3|974,975
-85|cyomon4|964
+85|cyomon4|976
 86|souryo|978,979
-87|mina_m|924,925
-88|mina_m|924,925
-89|mina_m|924,925
-90|mina_m|924,925
-91|mina_m|924,925
-92|mina_m|924,925
-96|mina_m|924,925
+87|mina_m|980,981
+88|mina_m|982,983
+89|mina_m|984,985
+90|mina_m|986,987
+91|mina_m|988,989
+92|mina_m|990,991
+96|mina_m|992,993
 97|mina_w|994,995
 98|item_m|996,997
-99|item_w|916,917
+99|item_w|998,999
 100|knight_m|1000,1001
 101|knight_w|1002,1003
-102|yumi_m|934,935
+102|yumi_m|1004,1005
 103|yumi_w|1006,1007
 104|monk_m|1008,1009
 105|monk_w|1010,1011
 106|siro_m|1012,1013
-107|siro_w|918,919
-108|kuro_m|920,921
+107|siro_w|1014,1015
+108|kuro_m|1016,1017
 109|kuro_w|1018,1019
 110|toki_m|1020,1021
-111|toki_w|944,945
+111|toki_w|1022,1023
 112|syou_m|1024,1025
 113|syou_w|1026,1027
 114|thief_m|1028,1029
 115|thief_w|1030,1031
 116|waju_m|1032,1033
 117|waju_w|1034,1035
-118|onmyo_m|922,923
+118|onmyo_m|1036,1037
 119|onmyo_w|1038,1039
 120|fusui_m|1040,1041
 121|fusui_w|1042,1043
@@ -141,7 +144,7 @@
 128|san_m|1056,1057
 129|san_w|1058,1059
 130|gin_m|1060,1061
-131|odori_w|926,927
+131|odori_w|1062,1063
 132|mono_m|1064,1065
 133|mono_w|1066,1067
 134|cyoko|1068,1069
@@ -162,6 +165,6 @@
 149|dora2|1098,1099
 150|biburos|1100,1101
 151|hebi|1102,1103
-152|dora1|1096,1097
+152|dora1|1104,1105
 153|demon|1106,1107
 154|tetsu|1108,1109

@@ -59,6 +59,9 @@ namespace ModStudioEventSetup
         /// number (0x3FB for 316 to 0x3BA for 381).</summary>
         public static int CountAt(int item) => Framework.MarkAt - 1 - (item - FirstItem);
         public const int CountsFirst = Framework.MarkAt - Count;
+        /// <summary>(1.38.0) The eight bytes below the items' counts: the mods' jobs' mark in a save (JobProgress: the
+        /// key of the file kept beside the save, the job loaded). No flag was ever given there.</summary>
+        public const int JobsMarkBytes = 8, JobsMark = CountsFirst - JobsMarkBytes;
 
         /// <summary>Whether a quest flag's bit may be given: its byte not WotL Restoration's counts' and not the
         /// items' (1.26.0; no flag given before was ever there).</summary>
@@ -67,7 +70,7 @@ namespace ModStudioEventSetup
             if (bit < 0 || bit >= Framework.FlagBits)
                 return false;
             int at = Framework.BankTail + (bit >> 3);
-            return (at < WotLTail || at >= WotLTailEnd) && at < CountsFirst;
+            return (at < WotLTail || at >= WotLTailEnd) && at < JobsMark;
         }
 
         // --- the page (made by the framework when no other mod made one) -----------------------------------------
@@ -566,8 +569,10 @@ namespace ModStudioEventSetup
                          DataBytes = SlotsAt + 9 * 8;
 
         /// <summary>The items' data at `at`: given items' records, pointers and bytes; unused numbers invalid, their
-        /// segment -1, their common record zeros.</summary>
-        public static byte[] Data(List<Given> given, ulong at)
+        /// segment -1, their common record zeros. (2.0.0) `first`: the number the block's first place is (the mods'
+        /// own items' by default; War of the Lions' items have a block of their own, from WotLFirst, laid out alike:
+        /// their 55 numbers fit the mods' 66 places).</summary>
+        public static byte[] Data(List<Given> given, ulong at, int first = FirstItem)
         {
             var data = new byte[DataBytes];
             for (int i = 0; i < Count; i++)
@@ -577,7 +582,9 @@ namespace ModStudioEventSetup
             }
             foreach (var g in given)
             {
-                int i = g.Number - FirstItem;
+                int i = g.Number - first;
+                if (i < 0 || i >= Count)
+                    throw new ArgumentException($"item {g.Number} isn't one of the block's ({first} on)");
                 int kind = (int)g.Item.Kind;
                 data[ValidAt + i] = 1;
                 data[SegmentAt + i] = (byte)Segments[kind];
@@ -605,18 +612,22 @@ namespace ModStudioEventSetup
 
         /// <summary>The nine functions' native code, each: the number (cx) less FirstItem below Count, its answer from
         /// the items' data (rdx pushed and popped: rax and the flags are all it changes, as the game's own leave rax
-        /// theirs); else on to the game's (or another mod's hook) by its slot. Offsets of each in the code.</summary>
-        public static byte[] Code(ulong data, out int[] starts)
+        /// theirs); else on to the game's (or another mod's hook) by its slot. Offsets of each in the code. (2.0.0)
+        /// `first` and `count`: the block's numbers (the mods' own by default; War of the Lions' 261 on, 55 of them,
+        /// whose way on is the mods' own items' code).</summary>
+        public static byte[] Code(ulong data, out int[] starts, int first = FirstItem, int count = Count)
         {
+            if (count < 1 || count > Count)
+                throw new ArgumentException($"a block holds 1 to {Count} numbers, not {count}");
             var code = new List<byte>();
             starts = new int[Getters.Length];
             for (int g = 0; g < Getters.Length; g++)
             {
                 starts[g] = code.Count;
                 code.AddRange(new byte[] { 0x0F, 0xB7, 0xC1 });                       // movzx eax, cx
-                code.Add(0x2D);                                                        // sub eax, FirstItem
-                code.AddRange(BitConverter.GetBytes(FirstItem));
-                code.AddRange(new byte[] { 0x83, 0xF8, (byte)Count });                 // cmp eax, Count
+                code.Add(0x2D);                                                        // sub eax, first
+                code.AddRange(BitConverter.GetBytes(first));
+                code.AddRange(new byte[] { 0x83, 0xF8, (byte)count });                 // cmp eax, count
                 code.AddRange(new byte[] { 0x73, 17 });                                // jae next
                 code.Add(0x52);                                                        // push rdx
                 code.AddRange(new byte[] { 0x48, 0xBA });                              // mov rdx, table

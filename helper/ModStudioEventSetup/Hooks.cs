@@ -895,6 +895,10 @@ namespace ModStudioEventSetup
         /// <summary>A battle's units as it loads: the game's own, but for a quest's battle (its
         /// number one the framework gave), whose units the game is handed instead. The game's
         /// function runs first, so a battle whose file is still being read waits as it did.</summary>
+        /// <summary>(2.0.0) Which quest's own battle's unit a battle file's entry is (Framework.EntryOf over the units
+        /// the helper hands the game), for the battles' hooks (BattleHooks.QuestEntry).</summary>
+        public (int Battle, int Slot)? EntryOf(nint entry) => Framework.EntryOf(_units, entry);
+
         nint Encounter()
         {
             nint units = _encounter!.OriginalFunction();

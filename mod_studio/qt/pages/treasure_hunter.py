@@ -34,6 +34,18 @@ item and a trap. So:
 
 The record list, the fields and the edit store are `TableEditorPage`'s, as
 before the map: they write `state.item_table_edits["map_trap"]`.
+
+**An item past the 255 a byte holds** (16 November 2026, Zodi's first point
+of that day: War of the Lions' items "for Treasure Hunter"; his answer, a
+mod's own items too) is offered in a tile's Rare Item and Common Item with
+the game's own: the game's own five past 255, War of the Lions' 40 and the
+mod's own items (`encounters.wide_items_of_any_kind`). The game's table of
+buried treasures keeps an item as a word (measured in his program:
+`claude/battle-units-research.md`), but the mod loader's table can't name a
+mod's own item, whose number is given as the game starts, so such an item's
+XML field is left as the game has it and the item goes to the mod's
+`ModStudioBattles.json` (`state.battle_treasures`, `mod_battles`), which
+Mod Studio Framework writes as the map loads.
 """
 from __future__ import annotations
 
@@ -51,6 +63,7 @@ from PySide6.QtWidgets import (
 
 from ... import constants as c
 from ... import map_classic as mc
+from ... import mod_battles as mb
 from ... import paths
 from ... import texture_data as td
 from .. import map_scene as ms
@@ -58,6 +71,7 @@ from ..widgets.field_rows import DropdownFieldRow, FlagFieldPanel, NumericFieldR
 from ..widgets.map_view import MapView
 from ..workers import Worker, run_in_thread
 from . import map_editor as me_page
+from .encounters import WideNumbers, wide_items_of_any_kind
 from .table_editor import TableEditorPage, _groups_for, _range_for, flag_choices
 
 BLURB = ("Traps and buried treasure on each map. Click a treasure tile on the map to edit it, or "
@@ -89,8 +103,21 @@ SPRITE_SIZE, SPRITE_LIFT, BOB_HEIGHT, BOB_SECONDS = 40, 34, 5.0, 1.6
 #: Each number's disc on a mark, and the room between two side by side.
 BADGE_RADIUS, BADGE_STEP = 10.0, 23.0
 
+#: (16 November 2026) An item past 255 a tile holds that the lists don't have (one of the mod's own items the mod no
+#: longer has): shown as it is kept.
+WIDE_KEPT = "{item}, an item past 255"
+
 HINT = ("Click a treasure tile to edit it, or drag it to another tile. Drag anywhere else to turn "
         "the map, Shift and drag to move it, and use the wheel to zoom.")
+
+#: (17 November 2026, a community report from 076 Zeklaus Desert: a Y of 16 or more can't be entered, "so treasure
+#: can't be buried deep in the desert ... is this a design limit or a bug?") The game's table of buried treasures
+#: keeps a tile's X and Y in four bits each, and its battle finds a unit's tile by those four bits (his program:
+#: `0x271DF4` to `0x271E0C`, X the high four, Y the low four, the level the flags' top bit), so no tile past 15 can
+#: hold a treasure. Five maps' grids reach past 15 (026 4 by 18, 039 6 by 18, 055 17 by 9, 076 10 by 18, 088 10 by
+#: 17): on them this is said under the fields, and a mark dragged past 15 stays where it was.
+OUT_OF_REACH = ("A treasure can lie only where X and Y are both 15 or less, as the game keeps each in four bits, "
+                "so this map's tiles past 15 can't hold one.")
 NO_GAME = "No game files yet. Unpack your game on General Setup to see its maps here."
 
 
@@ -188,6 +215,7 @@ class TreasureHunterPage(TableEditorPage):
                     widget = DropdownFieldRow(field_name, label)
                     widget.combo.setMinimumWidth(TILE_COMBO_WIDTH)
                     widget.set_choices(self._item_choices())
+                    WideNumbers.label(widget, self._wide_offered)
                     self.item_dropdowns.append(widget)
                 else:
                     low, high = _range_for(field_name)
@@ -228,7 +256,8 @@ class TreasureHunterPage(TableEditorPage):
         scroll.setWidget(holder)
         self.scroll = scroll
         #: Said under the fields only when the tile shown is off the map's
-        #: grid, where the map can't mark it (`_say_place`).
+        #: grid, where the map can't mark it, or the map's grid reaches past
+        #: what a treasure's X and Y can name (`_say_place`).
         self.place_note = QLabel("")
         self.place_note.setProperty("role", "muted")
         self.place_note.setWordWrap(True)
@@ -341,25 +370,129 @@ class TreasureHunterPage(TableEditorPage):
         text").
         """
         info = self.slots()[self.slot]
+        said = []
         if self.view.scene is not None and self.view.tile((info["x"], info["y"], 0)) is None:
-            self.place_note.setText(f"Tile {self.slot} is at {info['x']}, {info['y']}, off this map's "
-                                    f"grid, so it isn't marked on the map.")
-        else:
-            self.place_note.setText("")
+            said.append(f"Tile {self.slot} is at {info['x']}, {info['y']}, off this map's "
+                        f"grid, so it isn't marked on the map.")
+        if self.reaches_past_treasure():
+            said.append(OUT_OF_REACH)
+        self.place_note.setText("\n\n".join(said))
         # No room kept for it when it says nothing.
         self.place_note.setVisible(bool(self.place_note.text()))
 
+    def reaches_past_treasure(self) -> bool:
+        """Whether the map shown has a tile past what a treasure's X and Y can name (`OUT_OF_REACH`)."""
+        return self.view.scene is not None and any(
+            tile.x > c.MAPTRAP_XY_MAX or tile.z > c.MAPTRAP_XY_MAX for tile in self.view.tiles)
+
+    @staticmethod
+    def can_hold_treasure(key) -> bool:
+        """Whether a tile (x, z) can hold a treasure: both 15 or less (`OUT_OF_REACH`)."""
+        return key is not None and c.MAPTRAP_XY_MIN <= min(key[0], key[1]) and max(key[0], key[1]) <= c.MAPTRAP_XY_MAX
+
     # -- the record --------------------------------------------------------------
+
+    # -- items past 255 (16 November 2026) -----------------------------------------
+
+    #: A tile's two item fields, by the name `ModStudioBattles.json` gives each.
+    WIDE_FIELDS = (("RareItemId", mb.RARE), ("CommonItemId", mb.COMMON))
+
+    def _item_choices(self) -> dict:
+        """The game's items, then the items past 255 (see the notes at the top), each under the number the
+        dropdown keeps it by (`WideNumbers`)."""
+        found = super()._item_choices()
+        if getattr(self, "_wide", None) is None:
+            self._wide = WideNumbers()
+        self._wide_offered = self._wide.offered(wide_items_of_any_kind(self.state))
+        found.update(self._wide_offered)
+        return found
+
+    def refresh_records(self) -> None:
+        super().refresh_records()
+        for dropdown in getattr(self, "item_dropdowns", []):
+            WideNumbers.label(dropdown, getattr(self, "_wide_offered", {}))
+
+    def _treasures(self) -> dict:
+        store = getattr(self.state, "battle_treasures", None)
+        if store is None:
+            store = self.state.battle_treasures = {}
+        return store
+
+    def _keep_wide_items(self) -> None:
+        """A tile's Rare Item or Common Item that is an item past 255: its XML field left as the game has it, the
+        item kept for the mod's `ModStudioBattles.json` (`state.battle_treasures`); one that is no such item any
+        more kept there no more."""
+        if self.current_id is None:
+            return
+        store = self._treasures()
+        table = self.state.item_table_edits.get(self.table_key, {})
+        edits = table.get(self.current_id, {})
+        for slot in c.MAPTRAP_SLOTS:
+            key = (int(self.current_id), slot - 1)
+            found = dict(store.get(key) or {})
+            for base, name in self.WIDE_FIELDS:
+                row = self.rows[f"{base}{slot}"]
+                ref = self._wide.item_of(row.current_id()) if row.included else None
+                if ref is not None:
+                    found[name] = ref
+                    edits.pop(f"{base}{slot}", None)
+                else:
+                    found.pop(name, None)
+            if found:
+                store[key] = found
+            else:
+                store.pop(key, None)
+        if self.current_id in table and not table[self.current_id]:
+            table.pop(self.current_id)
+        if self.table_key in self.state.item_table_edits and not self.state.item_table_edits[self.table_key]:
+            self.state.item_table_edits.pop(self.table_key)
+
+    def wide_maps(self) -> set:
+        """The maps one of whose buried treasures holds an item past 255."""
+        return {int(map_number) for (map_number, _tile), found in self._treasures().items() if found}
+
+    def _mark_edited(self) -> None:
+        """A map is the mod's where its row is edited (`state.item_table_edits`) or (16 November 2026) a treasure of
+        it holds an item past 255 (`state.battle_treasures`)."""
+        from ..widgets.actions import mark_edited
+        table = self.state.item_table_edits.get(self.table_key, {})
+        wide = self.wide_maps()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            number = item.data(Qt.UserRole)
+            mark_edited(item, bool(table.get(number)) or number in wide)
+
+    def _update_counter(self) -> None:
+        """The maps counted are those marked: a row edited, or a treasure holding an item past 255."""
+        from ..widgets.actions import edit_counter_text
+        table = self.state.item_table_edits.get(self.table_key, {})
+        edited = len({key for key, fields in table.items() if fields} | self.wide_maps())
+        self.counter.setText(edit_counter_text(edited, self.list.count(), self.counter_noun))
 
     def load_record(self, record_id: int) -> None:
         super().load_record(record_id)
         if self.current_id is None:
             return
+        # (16 November 2026) The items past 255 its tiles hold, shown in their fields' places, ticked.
+        store = self._treasures()
+        for slot in c.MAPTRAP_SLOTS:
+            found = store.get((int(self.current_id), slot - 1)) or {}
+            for base, name in self.WIDE_FIELDS:
+                if found.get(name) is not None:
+                    row = self.rows[f"{base}{slot}"]
+                    number = self._wide.number_of(found[name])
+                    if number not in self._wide_offered:
+                        row.set_choices({**self._item_choices(), number: WIDE_KEPT.format(item=found[name])})
+                        WideNumbers.label(row, {**self._wide_offered, number: WIDE_KEPT.format(item=found[name])})
+                    row.load(number, True)
         self._show_map(self.current_id)
         self._treasure_changed()
 
     def _on_field_edited(self) -> None:
         super()._on_field_edited()
+        self._keep_wide_items()
+        self._mark_edited()
+        self._update_counter()
         self._treasure_changed()
 
     def _treasure_changed(self) -> None:
@@ -666,7 +799,10 @@ class TreasureHunterPage(TableEditorPage):
     def move(self, point) -> None:
         key = self.view.tile_at(point)
         if self._grab is not None:
-            self._grab["to"] = (key[0], key[1]) if key is not None else None
+            # A tile past 15 isn't a place to drop: the mark stays drawn
+            # where it was, and a release there moves nothing. It was put
+            # on 15 as typing does, a tile other than the one dropped on.
+            self._grab["to"] = (key[0], key[1]) if self.can_hold_treasure(key) else None
         self.view.update()
 
     def release(self, point, moved: bool) -> None:

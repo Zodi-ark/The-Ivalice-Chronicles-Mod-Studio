@@ -1939,7 +1939,9 @@ game item's it names, or its own (the Icon table's two paths hooked); its
 count kept in the save's event variables, one byte a number from the
 bank's mark down (0x3FB for 316), as the game saves and as a save loads.
 The side quests' flags are never given there (flags 6256 to 6783), nor
-where WotL Restoration keeps its counts (flags 4736 to 5239). A mod's
+where WotL Restoration keeps its counts (flags 4736 to 5239), nor, from
+1.38.0, in the eight bytes just before the items' counts, where a save's
+mark of its units' progress in the mods' jobs is (flags 6192 to 6255). A mod's
 town's Outfitter asks the game's stock for the game's items unsorted, adds
 its own items it sells (each under its kind's tab, once the story reaches
 its point), then has the game sort the list as asked; the Poachers' Den's
@@ -2374,6 +2376,2343 @@ functioned exactly as you said it would"), his save moved to Gariland as
 it loaded, said, and save X losing its Old Ring from the bag and from
 Ramza.
 
+### A mod's own job (1.36.0 to 1.41.0)
+
+Zodi's ask of 9 November: "in Mod Studio New Content page the Mod Studio
+Framework now allows us to create new quests, locations, and items. The
+final touch would be adding new Jobs and Abilities for those jobs." It was
+measured first (`claude/jobs-research.md`, `dev/research/sidequests/jobs.py`);
+his first step: "One job, start to finish", on the other mod's second page
+of the job screen ("Its empty places").
+
+**What a mod gives.** `ModStudioJobs/<job>/job.json`: its name, `Like` (the
+game's generic job it looks like, 74 to 93), `Record` (49 numbers, as the
+game keeps a job's), `Words` (its name and description; from 1.47.0 its
+`Summary` too, below), from 1.37.0 its `Skillset` (below) and, from 1.48.0, its
+`Needs` (what opens it, below). **A modder never
+chooses a number**: the first of the eleven free ones (142, 143, 146 to 149,
+155 to 159), kept in `Numbers.json`'s `Jobs`, the same every time. Up to
+1.37.2 one job at a time; from 1.38.0 as many as there are free numbers
+(below).
+
+**What this helper does.** Its record goes into the game's job records; its
+`Job` row is written as the table loads (the row of the job it looks like,
+its own name and description, its skillset's command). Its progress is the
+unit's own slot 22 (JP, total JP, level; the JP table of the job it looks
+like) and a row of learned abilities of its own (1.36.3: Mime's, which is
+never used; the battle reads learned abilities by the skillset, not the job,
+so its two readers are told that the job's own skillset, on a unit in that
+job, is that row; 1.36.1 and 1.36.2 shared the row of the job whose skillset
+it is). Its skillset was one of the game's generic jobs' (5
+to 23) until 1.37.0 gave it its own (below). Its sprites, portraits and face are the job it looks like's. With Dark Knight
+& Onion Knight (Generic) on, its number is added to that mod's second page
+(`JobRoom.OnTheirPage`, reflection, its fields found by name; said when it
+can't). A save's unit in one of the eleven no mod gives now is put on a job
+of the game's as it loads, said.
+
+**1.36.2, from test 75.** Its place on the job screen stands as the job it
+looks like (the screen draws any job that isn't one of the game's generic
+ones as the unit already looks: `0x368424`). What's learned is written where
+it is read: the code that writes an ability learned (`0x28936C`) and the
+game's second list of a job's abilities (`0x392620`) reach its row by the
+slot too. The unit's card shows "--" for a level of 0 (`0x29B5CC`), and shows
+the menu's copy of a unit's levels (`0x284A08`), made as the menu opens; so
+slot 22's level is counted just before that copy, every time.
+
+**1.36.3, from test 76.** A level is counted from level 1's 100 JP on, so a job
+below 100 is level 0, the card's "--". The game never lets that be seen: it
+gives every job of a unit it makes 100 to 199 JP (`0x2770BC`), so the helper
+gives a man's or a woman's slot 22 the same, by that function, the first time
+the menu finds it has no level. And the atlas of units (`0x2897B4`, read as
+a job is changed) is by the job and the unit's sex: past the game's jobs it
+reads whatever is there, which for a woman's place is a size that stops the game
+(a man's happened to be harmless), so it reads the job the mod's job looks
+like. Everything is in `JobFile.cs`, `JobRoom.cs`
+(what is found and written, the native code) and `JobHooks.cs` (armed at the
+game's start).
+
+Tests 74 and 75 (`dev/research/sidequests/make_test74.py`, `make_test75.py`;
+`Job_Test_75.zip` for 1.36.1, which replaced 74 before it was played), and
+test 76 (`make_test76.py`, `Job_Test_76.zip` for 1.36.2): test 75's five
+things put right, the job's Move and Jump where the game's records keep them,
+and test 77 (`make_test77.py`, `Job_Test_77.zip` for 1.36.3): test 76's four
+("Test 77 was a complete success and functioned how you said it would").
+
+**1.37.0: a job's own skillset** (his word on test 77: "Go on and complete
+this"). Until here the job had one of the game's skillsets, so a unit in
+another job that took it as its second set had what it learned in the game's
+job, not the mod's. Now `job.json` (version 2; version 1 isn't read) has a
+`Skillset`: `Like` (the game's generic skillset whose icon it has, 5 to 23),
+`Actions` (1 to 16 of the game's action abilities, 1 to 421), `Others` (up to
+6 reaction, support and movement abilities, 422 to 511) and `Words` (its name
+and description). The helper gives it one of the game's 58 free skillset
+numbers (77 first; `Numbers.json`'s `Skillsets`; one another mod has filled is
+passed over), writes its record where the game keeps skillsets (25 bytes,
+`0x67E210`), puts that number in the job's record, and writes its name as
+that number's row of `JobCommand` (sheet `0x29`) as the table loads. The
+battle's two readers of what a unit has learned (`0x3170CC`, `0x30E368`) take
+a skillset that is no generic job's as Squire's row when it is the unit's
+job's and as wholly learned otherwise, so both are told that this skillset is
+the job's own row, whoever has it. A unit whose second skillset is one of
+those numbers with no mod giving it now has it taken off as the save loads,
+said. **JP for the other units** (his question, "JP spill over"): the game's
+own code gives every other unit a quarter of an action's JP for the acting
+unit's job's slot (`0x28338C`), and a mod's job's slot goes through it like
+any other; `test_jobs` runs it. Test 78 (`make_test78.py`,
+`Job_Test_78.zip`).
+
+**1.37.1: a mod's job in the menu's lists** (his word on test 78: "Battle
+Magicks does not appear in the list to choose from"). The game makes its list
+of a unit's jobs from its own (`0x2864AC`: the unit's first job, jobs 75 to
+93, then 160 and 161), so two lists of the menu never held a mod's job. The
+skillsets a unit may take as its second (`0x28A7C0`): the helper adds each
+mod's job's pair, the job and its skillset, after the game's, unless the unit
+is in that job (site `SecondList`, where the game counts and ends the list).
+The reaction, support and movement abilities a unit may set (`0x28A8B0`: the
+game's lister `0x28A6E8` called for the unit's first job, then for jobs 75 to
+92): the first call is made as it was, then one for each mod's job as the
+game makes its others (site `OthersList`). Dark Knight & Onion Knight
+(Generic) hooks that lister and widens that loop for its Dark Knight; neither
+is touched. **And a wrong done by 1.37.0 put right**: as a save loaded it took
+a second skillset off any unit that had one of the game's free skillset
+numbers the helper hadn't given, and two of Zodi's units had one from
+elsewhere ("2 units had a second skillset no mod gives now"). From 1.37.1 only
+a number the helper's own numbers remember giving a job that isn't here now is
+taken off (`JobRoom.Gone`); the game itself shows a second skillset it can't
+place as none. **1.37.0 is not one to publish.** Test 79 (`make_test79.py`,
+`Job_Test_79.zip`): "Test 79 was a complete success and functioned how you
+said it would."
+
+**1.37.2: a mod's job in a unit's Combat Sets** (his word after test 79:
+"saving my Battlemage to Combat Set 2 saved the job as Knight"). A set keeps
+the job's own number (`0x337F50`), but the game shows a set (`0x33751C`) with
+the first of the unit's jobs that is "the same job" as the set's, and applies
+the job shown (`0x3333F0`). Two jobs are the same to it when their Job rows
+name the same JobType (`0xF72F0`), and a mod's job's row is the row of the job
+it looks like. From 1.37.2 a mod's job is the same job as itself alone (site
+`SameJob`, the test's first instruction), and a set whose job is a mod's job
+is marked usable though the game's list of the unit's jobs never holds it
+(site `SetJob`, the showing's call for that list). Test 80 (`make_test80.py`,
+`Job_Test_80.zip`): "Test 80 was a complete success and functioned as you said
+it would."
+
+**1.38.0: a unit's progress in more than one of the mods' jobs** (the first
+step of his road of 9 November to 22 or more jobs). A unit's record has room
+for one job more than the game's: slot 22's JP, total JP and level and the
+learned row 19, eight bytes. So one of the mods' jobs is "loaded" there at a
+time, every unit's together, and the others are kept by the framework
+(`JobProgress.cs`). Everything the game asks of a mod's job's progress starts
+from the job (the slot's function, `0x2B8F18`) or its skillset (the battle's
+two readers of a learned row); each of those now asks first whether its job
+is the loaded one (a cell beside the stubs) and calls the framework's `Swap`
+when it isn't: every unit's eight bytes put away under the job that was
+loaded and the asked job's put in their place, in the party's records, the
+battle units made from them and the menu's copies together.
+
+- **Which copy is true as a job is put away**: the party's record, unless
+  a battle unit made from it (`0x276758`) has changed since it was made or
+  last written back (`0x274EB8`); both are hooked to keep what the battle
+  unit held then.
+- **Who a unit is**: its birthday, its name's number and its sex. The game
+  doesn't clear a new unit's record, so a place of the party that holds
+  another unit than before starts new in every job.
+- **A job's start**: a job brought in for a man or a woman with nothing in
+  it comes with 100 to 199 JP at level 1, as the game starts a job of its
+  own; the number is worked out from who the unit is and the job's name,
+  so it is the same every time and is never kept in a file.
+- **Beside the save**: before the game writes a save (`0x218F78`) the jobs
+  that aren't loaded are written to `<key>.json` in
+  `fftivc.utility.modstudio.eventsetup.JobProgress`, beside the game's saves
+  (and in Reloaded-II's settings folder for this mod), and the key and the
+  loaded job's number go into eight bytes of the save's variables (0x3B2 to
+  0x3B9, the end of the flags' free bytes). As a save loads they are read
+  back. A save of before 1.38.0 holds the first number's job. A job whose
+  mod is turned off is kept under its name until it is back. A save whose
+  file isn't found keeps the loaded job's progress and starts the others
+  again, said: "the save's units' progress in the mods' other jobs wasn't
+  found (...)".
+
+The files are never tidied yet (one small file for each different state
+saved). Test 81 (`make_test81.py`, `Job_Test_81.zip`): test 74's mod with a
+second job, Skirmisher. His word: "Most things ran perfectly as you described
+I did find these bugs in Test 81": in a battle the cards of both jobs showed
+nothing, the Job Progress button on the second page stopped the game, and
+from the second battle on the loaded job was lost for the units of the
+battle before. **1.38.0 is never to be published.**
+
+**1.38.1: whose a battle unit or a record is, read from what it holds**
+(test 82, `make_test82.py`, `Job_Test_82.zip`: test 81's mod as it was).
+
+- **A battle unit** is a unit of the party's while it names that unit's
+  place and holds the same sex, birthday and name's number (`Mine`). The
+  game clears the battle's units as it sets a battle up (`0x304B48`); 1.38.0
+  remembered which had been whose and took the cleared one's nothing for the
+  loaded job's progress. Nothing is remembered from battle to battle now:
+  whose each is is read again at every ask (`Map`), and a battle unit is
+  taken over the party's record only when it was made, written back or
+  written by the framework for that unit and has changed since.
+- **A record of a unit** is made three ways: the menu's names the party's
+  place, the battle's names the battle unit and that unit's party place (the
+  menu shows the battle's in a battle), and one on its own names its battle
+  unit alone. 1.38.0 read every one the menu's way. `Owner` reads each as
+  its maker wrote it; a record that reads both ways is told apart by the
+  rest of what it holds (`Same`: the other jobs' JP, total JP and learned
+  rows), and is the menu's when that doesn't settle it, since the menu
+  writes its own back to the party.
+- **A battle started again**: the game takes a copy of the battle
+  (`0x2CDBC4`) and puts it back (`0x2CE5C8`, `0x2CE7A8`); the copy's units
+  hold the job that was loaded as it was taken. The game's four calls go
+  through a stub that makes the call as it came and then tells the
+  framework, which notes every job's progress as the copy is taken and puts
+  it back with it. Put back with no copy seen taken (a save made in a
+  battle holds the same copy), the party's records are what is true.
+- **Never less**: what is put away for a job is never less than was brought
+  in (less total JP, or something learned that isn't). If it reads so, what
+  was brought in is kept and the log says: "a unit's progress in (the job)
+  read as less than it had (the unit in place (n) of the party): kept as it
+  was."
+
+His word on test 82: "The test was largely a success." Both jobs showed
+right in a battle and kept everything from battle to battle. Two faults in
+his third battle (below), and the Job Progress button's stop is the other
+mod's own (his word: without it the button works with the test's jobs).
+**1.38.1 is not one to publish.**
+
+**1.38.2: the party's side and the battle's side kept apart** (test 83,
+`make_test83.py`, `Job_Test_83.zip`: test 81's mod as it was). Each
+measured in his program first (`dev/research/sidequests/jobs.py`, "The
+game's own states, and what it copies before it asks").
+
+- **Two sides, as the game keeps its own jobs.** JP is earned in a battle
+  unit alone and reaches the party's record only as the game writes the
+  unit back. 1.38.1's swap put what a battle unit had earned into the
+  party's record, so a battle the game threw away kept it ("restarting the
+  battle from the start her job level is 3 and JP is 343"). Now what is kept
+  for the jobs that aren't loaded is kept twice: for the party's record
+  (`_kept`) and for each battle unit once it has any of its own (`_there`).
+  A swap moves each side on its own; a record gets the side its maker read
+  (`Show`); the game's writing back of a unit is where the other jobs'
+  battle side becomes the party's (`WrittenBack`, which is given the place
+  the game wrote: a guest who joins takes what was kept along now).
+- **Before the game copies.** A unit's status is drawn from a record the
+  game makes of its battle unit on the stack (`0x2CBCA0`, `0x360048`), or
+  from its progress copied there (`0xFCF80`), and only then is the job's
+  slot asked: a swap at the asking came too late, and the status showed the
+  job with the numbers of the job loaded before ("level went down to 1 and
+  JP was 41": her other job's). Two hooks of the game's own load the unit's
+  own job first (`Made`, `Shown`).
+- **The game's own states.** Both states the game keeps and puts back hold
+  the party's records and the save's variables together, so the framework's
+  eight bytes in the variables say which job the records hold. The plain
+  state is written before every battle and put back as a battle starts
+  again from its start (`0x2CF768`, hooked: read as a save loaded). The
+  battle's copy (`0x2CDBC4`, also what a save made in a battle is written
+  from) is told before it is taken: the mark is written into the variables
+  it takes, with a number of the copy's own, and the battle's side is noted.
+  As the game puts it back (`0x2CE5C8`, then `0x2CE7A8`) the party's side is
+  read by the mark and the battle's side is what was noted for that copy.
+
+His word on test 83: "Bug in test 83. 1st, The skirmisher status card Lv.
+Next and JP matches Battlemages instead of Skirmisher." He named nothing
+else of test 83's steps. **1.38.2 is not one to publish.**
+
+**1.38.3: the status card** (test 84, `make_test84.py`, `Job_Test_84.zip`:
+test 81's mod as it was). Measured in his program first
+(`dev/research/sidequests/jobs.py`, "The status card").
+
+- **What his screen is drawn by.** 1.38.2 took the Status screen to be
+  made from a record of the battle unit (`0x2CBCA0`). It isn't. The status
+  card (the job's name with "Lv.", "Next" and "JP", in a battle and out of
+  one, and over the job screen and the abilities) is made by `0x2C1310`
+  from a copy of the MENU's record of the unit. The menu's update of the
+  card (`0x2BD05C`) copies the record its table names (`0x1800F50`, by the
+  word at `0x1811428`) from + 0x70 on into a place of its own (`0x1876C80`)
+  and only then calls `0x2C1310`, whose view's maker asks the job's slot;
+  `0x2C33D0` does the same with a copy on its stack. A swap at the asking
+  wrote the record and the game read its copy: his Jill, a Skirmisher,
+  showed "Lv. 1 Next 69 JP 61", her Battlemage's.
+- **Before the game copies** (`JobProgress.Seen`). Two more hooks of the
+  game's own, at `0x2BD05C` and `0x2C33D0`, told before the game's code
+  runs: the record's own job (its word at + 0x24), when it is a mod's, is
+  loaded first. A swap writes every record of the menu's, so the copy the
+  game then takes is that job's. A record that isn't one of the menu's own
+  is left: the game's table names no other.
+- **A copy of a battle unit** (`JobProgress.Made`, `TakenOf`). In a battle
+  the same update lays the battle unit's numbers over its copy, from a
+  record it makes of a copy of the unit (`0x2BD27F`; `0x368424` does it
+  too, and the battle keeps one more copy). 1.38.2 wrote the party's side
+  to any unit outside the battle's units; a copy of a battle unit gets the
+  side of the battle unit it was taken of now (found as the game finds it),
+  and only a unit the game has just made from a party's record
+  (`0x275B84`, told by `Built`) the party's.
+
+**1.38.4: the battle's side beside the saves** (test 85, `make_test85.py`,
+`Job_Test_85.zip`). His word of 10 November: "go on with what is still open
+with your recommendation". What the framework notes of the battle's side for
+each copy the game takes of a battle was kept in the run's memory alone, so
+a battle taken up again after the game was closed had every job but the
+loaded one as before the battle. Each copy's side is now also written to a
+file of a ring of sixteen (`Battle/00.json` to `15.json` in the framework's
+folder beside the game's saves; the oldest is written over, none is ever
+deleted), with the copy's whole mark in it. A copy put back that the run
+didn't note is looked for there, in each folder, and taken only when the
+file holds that copy's mark and, for each battle unit, the unit is still
+the one the file names. With nothing to keep no file is made, but one
+already at the copy's place in the ring is written over. A run's copies are
+counted from a number of the run's own, so two runs' copies don't share a
+mark. Where no folder can be written it is said in the log, once.
+
+Not put right yet, each known: the cards where units are placed before a
+battle, which the game draws from a copy it makes once for that screen (the
+unit's own job is right there, a card of another of the mods' jobs may not
+be); two battle units the menu makes for itself; the files named by what
+they hold beside the saves are never tidied. **Tests 84 and 85 passed** (10
+November: "Test 84 was a complete success and functioned how you said it
+would. Test 85 was a complete success and functioned how you said it
+would.").
+
+**1.39.0: the job screen's own rows** (test 86, `make_test86.py`,
+`Job_Test_86.zip`; `JobScreen.cs`). His choice of 9 November for a game
+without Dark Knight & Onion Knight (Generic), "Framework's own page", and
+his ask with tests 82 and 83: the jobs "scrolling down row by row". Up to
+1.38.4 the mods' jobs had no place on the job screen without that mod.
+Measured first (`dev/research/sidequests/job_screen.py`,
+`claude/job-screen-research.md`): the screen has 19 places in rows of 6, 7
+and 6 and keeps where each row ends; its filling asks the game's lister for
+the unit's jobs and gives each to its place by its number in the list; its
+cursor steps between the three rows by the row ends alone.
+
+Without that mod, and where the screen is found, the mods' jobs are rows
+after the game's three, six a row, and the screen shows three rows at a
+time:
+
+- The filling's call of the lister goes to a stand in that makes the same
+  call and tells the framework (`Listed`): the list becomes the three rows
+  shown (the game's 19, then the mods' jobs, cut to the rows from the one
+  scrolled to). The rows shown are 6, 7 and 6 (the game's own, nothing
+  moved), 7, 6 and up to 6, or up to 6 each.
+- Each place's box is moved to its row and column with the game's own move
+  (a row of seven on the wide columns, any other on the narrow ones), a
+  place with no job made unseen, and the screen's three row ends written
+  (`Arrange`), at each filling and each frame the cursor's step runs.
+- The cursor's call of its step between rows asks the framework
+  (`Vertical`): inside the three rows it answers as the game does; past the
+  last row shown, with a row below, the rows move up by one (the game's own
+  filling called again) and the cursor is put in the new last row, in its
+  column or on the row's last job; the same going up. At the very last row
+  a new press goes round to the very first, and from the first to the last;
+  a held press stops there.
+- A screen opens on the rows that show the unit's own job, the fewest
+  moved, wherever the game puts the cursor on it (its state 2 or less). The
+  job tree open, the list is the game's own 19. A unit with fewer than 19
+  jobs (a guest, a monster) is left as the game has it.
+
+Its log, in place of the second page's line:
+
+```
+[Mod Studio Framework] the job screen lists the mods' jobs on rows of their own after the game's: move down past the last row to see them.
+```
+
+Where the screen isn't found the jobs are still added, said: "the mods' jobs
+have no place on the job screen: ... wasn't found in ... A game update may
+have changed it: look for a newer Mod Studio Framework." A fault in either
+of its two entries is said once and the game's own answer given. **With
+Dark Knight & Onion Knight (Generic) on, none of it is made**: the jobs are
+on that mod's second page, as before.
+
+**Found on the way, a fault since 1.38.0**: the same job test's stand in
+(1.37.2) reached its end by short jumps, a pair for each job, so with eight
+or more of the mods' jobs the native code couldn't be made and none was
+added ("the mods' own jobs weren't added (OverflowException ...)"). Near
+jumps now; the code is made and run for all eleven numbers in
+`dev/test_jobs.py` (3,862 of its 4,096 bytes of room).
+
+**None of the screen itself could be run here**: test 86 was the first
+time it ran.
+
+**1.39.1: the job tree is always there** (test 87, `make_test87.py`,
+`Job_Test_87.zip`). His word on test 86 (10 November, his log and a
+screenshot of Jill's job screen, a Skirmisher, on the game's three rows): "I
+am on the Job page and pressed the down key but it is not bringing to the
+new row with Battlemage and Skirmisher." His log was the rehearsal's line
+for line. The cause was a misreading: the unit screens' holder keeps the job
+tree (Job Progress) at + 0x80, and 1.39.0 took that being set for the tree
+being open and showed the game's three rows whenever it was. The holder's
+maker (`0x113970`) makes the job screen and the job tree together, so it is
+always set: the list was always the game's 19, and a step past the last row
+filled the screen again from the same rows. Which of the two is on screen is
+the menu's mode (0x581 for Job Progress), not that pointer. The checks ran
+over a screen made up without a tree, as believed, and passed.
+
+- Nothing is read of the job tree.
+- The filling gives the tree every job by its number in the list, at every
+  filling, and the tree shows what it was last given. That call
+  (`0x368A5C`) is the framework's now (`TreePlace`, `TreeEntry`, a third
+  cell): a job of the game's goes to the place it has in the game's own
+  list, whatever rows are shown, and a mod's job to none.
+- `Listed` never moves the rows itself. A screen just made or another unit
+  starts from the game's own three rows, so the tree is given every job of
+  that unit's; where the game is about to put the cursor on the unit's own
+  job (the screen's state 2 or less) and that job's row isn't shown, the
+  rows to show it are noted (`Pending`).
+- The rows move only at the cursor's step (`Vertical`): past the last or
+  the first row shown, as in 1.39.0, and to the rows noted, once the boxes
+  are at rest (found unmoved for six steps in a row, `Rested`; or 90 steps
+  gone by). So a unit in a mod's job opens on the game's three rows with the
+  game's own slide of the places, and a moment later the rows move and the
+  cursor is on its job.
+- While the rows shown are the game's three and the framework has moved no
+  box, no box is touched. The boxes' rest places are the layout's own
+  numbers until the screen's boxes have been found still and laid out as a
+  layout rests them.
+- A unit with fewer than 19 jobs: the game's list, and the screen given
+  back as the game has it (its row ends, any box moved back where it rests
+  and seen).
+
+Three changes more than the jobs' own now (36 become 39); eleven jobs take
+3,896 of the native code's 4,096 bytes. One more line its log can have:
+"the job screen's own rows couldn't be matched to Job Progress (...); the
+game's own places are used."
+
+**1.39.2: the rows' own pattern, and the window's side** (test 88,
+`make_test88.py`, `Job_Test_88.zip`). His word on test 87 (10 November,
+11:45, ten screenshots): "I can now reach Battlemage and Skirmisher but the
+alternating row pattern does not match the black mage row ... also when
+selecting a Job the Learn Abilities and and Change Job menu opens from the
+left on the last three Jobs of the row on the right hand side. This is
+causing the menu for Battlemage and Skirmisher to appear partly offscreen
+because for what ever reason its menu is opening to the left."
+
+- **The pattern.** 1.39.0 put a row of seven on the wide columns and any
+  other on the narrow ones, so the mods' first row stood straight under the
+  game's third. The game sets every other row half a place over. Now a row
+  stands on the wide columns or the narrow ones by which row of all it is
+  (`Wide`: the second, fourth, sixth), whatever rows are shown. A row of the
+  mods' on the wide columns takes the first six of the seven: 19 places
+  can't hold seven, six and seven.
+- **The window's side.** The game puts the window beside the cursor (a
+  job's name, level, JP and its two buttons) to the left of a place when
+  "its row's end less the place is 3 or less" (`0x12FF08`, in `0x12FC6C`),
+  the row found by the screen's three row ends: the last three places of a
+  row. In a row of two both are, and the window opened to the left and off
+  the screen. Those six bytes are a call now (a fourth stand in): the row's
+  end is read from three numbers of the framework's own in the cells' page
+  (`Sides`: where each row would end were it full, seven on the wide
+  columns and six on the narrow), by the row's number in `rdx`, and the
+  game's own compare, `setle` and `jle` go on from its flags. With the
+  game's three rows the numbers are the game's own (6, 13, 19).
+  `dev/test_jobs.py` runs that code in the program as it is with his test
+  87's rows (7, 13, 15) and gets his screenshots place by place, then in
+  the program as changed.
+- **The game's count held to.** A unit whose job's `Job` row hides the job
+  tree (`0x2CBED4`: the Lucavi's and other enemies' jobs, 60 to 73 and 144
+  to 154 in the game's own table) is given a list of one job by the game
+  after the framework has listed 19. `Vertical` and `TreePlace` now leave
+  such a unit to the game (the count at `0x3C510D8` isn't the
+  framework's).
+
+Four changes more than the jobs' own (36 become 40); eleven jobs take 3,913
+of the native code's 4,096 bytes.
+
+**1.39.3: the game's slide on the framework's rows, and a unit's own rows
+from the first frame** (test 89, `make_test89.py`, `Job_Test_89.zip`). His
+word on test 88 (10 November, 12:16, five screenshots): "For step 7a I
+noticed Geomancer appearing in the middle row for a few frames before
+correctly going to the end of the first row ... That of course messes up
+the alternating pattern for a few frames. For 7b one thing I did notice was
+that switching between two Skirmishers causes the first three vanilla rows
+to flash on screen for a couple of frames."
+
+- **What a box's place is.** Nothing in the screen's own code moves a
+  place's box: the layout's timelines do, each key a place of its own
+  (`job_screen.unit_moves`: `Show` slides all 19 in over 16 frames as the
+  screen opens, `ShowUnit` rests the first at every filling, `HomePosition`
+  the rest). A key reaches its box through the animation's applier
+  (`0x400840`), which calls the layouts' move of a box (`0x3EF684`: x at
+  + 0x38, y at + 0x3C). 1.39.2 wrote a box's place itself, so every frame
+  of the slide put it back where the game's rows rest it. With the rows
+  moved by one, Geomancer's box (the seventh) rests first in the middle
+  row: `dev/test_jobs.py` runs the applier in the program as it is with
+  that box where 1.39.2 had it and gets his screenshot.
+- **The move's stand in.** The move's first two instructions (five bytes)
+  are a jump to native code that, for a box the framework has told it of,
+  adds how far that box's row and column stand from the game's to the
+  place asked, and runs the game's own code with that (every register but
+  `rax` as it was after, as the game's own leaves them); for any other box,
+  or told of none, it is the game's own. `Arrange` writes the count (19,
+  or 0 while the rows are the game's) and the 19 boxes with their
+  distances in the cells' page, and where a distance changes has the
+  game's move put that box again. The framework writes no box's place.
+- **The boxes end with their screen.** The job screen's deleting function
+  (`0x12CFA0`) calls its ending at `0x12CFAF`; that call goes through a
+  stand in that makes the count 0 first. `Listed` takes a count of 0 while
+  it holds boxes moved for "that screen has ended".
+- **Told after the filling** (`After`, `AfterEntry`): each of the game's
+  two calls of the filling (`0x36906C`, `0x2BD619`) calls the filling and
+  then the framework, which moves to the rows noted at that filling by
+  having the game fill again, there and then. 1.39.1's wait for the boxes
+  to be still (`Rested`) is gone.
+
+Eight changes more than the jobs' own (36 become 44); eleven jobs take 4,029
+of the native code's 4,096 bytes. One more line its log can have: "the job
+screen's own rows couldn't be moved to a unit's own job (...); the rows
+stay as they are."
+
+**1.39.4: rows of seven and six, Q and E through every job, each row
+sliding as one** (test 90, `make_test90.py`, `Job_Test_90.zip`). His word
+on test 89 (10 November, 15:17, his log and four screenshots): "Much
+better", and: Geomancer "sliding in Right to Left" where its row slides
+left to right; "Shade was not next to Mender. It should be because the
+alternating rows goes from seven units on a row to six units on a row";
+and on the Learn Abilities page Q and E went through "the jobs that were
+last displayed on your Jobs menu" only, from Dragoon to "Mender", and from
+Timekeeper "the game crashes".
+
+- **Q and E.** Going to the abilities' or the summary's page (in
+  `0x12FC6C`) the game hands a piece of the screen (+ 0x1988: the panel
+  with the job's name and the two arrows) every one of the 19 places whose
+  record is open (+ 0x84 of its 0x94 bytes from + 0x2280: 0 open, 1
+  locked, 2 not to be seen), whatever is listed; the piece's step
+  (`0x2A7D9C`, called at `0x1313A1` in the screen's step for those pages,
+  `0x1312C8`) goes through them and round, and the place it answers is made
+  the cursor's. The filling writes the records of the places it lists and
+  no others, so with 14 jobs listed places 14 to 18 held what the rows
+  shown before had left (Mender in the nineteenth) and the list's word for
+  place 14 was the end the framework writes after the last job. Now
+  `Arrange` closes the record of every place with no job; and the call at
+  `0x1313A1` is the framework's (`Cycle`): the game's own step, and where
+  it went round the rows shown, the next open job of everything listed is
+  gone to (past the very last, the very first), the rows moved to show it
+  by the game's filling with the cursor's place set first, the piece's
+  places made again from the rows then shown.
+- **Seven and six.** A row of the mods' on the wide columns holds seven
+  (`RowSizes`). Three rows are shown only where they fit the 19 places
+  (`Fits`, `Scrolls`): seven, six and seven are 20, so the cursor still
+  goes one row at a step and the rows shown move as little as shows its
+  row, by two there (`Step`, `Showing`); where the last three rows don't
+  fit, the last two are shown.
+- **Each row slides as one.** The game slides its first and third rows in
+  from 300 to the left and its middle row from 200 to the right, box by
+  box. A box of the game's middle row that stands in the first row shown
+  (the seventh, where that row is one of seven) is told to come from the
+  other side: the move's stand in (24 bytes a box now: the box, the two
+  distances, where the game rests it across, whether it is turned) puts it
+  as far to the left of its place as it is asked to the right of its rest,
+  half as far again.
+- Where a screen's end was never told, the first box, which the game's
+  readying has put through what the last screen told, is put again.
+
+Nine changes more than the jobs' own (36 become 45); eleven jobs take 4,068
+of the native code's 4,096 bytes. One more line its log can have: "the job
+screen's own rows couldn't go from one job to the next (...); the job stays
+as it is."
+
+Not built or not known, each said to him: the mouse's wheel (where the game
+keeps it wasn't found); each move of the rows fills the screen again; the
+rows move by two where seven, six and seven would be shown; a held Q or E
+stops at the last job of the rows shown; Job Summary shows the overview of
+the job a mod's job looks like; which rows the job screen shows on coming
+back from Job Progress.
+
+**1.39.5: the rows move the same way for any number of jobs, and no box is
+moved** (test 91, `make_test91.py`, `Job_Test_91.zip`). His word on test 90
+(10 November, 16:55): "The test was a complete success and functioned as
+you said it would", and of the rows moving by two: "make it consistent on
+how many rows move no matter how many jobs are added ... I'd perfer 1 but
+if it has to be two it is ok as long as it it consistent from here on out."
+
+- One can't be kept: three rows from a row of seven are seven, six and
+  seven, 20, and the screen has 19 places. `JobScreen.Scrolls` is every
+  second row that has a row after it, so the three rows shown are always
+  six, seven and six places and stand where the game's own three stand.
+  The cursor still goes one row of all the rows at a step (`Step`,
+  `Showing`); the rows shown move by two when it leaves them.
+- So nothing of a box's place is read or written. Out: `MoveBox`, the
+  distances, the turned box (`Across`, `Asked`), `LayoutRest`, `Layout`,
+  the 19 boxes told, the site "Move" and its stand in. **The layouts' move
+  of a box (`0x3EF684`) is the game's own again.** `Arrange` writes the
+  three row ends, the three numbers of the window's side, the records of
+  places with no job (closed) and each box's opacity.
+- The job screen's end is still told (site "Ended"): its stand in makes
+  `ScreenAliveCell` 0, `Arrange` makes it 1 and notes the screen. `Listed`
+  reads an end as "the screen noted is gone", and the next filling on a
+  screen made where it was starts from the game's three rows, so the job
+  tree is given every job. (Before, an end was only seen where a box had
+  been moved, which with eight jobs was never.)
+- Eight screen changes (44 with the jobs' own). The native code for eight
+  jobs is 3,122 bytes with the screen's.
+
+**1.40.0: more than eleven jobs** (test 92, `make_test92.py`,
+`Job_Test_92.zip`; the road's step 3). His word on test 91 (10 November,
+17:47): "a complete success and functioned perfectly as you said it
+would."
+
+The game keeps 174 job records of 0x31 bytes (`0x785E30`), the abilities'
+table right after them, and eleven numbers are free. `JobRecords.cs`:
+
+- Measured first (`dev/research/sidequests/jobs.py`): 40 instructions in
+  30 functions name the records (`RECORD_SITES`: 35 by a distance from
+  the instruction's end, 5 from the image's base) and 15 bound a job's
+  number by 174 (`RECORD_BOUNDS`). `JobRecordSites.cs` holds a pattern for
+  each, written by `dev/research/sidequests/make_record_sites.py` (whole
+  instructions, every distance to elsewhere left open, found once; it
+  needs capstone and is run only when the lists change).
+- `Find`: each found once, a reader held to what its distance names.
+  `Changes`: each reader's distance to the same place in a table at an
+  address, each bound's number 255. `Fill`: the game's 174 records, then
+  the empty record to 255. `Sync`: each record of the game's own table
+  that differs from a copy of it as last seen brought over, and kept.
+- `JobHooks.Arm` makes the table after the code's room (`JobRoom.
+  CellsAfter`, 0x8000 now) and the cells, **only when a job has a number
+  past 173**, fills it, writes every job's record into it (and a job of
+  the game's own numbers into the game's table too, as before), then
+  changes the code. `BringOver` runs `Sync` at the tables' load, a
+  save's load, a battle's build and the job screen's filling.
+- `Mod.cs` looks for the places only without Dark Knight & Onion Knight
+  (Generic) and with the job screen found, before `JobRoom.Plan`, which
+  gives from `JobRecords.Numbers` (the eleven, then 174 to 254) or from
+  the eleven. A job whose kept number can't be used now is left out and
+  keeps it.
+- The Job table's rows past 173 go on without a gap (`JobRoom.BlankRow`).
+  A unit in a number past 173 no mod gives now goes on a job of the
+  game's as a save loads (`JobRecords.Given`).
+
+A save with a unit in a job past 173 needs the framework: the log says so
+where the table is made.
+
+**1.40.1: the Job Abilities window's bound** (test 93, `make_test93.py`,
+`Job_Test_93.zip`). His word on test 92: "a complete success", and for the
+five jobs past 173, "Pressing T to bring up the Job Abilities menu on the
+Jobs menu shows their Job Command is blank" until the unit wore the job.
+
+- The window's maker (`0x2BA1FC`) takes the command from the unit where
+  the job is its own, else from the first byte of the job's record, and
+  bounds the job by 174 first: a 174 made in a register (`mov ebx, 0x40`,
+  then `lea eax, [rbx + 0x6E]`, then `cmp si, ax; jae`), which the search
+  for 174 as a number couldn't find.
+- `jobs.py`'s `RECORD_COMPUTED`; `JobRecordSites.cs` has `Computed` (the
+  span from the `mov` to past the `jae` as one pattern);
+  `JobRecords.Find` finds it once and `Changes` makes the `lea`
+  `imul eax, ebx, 4` (256, in the same three bytes). 56 changes for the
+  longer table.
+- Found by `dev/research/sidequests/compares.py`: every compare of the
+  program with 173 or 174 on one side however the number is made (35; this
+  one, the 15 known and their loops, and 19 not about jobs).
+
+**1.41.0: new abilities** (test 94, `make_test94.py`, `Job_Test_94.zip`).
+Zodi's answer on the road's step 4 was "Straight to more": a mod's own
+action abilities on numbers past the game's own (549 to 1023), with no test
+until the whole rehearsed. It was built beside the helper (`helper/Abilities`,
+into the checks program only) and moved in whole for test 94.
+
+- **A mod's ability** is a folder of its own,
+  `ModStudioAbilities/<ability>/ability.json` (`AbilityFile.cs`): its Name
+  (what its mod's jobs call it), the game's action ability it is Like (1 to
+  367: how it looks when used, its effect, how its user moves, its sound),
+  its Record (8 bytes: its cost to learn in the first two, its chance to be
+  learned, its kind's flags, four of flags for the units the game moves),
+  its Action (14 bytes: Range, EffectArea, Vertical, four of Flags,
+  Element, Formula, X, Y, InflictStatus, CT, MPCost) and its Words (a name
+  of up to 40 characters, a description of up to 300 with up to two line
+  breaks). What can't be used is left out and said. Only action
+  abilities: what a reaction, support or movement ability does is the
+  game's code.
+- **A job names it** in its skillset's Actions by its Name, beside the
+  game's numbers (`JobFile.cs`: `[16, 1, "Flame Lance"]`). A name is the
+  job's own mod's ability; one its mod has no ability of that a number
+  can be given is said and its place left empty.
+- **Its number**: the framework gives each ability one from 549 to 1023
+  and keeps it in `Numbers.json`'s `Abilities` (by `{mod id}/{name}`), as
+  it keeps a job's. The log: "{mod}'s {ability} is ability {n}, looking
+  like the game's ability {like}." An ability no job's skillset names:
+  "... is in none of its mod's jobs' skillsets, so no unit can learn it."
+- **Where a skillset names one** (`AbilityPlan.cs`): the skillset's record
+  (which holds an ability in nine bits) gets the game's ability it is
+  like at that place, and the framework's own list of places (a word for
+  each place of each of 256 skillsets) the mod's own number, which the
+  game's reader answers with first.
+- **What is made in the game** (`AbilityHooks.cs`), only where every place
+  is found, else "the mods' abilities can't be added: {what} wasn't found
+  in {program}. A game update may have changed it: look for a newer Mod
+  Studio Framework." and the places that name them left empty. Made
+  before the jobs are (whose skillsets' records are written as they are
+  made). A room of the framework's own near the program (`AbilityRoom.cs`,
+  0xB400 bytes): its code, the lists, and three longer tables.
+  - The game reads an ability through a few central routines: the
+    reader of a skillset's place, the getter of an action's record and
+    the chooser of an effect are each taken at their first instructions
+    and answer for a mod's ability (the effect: its Like's).
+  - Nineteen compares that would take a mod's ability for something
+    other than a plain action (and two that bound the name of the ability
+    in use) are taken by one shape of code; nine places that cut an
+    ability's number to nine bits keep a mod's whole.
+  - The abilities' records (8 bytes), effects (a word) and how their users
+    move (3 bytes) are each read by the number with no bound, so each
+    table is moved to a longer one of 1,024 (`AbilityRecords.cs`,
+    `AbilityEffects.cs`, `AbilityAnimations.cs`): every instruction that
+    names it given the same place there (21, 4 and 8), each found once by
+    its bytes (`AbilityRecordSites.cs`, written by
+    `dev/research/sidequests/make_ability_sites.py`). What others write to
+    the game's own three since (the mod loader writes a mod's ability data
+    there) is brought over at the tables' setup, a battle unit's making
+    and a save's load.
+  - **Its name, description and cost to learn** (`AbilityWords.cs`): a row
+    of the game's Ability table (sheet 0x27) for each: the row of its Like
+    with its own name, description (a line break written `<br>`) and cost
+    (the game's code reads the cost there). The log: "Ability: the mods'
+    abilities' {n} rows written." The older text's names' file
+    (`9999_sys_abilityn.mes`, which a text routine walks with no bound) is
+    made longer where the game loads it, an entry for every index to
+    2047; a mod's ability's there is the name of the ability it is like
+    (the file's letters aren't known, so its own name can't go there:
+    where that text shows, if anywhere, test 94 asks).
+  - **The turn order** keeps the ability a unit readies as its low byte
+    and a flag past 255, and two routines that show the turn order make
+    the number again from that: both taken, so a mod's ability readied
+    is named as itself.
+- Rehearsed in the program's own code by `dev/test_jobs.py`, the whole of
+  test 94's package among it (the game's lister and info run with the
+  room as the helper starts it).
+- Whether a unit the game moves picks a mod's ability is that unit's own
+  judgment of its data (its record's choosing bytes are read whole); no
+  test shows it until a mod's job stands among a battle's enemies.
+- The measure and what is still open: `claude/abilities-research.md`.
+
+**1.41.1: the abilities screens' tabs** (test 95, `make_test95.py`,
+`Job_Test_95.zip`). His word on test 94: "Focus is the last action ability
+in the list, Flame Lance, Mending Light and Swift Step do not appear" (Learn
+Abilities, and Job Abilities on T; his log as rehearsed).
+
+- Every place that lists a skillset's abilities by tab asks the lister for
+  all of them and keeps only the tab's range: actions 1 to 421, reactions
+  422 to 453, supports 454 to 485, movements 486 to 509. A mod's ability
+  (549 to 1023) was in none, so the action tab dropped it too.
+- Three loops of one shape (`abilities.py`'s `FILTER_SITES`;
+  `AbilityRoom.Filters`, written by `make_ability_sites.py`): each one's
+  two compares and their jumps become a jump to the framework's code, which
+  compares a number from 549 to 1023 as 1 (inside the action tab's range,
+  below every other tab's) and any other as it is, then goes back to the
+  game's store of 0 or its step to the next word. The word stays as it is.
+- The measure had found these and judged them right for a new action
+  ability, as halves of a range of another kind; they are the action tab's
+  own. Every other range check was read again: each is another kind's.
+
+**2.0.4: the 16 summons' own sheets, bigger and in more colors** (test 130, `make_test130.py`,
+`Lich_Test_130.zip`; nothing of it has run in the game). His Lich test of 17 November (his picture of Lich didn't
+show) was traced in the thirty third session: in the enhanced look the game draws each of the 16 summons from a sheet
+of its own in g2d.dat (entry 1426 plus two times the effect's number), not from its effect file. **Measured in his
+program first** (`claude/texture-resolution-research-continued.md`, "The summons' remastered sheets, measured";
+`dev/research/sidequests/summon_sheets.py`): battle slots 15 to 17 make a rectangle of the sheet at twice the draw's
+texture coordinates, each pixel through 256 colors read at the draw's color table word, in the routine the slots'
+part already hooks for the units' sprites. **What 2.0.4 changes** (`BigTextures.cs`): a sheet named by an entry from
+1426 to 2449 is read at 8 bits a pixel (`BitsOf`; "MSBT" files of 8 bits, and sheets of more colors whose numbers have
+8 bits); a slot is drawn from a bigger sheet only at the bits the game draws it at (a summon's at 8, through the
+slot's 256 colors; a sprite's at 4); the menus' figure and a whole entry take only sheets of 4 bits; its line says
+"summons' sheets" ("N picture(s) of summons' sheets is/are shown where the game draws..."), a summon's sheet is named
+"...bigger picture of effect N's own sheet (the game's texture E)", and a sheet of the wrong bits "...has 4 bits a
+pixel, and a summon's sheet has 8". Mod Studio writes the sheet at the game's size as the mod loader's `tex_N.bin`
+(no framework needed) and, twice the size or in more colors, `ModStudioTextures/summon_N.bin` for the framework.
+Checked here: the framework's own reader takes test 130's mods with nothing to say and draws Lich's sheet over a
+stand-in for the game's routines (`dev/test_big_textures.py`; `Checks --textures`' `summonScenes`). **The stand-in is
+not the game.**
+
+**2.0.3: War of the Lions' 40 items' looks in battle matched to his icons** (test 129, `make_test129.py`,
+`Looks_Test_129.zip`). Zodi's ask of 17 November: "the Battle Sprite Attack/Guard and Held or thrown option for the
+WotL items is a bit off can you match them closer to the looks of their Sprite texture", and his new Sprite Textures
+of that evening (PNG, a soft dark edge). Each of the 40 was drawn every way the game draws it from his game's three
+files and held to his icon (`dev/research/sidequests/wotl_looks.py`; `claude/wotl-items-research.md`, "The 40's
+looks in battle, matched to his icons"): held or thrown, War of the Lions' own icon in its own palette where the game
+has it, the nearest of the game's 16 palettes where it asks for one past them; attack or guard, the swing of the
+game's weapons drawn on the same icon, in the swing palette nearest his icon's colors; a fell sword (type 0x23) swings
+as a sword, the frames the game's own routine gives it. **What 2.0.3 changes**: `WotLItems.cs`'s facts (each item's
+record and pair, made again by `wotl_items.py --csharp`), its line ("...each with its own icon and a look in battle
+matched to its icon; N as the mods changed them."), and the 40 small icons from his new Sprite Textures. Nothing else
+of the framework changed. Checked here: the framework's own reader takes test 129's mod with nothing to say and gives
+the 40 with the chosen looks (`dev/test_wotl_items.py`). Test 128 (2.0.2) and test 129 (2.0.3) passed in his game.
+
+**2.0.2: a picture of more colors through the game's tints** (test 128, `make_test128.py`, `Job_Test_128.zip`: test
+127 again with this helper). Zodi's answer after test 127 (17 November, 14:59): "The full colors should stay through the
+highlight with what ever appropriate tints applied to them"; and to the question whether a status's tints keep them
+too (recommended yes), "I go with your recommendation": one rule for both. **Measured in his program first**
+(`claude/texture-resolution-research.md`, "Measured in the thirty second session"; `dev/research/sidequests/tints.py`
+holds every instruction it names): the battle changes a unit's palette before its colors are made, by halving, making
+grey (the parts weighed 2, 3 and 1, over 6 or 12) or neither, then adding an offset to each part kept to 0 and 31
+(`0x2F7628`; a status's at `0x269330`, the menus' at `0xCE5D9`), and by blending toward a color or back from it in 8
+or 32 steps (`0x2F4944`, `0x2F5F78`, their two tables of steps in the program byte for byte as the PlayStation's rule
+makes them): the selection highlight and the teams' pulses (blue 24 for the player's units, red 16 for an enemy, red
+16 with green 8), the statuses (Petrify grey, Blood Suck grey with a color, Berserk red, Poison halved with green,
+Regen blue, Oil and others halved and darkened, Undead halved with a color), and the shading of the tile a unit stands
+on with rain and night (`0x269074`). Black is left alone and a color made black that wasn't keeps blue 1, as the game
+does. **What 2.0.2 does**: where the palette in hand isn't the one a picture was given in, `OwnColors.Tint.Find` looks
+for the tint that gives every drawn color of the palette in hand from the given one exactly (a change alone, a blend
+alone, then a blend on a change; each part's offsets narrowed to what fits, the game's known offsets tried first; the
+whole tint checked under the game's rule), cached by palette (512 kept); `Tint.Apply` puts each own color through it,
+its five bits exactly as the palette's colors go and its finer three along the slope, so the game's palette points
+come out exact and a picture under no tint is as it was. A palette no tint gives (a team's other palette) draws the
+nearest colors as before. The effects are unchanged. The log says once: "the game tinted a picture of more colors for
+the first time, and its own colors were kept through the tint (<who>: <the tint>)". **Checked here** (not in the
+game): every one of the game's tints over 60 random palettes run in a machine over the program's own code (586) found
+and drawn exactly at the palette's points (27,000), the C# and the Python searches finding the same tints over 290
+palettes and drawing the same, a palette no tint gives refused, a game tint found in 0.07 ms at the median and about 11
+at the most (`dev/test_own_colors.py`, its section on the game's tints). **Test 128**: test 127's package made again
+with this helper, its notes saying what to look at (the highlight toward blue or red, the statuses by what they do,
+shaded tiles, rain and night, a team's other palette in its nearest colors) and the log's lines.
+
+**2.0.1: the jobs find the game's save routine past the items' hook** (test 127, `make_test127.py`,
+`Job_Test_127.zip`: test 126 again with this helper). Zodi's report on test 126 (17 November, 13:29, his log and five
+screenshots): at step 4 no job of the mods (no Battlemage on the job screen, no Frost Mage) and the Squire man in his
+own look; before it, Gariland's Outfitter selling the three items as the notes said, the Knight woman's stripes, and
+the log's lines of the items, the battles and the pictures as the notes quote them. The log: "the mods' 21 jobs can't
+be added: SaveWrite (0 places like it, not 1) wasn't found". `Mod.Initialized` plans the items before the jobs, and
+the items hook the game's save routine (0x218F78: `ItemRoom`'s Save, found from its fifteenth byte), a jump written
+over its first 14 bytes before the jobs looked for the same routine (`JobRoom`'s SaveWrite) from its first byte.
+2.0.1 finds SaveWrite from the fifteenth byte too (its lead -14); nothing else of this helper changed. Checked here:
+the checks program runs `JobRoom.Find` again over his program with each of the 14 functions the items hook given a
+jump of 14 bytes (`Checks --jobs`: `withItemsHooked`), every place found and none moved; and every pattern of this
+helper's parts held against every other in Mod.cs's order (`dev/research/sidequests/pattern_overlaps.py`,
+`dev/test_event_setup.py`): the save routine was the only pattern one part's hook hid from a part after it, and the
+other nine pairs are each safe (HANDOFF). The Squire man's fault was Mod Studio's: its list of the units' sprites gave
+him sheets 924 and 925, another sprite's copy of his picture, where the game draws him from 992 and 993 (its own
+table); put right there, nothing of this helper.
+
+**Test 127** (`dev/research/sidequests/make_test127.py`, `Job_Test_127.zip`; `dev/test_qt_job_tabs.py`'s section "Test
+127's package"): test 126 again (made again from his four zips over test 125's package) with this helper, the Squire
+man's picture at 992 and 993, its quest renamed Test 127 Quest so it plays again (the ring keeps its name: an item's
+key is its mod and name, and his file has it at 316 since test 126). Its notes say what was wrong and ask for steps 4,
+6, 7 and 8 again at least. Checked here as test 126 was, and the jobs found with the items' hooks in place. **His
+report (17 November, 14:39)**: steps 4 to 7 as the notes say, and every line of this helper as they quote them: the 21
+jobs given (Battlemage 142, Frost Mage 147) beside the items, the battles and the bigger pictures; "the game was given
+a bigger picture of more colors for the first time (Test 74 New Job's bigger picture of the game's texture 992 in more
+colors, 1024 by 1024 pixels where the game's are 512 by 512)."; the quest's, the arena's and battle 167's lines. The
+selected Squire man's colors are the sheet's while the game's selection highlight fades in and out (a flash: the
+palette in hand isn't the one given), as designed; his answer (14:59): "The full colors should stay through the
+highlight with what ever appropriate tints applied to them", the next session's work, measured first. Steps 8 to 10
+"were a success"; the log of the run his effects' screenshots came from wasn't sent.
+
+**2.0.0: War of the Lions' items, a mod's units of any battle, items past 255 on units and tiles, a sprite's sheet
+and an effect's picture at a bigger size and in more colors** (test 126, `make_test126.py`, `Job_Test_126.zip`: test
+125's two mods, 1.24.0 and 1.17.0, the first opened in Mod Studio, given all of it on Mod Studio's pages and written by
+its Export; and this helper). Zodi's four points of 16 November, 01:58, after test 125 passed; his word then: "Feel free
+to run the tests and suite checks for these three points until after everything is completed"; his fourth point: the
+version is 2.0.0 "when the three points are complete". The thirty first session (17 November) made the bump with test
+126, the one test for everything (below: "Test 126"). **Nothing of it has run in the game yet**: test 126 is its first
+test there.
+
+**Mod Studio's side, since the twenty fourth session (16 November)**: its pages write both files (`ModStudioBattles.json`
+from the Encounters and Treasure Hunter pages, a quest's battle's `Items` from the New Content page,
+`ModStudioWotLItems.json` whenever a mod names or changes one of the 40), and `dev/test_mod_battles.py` runs this
+helper's own reader (`Checks --battles`) over what Mod Studio writes and holds each fault's words to Mod Studio's. No
+file of the helper was changed for it. **Since the twenty fifth session (16 November)** Mod Studio's Items page lists
+the 40 and edits one (the New Content page's item sheet, shown inside the Items page), a changed one written into
+`ModStudioWotLItems.json`, a picture of the mod's own for it as an item icon's four files named of the mod and the
+item; `dev/test_mod_battles.py` runs this helper's reader (`Checks --items`) over that too. No file of the helper was
+changed for it either. **Since the twenty sixth session (16 and 17 November)** the units' sprites of his second
+point are built (below: "A sprite's sheet at a bigger size"), with Mod Studio's Textures page writing what this helper
+reads. **Since the twenty ninth session (17 November)** an effect's picture at a bigger size too (below: "An
+effect's picture at a bigger size"), and War of the Lions' 40 items' small icons are his icons of 32 by 32
+(below). **Since the thirtieth session (17 November)** pictures of more colors than a sheet's, tied to one palette
+(below: "A picture of more colors"). **The thirty first session (17 November)**: the bump to 2.0.0 and test 126
+(below: "Test 126").
+
+**A sprite's sheet at a bigger size** (`BigTextures.cs`, `BigTextureHooks.cs`; measured in
+`dev/research/sidequests/big_textures.py`, `claude/texture-resolution-research.md`; his second point: "replace the ...
+files with those of higher resolution ... In game the texture upscaled will be the same size on the screen as before but
+higher resolution. New Jobs sprites should be able to have this as well").
+
+- **Asked for by a mod**: `ModStudioTextures.json` at a mod's root, `{"Sprites": [...]}` (and since the twenty ninth
+  session `"Effects"`: below), each `{"Entry": <an entry of
+  g2d.dat, 0 to 16383>, "File": "<a file inside the mod's folder>"}` or `{"Job": "<the Name of a job of the mod's own>",
+  "Who": "Man" or "Woman", "Half": "Upper" or "Lower", "File": ...}` (a job the game was given textures for:
+  `SpriteTextures.cs`). The file is a sheet as Mod Studio writes one: "MSBT", its version (1), its bits a pixel (4), its
+  scale (2 to 8, two bytes), its width (512 times the scale) and its height in pixels (four bytes each, whole rows of
+  the game's, 512 at most), then its rows, the left pixel in a byte's low four bits. The mods are read in Reloaded-II's
+  order; a later mod's sheet for an entry is shown in an earlier one's place, said. Each fault is said and that sheet
+  left out.
+- **What the game does** (his program, as data): nothing draws from a sheet. The game makes 32 bit pixels on the CPU
+  from an entry unpacked by `0x3D25D8` and a palette of 32 bit colors made by `0x41DC34`, in three places (the battle's
+  slots, `0x3D0F8C`: a rectangle of the sheet; a whole entry in the battle, `0x415D30`; the menus' figures, `0xCE204`),
+  and hands them to the card through `0x3D0B10`. No draw asks the card's texture for its size: each divides by numbers
+  of the game's own.
+- **What the framework does**: four hooks, each calling the game's own routine (the unpacking of an entry, the making
+  of a palette, the battle's making of a slot's texture, the making of a texture on the card). Where the texture now
+  made stands for an entry with a bigger sheet, the same rectangle is made from the bigger sheet **through the game's
+  own palette of that moment**, the game's routine makes the texture from those pixels at their size, and the object's
+  width, height and two floats are put back to the game's. A slot's variant that has a texture is freed first by the
+  game's own routine (`0x3D11DC`), so the game makes it anew; a texture that is bigger and is next given pixels of the
+  game's size, or the other way, is freed (`0x3D0C6C`) and made anew. Pixels the game owns are left to the game. A
+  place not found (a game update) leaves every sprite at the game's size, said. With no bigger sheet in any mod none
+  of it is made.
+- **Its lines**: "N bigger pictures of sprites are shown where the game draws their textures, at the same size on the
+  screen."; once, "the game was given a bigger picture for the first time (<whose>, <its size> where the game's are
+  <the game's>)."; "the sprites' bigger pictures can't be shown: <why>. Each sprite is drawn at the game's size."
+- **Checked here**: `dev/test_big_textures.py` (the measure held to his program; this reader over what Mod Studio
+  writes; the hooks' part over a stand-in for the game's routines, written from their instructions: the stand-in is not
+  the game). **Not run in the game.** Not built: pictures of more than a sheet's 16 colors (the effects' pictures:
+  below; the twenty seventh session's word that they reach the card as rectangles of a shared texture was
+  corrected by the twenty ninth's measure).
+
+**An effect's picture at a bigger size** (`EffectTextures.cs`, `EffectTextureHooks.cs`; measured in
+`dev/research/sidequests/effect_textures.py`, `claude/texture-resolution-research.md`, "Measured in the twenty ninth
+session"; his second point, "replace the effect sprites ... files with those of higher resolution", and his answer of
+17 November: "Yes, up to 4 times (Recommended)").
+
+- **Asked for by a mod**: the same `ModStudioTextures.json`, its list `"Effects"`, each `{"Effect": <the effect's
+  number, 0 to 511>, "File": "<the bigger sheet, a file inside the mod's folder>", "Picture": "<the mod's own file of
+  the effect, at the game's size>"}`. The sheet is "MSBT", its version (1), its bits a pixel (4 or 8: the bits the
+  effect's frames draw it at that the picture was given in), its scale (2 to 4), its width and height (the effect's
+  sheet at that scale), then its rows, at 4 bits the left pixel in a byte's low four bits; its color numbers are the
+  sheet's. A later mod's picture of an effect is tried before an earlier one's, said. Each fault is said and that
+  picture left out.
+- **What the game does** (his program, as data): an effect's picture is put in the emulated video memory at x 384, y 0
+  (`0x2741E0`); a draw takes a page of that memory, and a page with a palette is a record (`0x3C7C960`, made by
+  `0x418A48`) whose texture `0x41E05C` makes. Only pages 12 to 15 are ever given a cell of the game's one shared
+  texture there; every other record, an effect's pages 6 and 7 always, is a texture of its own, its pixels made on the
+  CPU (`0x418F20`) and sent again (`0x3D0BF8`) or noted and made (`0x3D0A80`, `0x3D0B10`) at the record's size. The
+  draw divides by the record's own width and height, and the game itself makes seven of its pages' textures 512 by 512
+  for records of 256 by 256: a bigger texture under the same record covers the same place.
+- **What the framework does**: one hook, on `0x41E05C`, calling the game's own routine for every record but one whose
+  page (its plain copy, at the bits the picture was given at) holds part of a mod's effect picture, its bytes there
+  the mod's picture at the game's size; for that one the game's own routine makes the page's pixels, the framework
+  makes them 2 to 4 times bigger (the picture's part from the bigger sheet's color numbers through the record's own
+  palette, so every palette and every change of color the game makes is kept; the rest of the page the game's pixels
+  repeated) and hands them to the game's own routines as the game does at that place. The texture costs a page's
+  memory (4 MB at 4 times) only while the effect plays. With no bigger picture in any mod the hook isn't made; a place
+  not found (a game update) leaves every effect at the game's size, said.
+- **Its lines**: "N bigger pictures of effects are shown where the game makes their textures, at the same size on the
+  screen."; once, "the game was given a bigger picture of an effect for the first time (<whose>, <size> by <size>
+  pixels for a page of the game's 256 by 256)."; "the effects' bigger pictures can't be shown: <why>. Each effect is
+  drawn at the game's size."
+- **Checked here**: `dev/test_big_textures.py` (the measure held to his program and `0x41E05C` run in a machine; this
+  reader over what Mod Studio writes; the hook's part over a stand-in for the game's routines, written from their
+  instructions: the stand-in is not the game). **Not run in the game.** Not built: a picture drawn bigger at the bits
+  it wasn't given in, a page drawn through a texture window bigger (pictures of more colors: below).
+
+**A picture of more colors** (`OwnColors.cs`, with `BigTextures.cs` and `EffectTextures.cs`; measured in
+`dev/research/sidequests/deep_colors.py`, `claude/texture-resolution-research.md`, "Measured in the thirtieth session";
+his second point, "higher resolution and deeper color depths. For instance using PPSSPP texture packs", and his
+answers of 17 November: tied to one palette, PPSSPP's way; "Up to 4 times (Recommended)"; "Keep its colors
+(Recommended)").
+
+- **Asked for by a mod**: the same `ModStudioTextures.json` and the same entries (a unit sprite's by Entry, a job's
+  figure by Job, Who and Half, an effect's by Effect, File and Picture), the sheet's file at its version 2: "MSBT", 2,
+  32 (bits a pixel), its scale (1 to 4, two bytes), its width and height (four bytes each: a sprite's 512 times the
+  scale and whole rows of the game's; an effect's its sheet's at those bits and that scale); then its color numbers'
+  bits (4, or an effect's 4 or 8), 0, how many colors the palette it was given in has (two bytes: 16 or 256) and their
+  15 bit words; then its rows compressed (zlib), four bytes a pixel: its own red, green and blue (red first) and its
+  color number. Each fault is said and that sheet left out.
+- **What the game does** (his program, as data): where the framework makes a sprite's pixels the palette in hand is
+  16 colors made by `0x41DC34` (each part's five bits shifted up three) from the emulated video memory's color table in
+  the battle and from the sprite's own colors in the menus, each changed first by the unit's status there; where it
+  makes an effect's page's pixels, the record's 16 or 256 colors made by `0x25EB10` through a table of its own (each
+  part over 31 times 255, cut). A team's colors are another palette; a status's, a flash and an effect's colors as they
+  change are colors changed before they are made. Under both rules each color's five bits a part come back as its 32
+  bit part shifted down three, and a color made never drawn is 0.
+- **What the framework does**: no hook more. Where the game makes a texture from such a sheet (a battle's slot, the
+  menus' figure, a whole entry, an effect's page), it is made as a bigger sheet is, but where the palette in hand is
+  the one it was given in (every color the same five bits a part, or 0) each pixel is its own color, kept see through
+  or blended as the game made its number's color; in any other palette its numbers go through the palette in hand.
+  Memory: 4 bytes a pixel, held while the mod is enabled (a unit sprite 2 MB at the game's size, 32 MB at 4 times).
+- **Its lines**: the sprites' and the effects' lines say how many of their pictures are of more colors ("N pictures of
+  sprites are shown where the game draws their textures, at the same size on the screen, M of them of more colors
+  where the game draws them in the palette each was given in."); once, "the game was given a picture of more colors
+  for the first time (...)" ("a bigger picture of more colors" where it is bigger too; "of an effect" for an effect's).
+- **Checked here**: `dev/test_own_colors.py` (the measure held to his program and both rules run in a machine; this
+  reader over what Mod Studio writes; the hooks' part over a stand-in for the game's routines, written from their
+  instructions: the stand-in is not the game). **Not run in the game.**
+
+His first point: "Like we made Dark Knight and Onion Onion In Mod Studio Framework we should do the same for WotLs items
+from WotL Restoration to be able to be used by the framework so they can be edited on the Items page and can be used in
+Encounters page and modders new Battles and for Treasure Hunter." His third: "The ENTD only supports a limited amount of
+override slots, can we overcome this and allow users to override every single 16 unit slot for every battle."
+
+- **War of the Lions' 40 items** (`WotLItems.cs`, `ItemHooks.cs`, `ItemRoom.cs`; measured in
+  `dev/research/sidequests/wotl_items.py`). Nothing of them is in the game: his program holds item records for 0 to 255
+  and its own five (256 to 260: its boundaries at `0x6804E2` end at 261) and its Item table stops at 260; only its code
+  still knows five of the numbers (Onion Knight's own equipment) and the fell swords' item type. So the framework
+  carries each whole: its record, its kind's record and its equipment bonuses as War of the Lions has them (FFTPatcher's
+  PSP files, Glain's, GPL-3, read for facts: `NOTICE.md`), at WotL Restoration's numbers (261 to 277 War of the Lions'
+  own; the five fell swords at 278 to 282; then 288, 289, 292 to 295, 300 to 305 and 308 to 313), so a mod that names
+  one means the same item with either. WotL Restoration's art is its author's and isn't copied. **Their icons and
+  words are Zodi's** (his message of 16 November, 05:26: "Here are my items icons and the descriptions, you can rename
+  the icon files as you wish"), and since 17 November his art of 100 by 100 ("here is my item art for the War of the
+  Lions items"), each carried beside the helper as an item icon's four files (`helper/wotl_items/`,
+  `msf_wotl_<number>`: the menus' 100 by 100 his art pixel for pixel; the small one of 48 by 48, since his word of
+  17 November that the art is the Art Texture only, his 32 by 32 icon of `Items_and_Descriptions.zip` pixel for
+  pixel in its middle, kept as he sent it in `helper/wotl_items/sprite/`;
+  `dev/research/sidequests/make_wotl_icons.py`), and War of the Lions' description of each
+  as he gave it (`helper/wotl_items/descriptions.txt`; the item its line calls Crown Sceptre is Crown Scepter, his
+  word of 06:50). Each still swings the look in
+  battle of the game's nearest item of its kind (a fell sword's a knight's sword's, Tynar Rouge's a perfume's).
+  - **Asked for by a mod**: `ModStudioWotLItems.json` at a mod's root (`{"Format": "Mod Studio War of the Lions
+    items", "Version": 1, "Items": [...]}`). Its being there asks for the 40. `Items` may give the mod's own version of
+    any: a whole item in `item.json`'s format plus `"Item"`, one of the 40's numbers, of the item's own Kind; its
+    story point (its Record's byte 10) is 1 to 16 as a shop item's, or War of the Lions' own 20, which no shop reaches;
+    its Icon is the framework's own for that item by its name (`"msf_wotl_262"`), one of the game's items' by its
+    number, or a picture of the mod's own. A later mod's version stands over an earlier's. What can't be used is said and the framework's own stands.
+  - **Given only where WotL Restoration hasn't given them** (its page made: its items stay its own, said: "War of the
+    Lions' items are WotL Restoration's here: Mod Studio Framework gives none of its own."). Else a second block and
+    native code like the mods' own items' (`ItemRoom.Data` and `Code` from 261, 55 numbers) stand before them: each of
+    the nine item functions asks War of the Lions' code first, whose way on is the mods' own items' code, whose way on
+    is the game's. Their bonus rows come before the mods' own items' (from the first row free), their Item rows with
+    the mods'.
+  - **Their counts in a save** where WotL Restoration keeps its own (the event variables' `0x2FC`: its four bytes
+    `57 43 01 00`, then a count for each of the 55 numbers), so a save goes from one to the other; a save that never
+    held one is left as it was (no mark written).
+  - In the log: "War of the Lions' 40 items are given (261 to 313), each with its own icon and the look in battle of
+    the game's nearest item of its kind." (and "; N as the mods changed it/them."); "Item: War of the
+    Lions' items' N rows added."; "War of the Lions' items' counts are taken from the save loaded."
+- **A mod's units of any battle** (`BattleFile.cs`, `BattleHooks.cs`, `Places.FindBattleUnits`; measured in
+  `dev/research/sidequests/battle_units.py`). As a battle loads (`0x30428C`) the game looks its OverrideEntryData row
+  up for each of the 16 places by the battle and the place (`0x1EA574`: no count of rows anywhere; made only when the
+  dword at `0x7D453C` isn't 0) and writes the row's columns into the place's 40 byte entry, then makes the units. A row
+  has no column for an entry's name, birthday, palette, team, war trophy, gil or AI, so a row can't make a unit where the
+  battle file has none. The framework's hook of that function runs the game's own first, then writes the mods' units'
+  bits into the entries: a mod's `ModStudioBattles.json` (`"Units"`) gives a unit by its battle (any of the game's, 0 to
+  4095) and its place (1 to 16) as `Mask` and `Values`, 40 bytes in hex each: where a bit of Mask is set the entry's
+  bit is Values'. A place the file leaves empty is a unit like any other (all 40 bytes). `Job`: one of its mod's own
+  jobs by its Name, its number written as the entry's job. A later mod's bits stand over an earlier's.
+- **An item past 255 on a unit** (his first point; his answer on a mod's own items there: "Yes, those too"). An entry
+  keeps its five items in bytes and the game's rows' columns are cast to bytes, but the unit keeps words. The one
+  function that puts an entry's equipment on (`0x277564`, called once, by the unit's making, before its stats) is
+  hooked: the game's own first, then the unit's `Head`, `Body`, `Accessory`, `RightHand` and `LeftHand` of its
+  `ModStudioBattles.json` unit (or of a quest's own battle's `Items`: `{"Unit": 3, "RightHand": 262}`), each a number
+  (256 to 315) or the Name of one of its mod's own items, written as the game writes a byte's (a hand's shield in its
+  shield's word, its weapon's none, and the other way). An item is put on only where it is worn (a weapon or a shield
+  in a hand), and War of the Lions' only when the game has them this time; else said.
+- **An item past 255 as a buried treasure** ("for Treasure Hunter"). The game's own table (`0x783840`: 128 maps, four
+  records of 6 bytes) keeps a tile's rare and common item as words and the battle reads them as words; the map's load
+  (`0x251584`) copies the map's 24 bytes to where the battle reads them (`0xD8DC90`). Its hook runs the game's own
+  first, then writes the mods' items over the copy: `"Treasures": [{"Map": 74, "Tile": 2, "Rare": 262, "Common": "Moon
+  Sword"}]`, whatever a table of another mod's put there.
+- In the log: "The mods' battles: 2 units changed in 1 battle, 2 units wearing items past 255, 2 buried treasures on 2
+  maps."; then once each as it happens: "battle 387: 2 of its units are as the mods have them.", "battle 387: unit 5
+  wears item 293 (head), Moon Sword (right hand) and item 288 (left hand).", "map 74: its buried treasure is as the mods
+  have it."; what is left out, each in a line.
+- Rehearsed (`dev/test_wotl_items.py`, 42 checks and a SKIP without his art's zip; `dev/test_battle_units.py`, 25): the 40 against War of the Lions'
+  PSP data, WotL Restoration's Item table and his program; their icons' files read back against his pictures and his
+  words against the facts; a mod's asking and its own versions; his program's own nine
+  item functions run over the 40 (each number's records, the game's and the mods' own numbers as before, every register
+  kept), an item given, counted, listed and put under its tab; the counts in a save; the three sites found where
+  measured, each called only where measured, nothing after a call counting on a register a hook may change; the game's
+  own putting of equipment run and the framework's words in the same places; the map's treasures copied and read as
+  words; a mod's file read and each way it can be wrong; the plan over two mods; a block, a unit and a map's treasures
+  as the hooks leave them. **What could not be run here**: the game. No hook of this section has run in it.
+- **Not looked after**: a save whose unit wears one of the 40 loaded with neither giver on (1.35.0's taking out
+  covers 316 to 381 only). Mod Studio's side of all of it is built (above), and his second point (the three sections
+  before this one).
+
+**Test 126** (`dev/research/sidequests/make_test126.py`, `Job_Test_126.zip`; `dev/test_qt_job_tabs.py`'s section "Test
+126's package", nine checks): test 125's package (made again from his four zips), its first mod opened in Mod Studio and
+given, on Mod Studio's own pages:
+
+- **Items**: a new item, Test 126 Ring (a copy of the game's Reflect Ring, with its icon); Moonblade (its price 1,260)
+  and Acacia Hat (a picture of the mod's own as its icon) changed on the Items page; the three sold at the Outfitter of
+  Magick City of Gariland from the story's first point. Over his numbers the ring is item 316 (his own mod keeps 317).
+- **Battles**: the quest renamed Test 126 Quest (so it plays again), its first unit, a Battlemage, wearing Durandal and
+  the ring; Mandalia Plain's 13 random battles (155, 157 to 168), in each the first unit always there that no row of the
+  game's covers made one of the green team, and its first empty place given a unit (Add a unit's copy) made a Frost
+  Mage man, an enemy in the enemies' palette, on the free tile next to that unit, wearing the Stardust Rod and the ring;
+  South 4's (164) row's unit, a Dragoon woman of the player's side who comes at random, wearing the Gae Bolg and the
+  ring; the Battle Arena's (map 116) tile 1 moved to 3, 8 (no unit of the quest's battle starts there), its treasures
+  the Sage's Ring and the ring.
+- **Pictures**, made up for the test: the Squire man's (sprite 96, entries 924 and 925, which seven other sprites wear:
+  the list's numbers then, wrong, as his report showed; the game draws him from 992 and 993, test 127)
+  twice the size in colors of its own, kept for its first palette; the Knight woman's (101) at the game's size; Frost
+  Mage's man's figure twice the size in colors of its own, kept for palette 0; Potion's (260, 8 bits) and Rush's (154, 4
+  bits) effects twice their size in colors of their own; Ether's (269) at the game's size. The bigger ones' white lines
+  show only at twice the size (each block's middle pixel, the one the game's size keeps, is never one of them). This
+  helper keeps about 16 MB for the pictures of more colors.
+- **Checked here**: the package's files against test 125's; Mod Studio reading its own files back; this helper's checks
+  (`Checks --jobs`, `--items`, `--battles`, `--textures`, `--quests`) over the package with his `Numbers.json`: nothing
+  said, every place found in his program, each line as the test's notes quote it, every job the number test 125's plan
+  gave it, the 13 battles' blocks as the hook leaves them; the notes' names held to the files. **What could not be run
+  here**: the game. The add on file's battles (512 to 588) are in no scenario, no random battle's row and no table of
+  1.5.2, so no test reaches them, and test 126 has none.
+
+**1.56.0: a job may need a job of its own mod mastered** (test 125, `make_test125.py`,
+`Job_Test_125.zip`: test 124's two mods, 1.23.0 and 1.16.0, Timekeeper needing Duelist mastered, the two jobs'
+textures as Mod Studio's Export writes them now; and this helper). His report of 16 November on test 124: Onion
+Knight's description right now, the rectangles under the feet still there; his answers: "Mod Studio should fix it
+automatically", and "yes build both mastered job line and yes a job also be able to need one of your own mod's jobs
+mastered". His word on test 125 (02:43): "Test 125 was a complete success and functioned how you said it would."
+
+- **A job of its own mod needed mastered** (`JobFile`'s Needs): a need's Level may be the word `Mastered` for another
+  job of the same mod too: `{"Job": "Duelist", "Level": "Mastered"}`. That job's own places are those its skillset
+  fills (its Actions the first places, its Others from place 16 on; `JobNeeds.PlacesOfOwn`); a place that holds no
+  ability counts as learned, as the game counts its own. The job needing it is open to a unit only where the unit has
+  learned every one of those places, whatever its level, and the job needed is open to it. The unit's learned row in
+  that job is read as its level is (`JobProgress.Row`): the menu's record's own where it is the job loaded in slot 22,
+  else what the framework keeps of the job (bytes 5 to 7 of its eight, `JobProgress.RowOf`). GeneralJob's row asks it
+  at 9, which the window shows as "Mastered"; the window's answer whether the unit has mastered it takes a job of the
+  mods' by its identity (`JobAsker.HasMastered`).
+- **Job Progress** (`JobTreeLines`): a line from a job of the mods' needed mastered is met only where the unit has
+  mastered that job; with the cursor on the job that needs it, the needed job's right label shows the job screen's
+  mastered stars in place of a level (`Master`), red until mastered and green once; on a job that asks a level of it,
+  the label shows a level again (`Leveled`: its `LvMaster` stopped and its `LvNum` played).
+- **The game's Dark Knight or Onion Knight its mod gives, asked mastered**: asked at level 8, by its own test as
+  before (only a job made new or one of the game's generic jobs is asked by its abilities learned), and said: "{who}
+  needs the game's {game} mastered: it is asked at level 8 (only a job made new or one of the game's generic jobs is
+  asked by its abilities learned)."
+- 1.55.2's fault for a job of the same mod asked mastered is gone; a Level that is neither 1 to 8 nor Mastered is said
+  with "({least} to {most}, or Mastered)".
+- **The bars under the feet, for good** (not the framework's: Mod Studio's Export, his answer): measured again in his
+  program, the menus' figure routine (`0xCD458`, its size table read at `0xCDAB9`) takes each piece's texture from
+  half a classic pixel in (`(u + 0.5) / 256`: the constant 0.5 at `0x722D60`, 1/256 at `0x722C94`, the adds at
+  `0xCDC25` and `0xCDC31`) with the texture filtered, so the game's size's two rows past a piece's bottom and two
+  columns past its right show along its edge; nothing above its top or left of its left. Test 124 cleared only the
+  first; the second still showed, fainter (his woman Dark Knight's line: her texture's row 401). Export now clears both
+  wherever a frame shows them over nothing (`classic_sprites.cleared_edges`, by `job_looks.cleared`, again until a pass
+  clears nothing), for every job it writes; the game's own generic jobs' classic sheets, doubled so, come out untouched
+  (Type 1), its own textures of the game's size with a few pixels cleared (12 to 43 a sheet where measured).
+- New in the log: the line of the game's Dark Knight or Onion Knight asked mastered, above.
+- Rehearsed (`dev/test_jobs.py`, "(1.56.0 ...)"; `dev/test_qt_job_tabs.py`): a need of a job of the mod's own asked
+  mastered read, planned with its places and tested over four units by their learned rows; a job's learned row out of
+  its kept bytes; the game's Dark Knight asked mastered; Job Progress's line and the needed job's right label over the
+  tree's stand in; the wiring; test 125's package planned over his numbers (Timekeeper open only for a unit with all of
+  Duelist's abilities learned). **What could not be run here**: the game; test 125 then passed in his game.
+
+**1.55.2: test 123 put right** (test 124, `make_test124.py`, `Job_Test_124.zip`: test
+123's two mods, 1.22.0 and 1.15.0, Shade needing the Ninja mastered, the two jobs' textures
+made again; and this helper). His report of 15 November on test 123: a bar under the
+woman Dark Knight's feet in the raised hands jump on the job screen, one under the woman
+Onion Knight ("I wonder if there is a root cause for this issue for all these sprite
+issues"); Onion Knight's description still its first words at level 8; Onion Knight's
+level counting the Squire, the Chemist, the Mime and Dark Knight; Job Progress still
+saying level 8 for the Knight and the Black Mage; "can new jobs could also get the
+Mastered jobs requirement like Dark Knight does".
+
+- **The job screen's window's words** (`JobRoom.HelpWordsSites`, row 164): the window
+  shows a job's words by the UI table's text 1019, `<jobhelp(lnum0, lnum1)>`, which the
+  game's text maker turns into the Job row's words (its tag reader `0xF2648` calling the
+  Job row's words' reader `0xF4800` from one place, `0xF31CE`, for a name and words
+  alike; `dev/research/sidequests/job_words.py`). So it read the job's own row at every
+  level. The game's Onion Knight with a `MasteredDescription` now has the Job table's
+  row 164 (the job the game takes a level 8 Onion Knight's words from, empty in the game)
+  written as its row with that description, and that call goes through the framework's
+  code: for the Onion Knight's description it asks the framework the key Job Summary
+  would read (`JobAsker.SummaryKey`) and reads row 164 on its level 8 words' key. Where
+  the call isn't found, the window shows its first words at every level, said.
+- **Mastered on Job Progress** (`JobTreeLines`): a level's label of the tree's layout
+  (`TextBoardJobLv`) has `LvMaster` besides `LvNum`: its "Lv." and number hidden and the
+  job screen's own mastered stars shown (`ui_master_uitx` part 0, the job screen's
+  `Unit` `Star`); the game's own code never plays it on the tree. A small icon of a job
+  needed mastered has it played, and is green only where the unit has mastered the job
+  (`JobAsker.HasMastered`), red otherwise; the other icons as before.
+- **A mod's job may need one of the game's jobs mastered** (`JobFile`'s Needs, Zodi's
+  word: "Like if the user wanted Ninja master as a requirement for its job"): a need's
+  Level may be the word `Mastered` (in any case) for one of the game's generic jobs (74
+  to 93): `{"Job": 89, "Level": "Mastered"}`. It is planned as the game's Dark Knight's
+  Knight and Black Mage are (open and every place of its skillset learned, whatever its
+  level; GeneralJob's level 9 and the window's "Mastered"; the tree's stars). A job of
+  the same mod asked mastered is a fault: "its Needs ask {name} mastered: only one of the
+  game's generic jobs (74 to 93) can be asked mastered". Mod Studio's Jobs tab offering
+  it comes with Zodi's word on its look.
+- **Onion Knight's level, measured, no change**: the game's own count (`0x348828`), run
+  in his program, counts only the jobs 76 to 92 (Knight to Dancer), two a level, 14 make
+  level 8; never the Squire, the Chemist, the Mime, Dark Knight or Onion Knight. The
+  framework touches nothing on that path.
+- **The bars under the feet** (not the framework's: Mod Studio's textures of his sheets,
+  measured over TYPE1's 364 frames): the game draws each piece of a sprite with a sliver
+  of what lies just past its bottom (or right) edge in the sheet; the game's own sheets
+  leave that line empty where a frame draws the edge over nothing, his didn't in a few
+  pieces. Test 124's copy has that line taken out (`make_test124.scrubbed`); whether Mod
+  Studio does it for every classic sprite it doubles is Zodi's choice.
+- New in the log: "the job screen's window shows {who}'s description for its level 8 to a
+  unit whose Onion Knight is level 8." (or "the job screen's window shows the game's Onion
+  Knight's own description at every level: {missing} wasn't found in {program}. A game
+  update may have changed it: look for a newer {name}.").
+- Rehearsed (`dev/test_jobs.py`, "(1.55.2 ...)"; `dev/test_qt_job_tabs.py`): a need asked
+  Mastered read, planned and tested over five units, its faults; the tree's icon of a job
+  needed mastered over the tree's stand in; the Job table's row 164; the window's call
+  found and changed, left alone in a program whose call names another function, and run
+  in his program's own code with the framework's answer; test 124's package planned over
+  his numbers. **What could not be run here**: the game drawing the window, Job Progress
+  and the sprites.
+
+**1.55.1: test 122 put right** (test 123, `make_test123.py`, `Job_Test_123.zip`: test
+122's two mods, 1.21.0 and 1.14.0, its two job files written again with Zodi's words, his
+Dark Knight and Onion Knight sprites, job art and portraits, a man's and a woman's each, and
+Job Summary laid out as the game's own jobs'; and this helper).
+His report of 15 November on test 122 (with his words of 05:41 and 05:49 on his job art, his
+portraits and Job Summary's layout): the seven abilities' names blank on the abilities
+page and in the job screen's window (their descriptions shown), War of the Lions' words
+for Dark Knight, Darkness, Onion Knight (two: below and at its level 8) and the seven
+abilities, and "on the Level requirements menu in this screenshot it should say Mastered
+for Knight and Black Mages Required Level column"; his answer on the 20 kills: "Leave the
+kills out".
+
+- **The seven abilities' names shown** (`DarkKnightAbilities.Icons`,
+  `AbilityWords.WithIcon`): the game shows no name for an ability whose row has no icon
+  (its IconId, the row's + 4, 0), and 1.55.0's rows had none, as the game's own rows of
+  those abilities have. Measured by comparison: the other mod's rows of the same seven,
+  whose names show in his game, differ from the game's in their icon and words only.
+  Each row written now takes the icon of one of the game's own abilities, as the loaded
+  table has it: Sanguine Sword, Crushing Blow, Abyssal Blade and Unholy Sacrifice
+  Shadowblade's (165), Infernal Strike Duskblade's (164), HP Boost and Vehemence Attack
+  Boost's (465).
+- **War of the Lions' descriptions**: where the job's file gives none, the seven get War
+  of the Lions' names and, now, its descriptions as Zodi gave them ("Absorb HP from the
+  target.", and so on; `DarkKnightAbilities.Names`).
+- **Mastered in the window of what a job needs** (`JobNeeds`, `JobScreen.Needs`): its
+  Required Level cell is the UI table's text 1012 ("Lv. <num=lnum0>", its layout's own)
+  handed the need's level from GeneralJob's row; its Current Level cell is 1004 handed
+  the record's level, red where it is below the need's. A need of a job mastered is now
+  level 9 in GeneralJob (`MasteredShown`, a level no job has); the window's record of
+  that job has 9, for the window's call alone, where the unit has mastered it; and both
+  texts, as the UI table loads, show the language's own word for mastered (UI 1077:
+  "Mastered", French "Maîtrisée", German "Meister", "Master" in the others) for 9 and
+  themselves otherwise, in the game's own way of choosing words by a number
+  (`<if([lnum0==9],"Mastered","Lv. "<num=lnum0>)>`, as its text 3883 does for 8). Only
+  where a mod's job needs a job mastered (the game's Dark Knight: the Knight and the Black
+  Mage). A text not as the game's is kept, said.
+- **Onion Knight's words for its level 8**: its Words may give `MasteredDescription`
+  (the Description's rules; only the game's Onion Knight, Game 161). The job help table
+  gets a second row at the key of the job the game takes a level 8 Onion Knight's
+  record and older words from (164), under the same heading; Job Summary's two reads of
+  a row by its key (`JobRoom.SummarySites`) call the framework's code instead of the
+  generic getter, which reads that row where the screen's unit's Onion Knight is level 8
+  (`JobAsker.SummaryKey`, the menu record's level of slot 21) and the key asked
+  otherwise. Where the reads aren't found, its words show at every level, said. Its
+  Words may give `MasteredSummary` too (Zodi's word of 05:49: "make sure the Job Summary
+  for the two jobs matches the format of the vanilla jobs"): its whole Job Summary for its
+  level 8, as a Summary's rules, laid out as the game's own rows are (Job Overview, Usable
+  Equipment, Select Abilities); that row is it, else the MasteredDescription under the
+  heading. Faults: "its Words' MasteredSummary can't be given: only the game's Onion
+  Knight (Game 161) has words for its level 8"; "its Words' MasteredSummary is {value},
+  not text of 1 to 4000 characters".
+- **The game's jobs with their own sprites**: a Look on the game's Dark Knight or Onion
+  Knight gives it a pair of sprites of its own, as any job's (here his four, each told
+  Type 1, as the Knight's and the Squire's frames are), with portraits of their own, and
+  its Pictures its own job screen art, as any job's (1.42.0 to 1.46.0, no change). The
+  line: "..., learning no abilities, with its own sprites ...".
+- New in the log: "Job Summary shows {who}'s words for its level 8 to a unit whose Onion
+  Knight is level 8." (or "Job Summary shows the game's Onion Knight's own words at every
+  level: {missing} wasn't found in {program}. A game update may have changed it: look for
+  a newer {name}."); "UI: the window of what a job needs shows Mastered for a job needed
+  mastered (its {n} level text(s) written)." (or "UI gets no Mastered for the window of
+  what a job needs: {why}. A job needed mastered shows there as level 9.").
+- Rehearsed (`dev/test_jobs.py`, "(1.55.1 ...)"; `dev/test_qt_job_tabs.py`): the icons
+  and descriptions in the Ability table (WotL Restoration's copy of the game's, read as
+  data); the two level texts made for four languages (English, German, Japanese, French
+  with its scale marks) from the 1.5.2 tables, and each text not as the game's kept;
+  GeneralJob's rows; the window's records with a job needed mastered and mastered or not;
+  the asker's answers on the menu record's levels and learned rows; `MasteredDescription`
+  read and its faults; the job help table's second row; Job Summary's two reads found
+  and changed, and run in his program's own code with the framework's answer; test 123's
+  package planned over his numbers. **What could not be run here**: the game drawing the
+  texts and the job screen, Job Summary and a battle.
+
+**1.55.0: the game's own Dark Knight and Onion Knight** (test 122, `make_test122.py`,
+`Job_Test_122.zip`: test 121's two mods, 1.20.0 and 1.13.0, the first with two job files
+more, Dark Knight and Onion Knight, written by hand; and this helper). Zodi's order of 13
+November ("Dark Knight and Onion Knight on the framework's own rows"), his three answers
+of 14 November (a mod gives them; the game's own rule, less the kills; the game's own
+abilities, named by the mod) and his word of 15 November, once ability 45 turned out to be
+Chant: "In WotL, and you can confirm with FFTPatcher to see this for the PSP, Dark Knight
+does not have Chant in its skill list. It has Sanguine Sword. What ever War of the Lions
+does we should do." Measured first (`dev/research/sidequests/dark_onion.py`;
+`claude/dark-onion-knight-research.md`): every way the game reaches 160 and 161.
+
+- **A job's file may be the game's job**: `"Game": 160` (Dark Knight) or `161` (Onion
+  Knight), with its Name, Like, Record and Words as any job's (the record's first
+  number the game's: 224, none). Needs can't be given (the game's own rule opens it);
+  Onion Knight takes no Skillset (it learns no abilities); Dark Knight's Skillset gives
+  its Words, Like (its icon) and, if it likes, `Names` for the game's abilities of
+  skillset 224 (45, 184, 219, 220, 357, 484, 485, 488, 491; each an Ability, a Name and
+  a Description), never Actions or Others: its abilities are skillset 224 as the game's
+  and the mods' tables make it. The first mod in load order that gives one gives it, a
+  later one's left out and said; with Dark Knight & Onion Knight (Generic) on, neither is
+  given (that mod keeps them on its own page). Each fault in words, the job left out.
+- **Where they live**: each keeps the game's number, given after the mods' own jobs (which
+  keep their places and progress); shown first on the framework's rows and on Job
+  Progress (Dark Knight, then Onion Knight, then the mods' own). The look's places and
+  the five portrait routines that read the job again (`Special1` to `Special5`) take the
+  job its look is drawn from; the same job, the job set, the second skillsets (Dark
+  Knight's pair once, not where the game's list holds it), the other abilities, the
+  needs window's slot (0x100 and the job, GeneralJob's rows 416 and 417), the battle's
+  learned row of skillset 224 (row 20 for any unit), the JP table of slot 20 (its Like's
+  row) and the levels of slot 20 as the mods' jobs'. Slot 21 is never counted: **Onion
+  Knight is the game's own** (no EXP and no JP for acting; its level set at each write
+  back from the jobs a unit has mastered, one more than half, 8 at most).
+- **What opens them**: the game's own rule, less the 20 kills nothing in the game counts:
+  Onion Knight the Squire and the Chemist at level 6; Dark Knight the Geomancer, the
+  Dragoon, the Samurai and the Ninja at 8 and the Knight and the Black Mage mastered
+  (every place of their skillsets learned, shown Lv. 8). A mod's job may need the game's
+  Dark Knight or Onion Knight its mod gives.
+- **War of the Lions' Dark Knight** (`DarkKnightAbilities.cs`): FFTPatcher's PSP data
+  (read for facts only) has Sanguine Sword at 45 and Delita's Holy Sword holding Chant as
+  152; the game made 45 an exact copy of 152 and put it in Holy Sword. Where a mod gives
+  the game's Dark Knight, 45 is made War of the Lions' again (its common record, cost
+  500; its action record's source, formula 0x65, range 3, the dark element, and the
+  records the game made from it where it has; its animation; its effect Shadowblade's,
+  173, as War of the Lions' 287 isn't among the game's files) and Holy Sword's sixth place
+  152 again: each part only where it is still the game's own (another mod's change kept,
+  said), its places found before anything of the program is changed. The names
+  (`AbilityWords.WithGameNames`): the job's file's, else War of the Lions' (Sanguine Sword,
+  Infernal Strike, Crushing Blow, Abyssal Blade, Unholy Sacrifice, HP Boost, Vehemence)
+  with no description; Sanguine Sword's row made like Infernal Strike's (no icon, no
+  voice), cost 500. A save's unit in 160 or 161 that no mod gives now is put on a job of
+  the game's, where the other mod is off.
+- New in the log: "{who} is the game's Dark Knight (job 160), looking like the game's job
+  {Like}, with the game's skillset 224." and "... is the game's Onion Knight (job 161),
+  looking like the game's job {Like}, learning no abilities."; "the game's Dark Knight's
+  Sanguine Sword (ability 45) is War of the Lions' again, with Shadowblade's effect (War
+  of the Lions' isn't among the game's files), and Holy Sword holds Chant (ability 152)
+  again."; "Ability: the names of {n} of the game's Dark Knight's abilities written (the
+  job's file's, else War of the Lions')." The JobCommand line counts the jobs that have a
+  skillset.
+- Rehearsed (`dev/test_jobs.py`, "(1.55.0 ...)"; `dev/test_qt_job_tabs.py`): the measure
+  held to his program, War of the Lions' facts to FFTPatcher's PSP files; the job files,
+  their faults, the plan, the order shown, the needs and the opening by the rule; the
+  tables' rows and names; Sanguine Sword's places and changes, a part another mod changed
+  kept, a place not found; run in his program's own code: each slot, Onion Knight's level
+  (the game's own count), the portrait routines, the battle's learned row, the JP table,
+  the levels and the menu's copy, the second and other lists, the same job, the needs
+  window's slot, and the game's reading of Sanguine Sword after the change; test 122's
+  package planned over his numbers. **What could not be run here**: the game itself, the
+  job screen and Job Progress drawing them, a battle and the effects.
+
+**1.54.0: a job's own textures drawn for Type 1 or Type 2 frames** (test 121,
+`make_test121.py`, `Job_Test_121.zip`: test 120's two mods, 1.19.0 and 1.12.0, the
+first with two new jobs made on Mod Studio's Jobs tab, Blue Mage with his Type 2 sprite
+for its man and Berserker with his Type 1 sprite; and this helper). His 8th note of 14
+November: "Sprites for humans have two kinds that the community refers to as Type1 and
+Type2. When replacing the squires sprites for the users modded sprite we should account
+for this", and his pick "Framework sets its frames". Measured first
+(`claude/classic-sprites-research.md`): a sprite's attributes (BATTLE.BIN's table, the
+program's `0x673300`) pick its frames and animations by their first two bytes, and every
+one of the game's 38 generic sprites has one of two rows, (0, 0, 0, 36) for Type 1 (the
+Squire, Knight, Archer, Monk, Thief, Dragoon, Samurai and Ninja) and (1, 1, 0, 36) for
+Type 2 (the other twelve). FFT Sprite Porter (Lucifeh, MIT, read for facts only)
+switches a character's layout by those two bytes. Every new job is based on the Squire,
+and the framework gave a job's own sprites its Like's row, so a Type 2 sprite would have
+come apart as it moved.
+
+- **A job's file says the frames its own textures are drawn for**: its Look's `Frames`,
+  a man's and a woman's (`Man`, `Woman`, either or both), each 1 or 2, its names in any
+  case; only for one whose Look's Textures give textures of its own (one wearing its
+  Look's is drawn in their frames). Not said, its own textures are drawn in its Like's
+  frames, as before. What is wrong is said and the job left out: "its Look's Frames
+  isn't a list of fields with a Man's or a Woman's frames", "its Look's Frames' Man is
+  3, not 1 or 2 (Type 1 or Type 2 frames)", "its Look's Frames give the woman's frames,
+  but its Look's Textures give the woman no textures of its own to draw in them". Both
+  readers alike (`JobFile.cs`, `mod_studio/mod_jobs.py`).
+- **The attributes' row**: a man's or a woman's own sprite whose textures are given to
+  the game and drawn for frames its Look names takes the row of the game's generic job
+  drawn for them, the Squire's for Type 1 and the Chemist's for Type 2
+  (`SpriteRoom.Source`, `FramesJob`); every other row, and that sex's where the
+  textures' hooks can't be made, as before. What others write to the game's own rows is
+  brought over to the sprites that take them (Sync). No change of the game's code.
+- New in the log: the job's line says it after its textures (", the man's drawn for Type
+  2 frames", ", drawn for Type 2 frames" for both, ", the man's drawn for Type 1 frames
+  and the woman's for Type 2").
+- Rehearsed (`dev/test_jobs.py`, "(1.54.0 ...)"; `dev/test_job_looks.py`;
+  `dev/test_qt_job_tabs.py`): the two rows held to his program for all 38 generic
+  sprites; four jobs' Frames read (both sexes, either, each kind, names in any case), the
+  attributes' rows each sex takes, the same plan without the textures' hooks (every row
+  its Like's, nothing else changed), what others write brought over, eight faults said
+  in words; a job as Mod Studio's Export writes it taken with nothing to say; test 121's
+  package planned over his numbers (Blue Mage's man the Type 2 row, its woman and the
+  Berserker the Type 1). **What could not be run here**: the game itself, a Type 2
+  sprite moving on a job based on the Squire.
+- **Test 121 passed** (14 November, 23:26): "Test 121 was a complete success and
+  functioned how you said it would." Every line its notes quote in his log word for
+  word; his screenshots show both sprites whole, a woman in either job the Squire's.
+  The jobs' numbers were his game's own, not the plan's (he had ticked "Free disabled
+  mods' numbers"): Blue Mage job 146 with sprites 176 and 177, Berserker 143 with 172
+  and 173.
+
+**1.53.0: the new jobs in a side quest's battle** (test 117, `make_test117.py`,
+`Job_Test_117.zip`: test 116's two mods, 1.15.0 and 1.8.0, the first with a side quest
+whose battle puts its units in its two jobs; and this helper). His order of 13
+November, its next step after the Job Tree: jobs in a quest's battle, enemy or guest
+units in a side quest's battle wearing the new jobs (his answer "Before the Jobs
+page"). Measured first (`dev/research/sidequests/quest_jobs.py`;
+`claude/quest-jobs-research.md`). **Test 117 ran (14 November, 02:36): "almost a
+complete success and functioned how you said it would"**: every unit in its job at
+its job level with its abilities, an enemy Battlemage using Swift Step, the knight
+joining as a Battlemage at job level 4 with every ability of his job. Its one fault
+was the test's own: its guest was on the green team, which the game counts as an
+enemy (its battle files hold blue and red only; a guest is a blue unit without
+Control). **Test 118** (`make_test118.py`, `Job_Test_118.zip`: the guest a blue unit
+without Control; this helper unchanged) **passed (02:46): "I now have a guest during
+the battle."**
+
+- **A quest's battle names a job of its mod's own** for any of its 16 units: the
+  quest file's battle `Jobs`, each its unit (1 to 16) and the job's Name (1 to 40
+  characters, none a control character); a unit given two jobs, or one past 16, is a
+  problem, said. Both readers alike (`QuestFile.cs`, `mod_studio/side_quests.py`).
+- **The framework puts the unit in it** as it plans the quests (after the jobs, as the
+  game starts): the unit's job (the 11th of its 40 bytes) the number the job was given
+  this time, as it gives the units' own names theirs. Where the quest's mod gives no
+  such job this time (not given, or the jobs not made at all), the unit keeps its
+  file's job, said. The quest's line says each: "unit 1 of Battle is put in its mod's
+  Battlemage (job 142)", "unit 2 of Battle keeps job 76 (its mod gives the game no job
+  Shade this time)".
+- **It learns its job's abilities as the game's own units learn their job's**, at the
+  job level its file gives (its career job's level, the 10th byte's low half, 1 to
+  8): every one where its first skillset is 0, else each by its chance, paid from its
+  JP (the game's way for its generics, 0xFF). The game's setup loops over its twenty
+  generic jobs only: the framework's code after the loop (`0x277463`) gives slot 22 its
+  JP and level and runs the game's own learning for the unit's job; and one ability's
+  learning (`0x278178`) writes slot 22's bit in the job's own row (19, Mime's), where
+  the game alone would write it into the unit's level bytes. A unit in a game's job,
+  or in a job no mod gives, is made as before, byte for byte.
+- **After a load it keeps its palette**: the load's walk over the figures
+  (`0x1009E8`, its write at `0x100F0D`) gives a figure of the framework's sprites (170
+  to 254) the palette it was made with, any other the skin's as the game gives it.
+  Only where a job has its own sprites and colors.
+- **A unit who joins** (a guest, or a scene's unit asked to join): its job is loaded
+  for the party before the game writes its battle unit back (`0x274EB8`), so its
+  progress in that job is kept under its own job.
+- **Mod Studio** keeps the quest file's Jobs as it opens and saves a mod
+  (`side_quests.py`, read with the helper's words; `quest_edits.py`: a unit's job of
+  its mod's own given up when its main job is changed on its card, worn by a copy of
+  it, gone with the unit taken out). Choosing a mod's job on a unit's card comes with
+  the Jobs page.
+- New words in the log: "A unit a battle's file puts in a mod's job learns its job's
+  abilities as the game's own units learn their job's, at the job level its file
+  gives." (where its places aren't found: "... knows none of its job's abilities:
+  ... wasn't found in .... A game update may have changed it: look for a newer Mod
+  Studio Framework."); "after a load, a unit of another team in a mod's job with
+  colors of its own wears the player's colors: ..." (only where the walk isn't
+  found); and the quest's line's two parts above.
+- Rehearsed (`dev/test_jobs.py`, "(1.53.0 ...)"; `dev/test_side_quests.py`;
+  `dev/test_quest_edits.py`): the measure held to his program's bytes; the places
+  found, and not found in a program moved; the game's own setup of a unit's abilities
+  run whole in his program's code for a man and a woman, the first skillset 0 and
+  0xFF, the job levels 0 to 0x23, and four other units byte for byte; one ability's
+  learning for slots 0 to 22; the walk for ten sprites; a guest who joins, over the
+  progress' stand in; the quests planned with jobs given and not; test 117's package
+  planned over his numbers. **What could not be run here**: the game itself: the
+  figures, the colors after a load, what the units do on their turns.
+
+**1.52.0: the lines' bends rounded, every line out of its job, one line for one
+level, the jobs that need only the game's jobs after those that need nothing**
+(test 116, `make_test116.py`, `Job_Test_116.zip`: test 115's two mods, 1.14.0 and
+1.7.0, with Warden needing Sage at level 2, as Evoker does, so the two share one line;
+and this helper). His word on test 115 (13 November, 22:36): "There is room for three
+jobs under the Timekeeper in this example. ... two of the lines make sharp angles. ...
+both of those lines do not extend into the Sage correctly ... Jobs that have no New Job
+requirements but have Vanilla job requirements should appear after the Jobs that have no
+requirements at all. ... in vanilla, two different jobs that share the same lv
+requirement from a job will share the same line ... They only get their own line if the
+lv requirements are different. ... After you fix these bugs our dynamic Job Tree will be
+complete." (`claude/job-tree-research.md`). **Test 116 ran (13 November, 23:47): "Test
+116 is a complete success and functions how it is supposed to. Thank you for completing
+the dynamic new jobs progress tree."** His four screenshots: the cursor on Evoker (the
+line from Duelist green with its label 1, Sage's shared line red whole, its label 2), on
+Warden (the same shared line lit, its flipped bend up turning as the game's own), on
+Herald (Sage's line at 4 and Herald's to Mender, red) and the view slid to Mender and
+Shade. The log's lines as they should be, no fault. **The DLL test 116 carried was
+built two minutes before 1.52.0's last two changes** (up to five corridors into a column
+where it had three, and a way out on the other side past a side's two): they place test
+116's sixteen alike (measured, and the two builds' code compared method by method: only
+those two differ), and the DLL shipped is built again with them.
+
+- **The jobs in his order**: of the jobs no line joins, those that need nothing come
+  first, then those that need only the game's jobs; the jobs other jobs need follow in
+  the same run of places, under them, not from a column of their own; then each job
+  right of the job it needs, as before.
+- **One line for each needed job and level**, as the game draws its own (Squire to
+  Archer and Knight): the jobs that need a job at the same level share one line, which
+  splits where it turns (the furthest job turns into its side, the others branch off
+  the upright); a job that needs it at another level has a line of its own.
+- **Every line starts under the job it comes from**, behind its figure, so it comes out
+  of the figure's base (or from behind the figure). A job's lines of different levels
+  leave it 12 apart, the line with a job in its row at the straight line's height.
+- **Each bend is the game's own**: a line up or down is a copy of the game's right then
+  down line (the Archer's line to the Ninja) from under the figure to its corridor, or
+  flipped top to bottom to turn up, as the game flips its own Monk to Geomancer line,
+  and the game's down then right or up then right line into the job, the two strokes on
+  the same pixels (measured on his screenshots: a stroke runs 1 to 4 pixels inside a
+  bent piece's outer edges).
+- **Lit as the game lights its own**: with the cursor on a job, its lines out and every
+  line into it, whole.
+- **Corridors**: up to five lines into a column each have their own (1.51.0 had three,
+  and a fourth ran on the first's pixels).
+- No new words in the log.
+- Rehearsed (`dev/test_jobs.py`, "(1.52.0 ...)", and the 1.49.0 to 1.51.0 sections'
+  checks brought up to it; the rule held by `dev/research/sidequests/job_lines.py`):
+  the plan over test 116's sixteen and others; what a flipped copy rests on in his
+  program and his layout; the strokes on eight lines of his screenshots, to the pixel;
+  each line's own way over nine shapes and how its pieces meet (21 bends); test 116's
+  sixteen drawn and lit; over the stand-in for the tree. **What could not be run
+  here**: the game's drawing of what is placed, above all a flipped copy (the game
+  flips its own line by the scale -1 by 1 and a half turn, the framework by 1 by -1).
+- **Not changed**: the pointing hand covers the first small icon of the job under the
+  cursor. **Not a fault** (found at the close): Battlemage's blue checkerboard in its box
+  on Job Progress is its own test texture (test 103's checkerboard in the woman's own
+  blues), drawn right, as on the job screen and in battle; the tests' notes since 113
+  had called it not put right.
+
+**1.51.0: the lines joined up, the jobs with no lines first, the view sliding
+further right** (test 115, `make_test115.py`, `Job_Test_115.zip`: test 114's two
+mods, 1.13.0 and 1.6.0, with Mender needing Herald 2 and Shade needing Mender 2 only
+so the new jobs reach a fifth and a sixth column; and this helper). His word on test
+114 (13 November, 21:06): "Test 114 was largely a success. In this example with the
+sage, two of the lines do not fully connect back to it. ... one design choice I want
+is that new Jobs that do not have any requirements be order on the left most columns.
+That way if the user adds more jobs with more requirements for their existing new
+jobs they can continue towards the right hand side for as many jobs that they add.
+The menu should should obviously be able to continuously panned to the right to
+accommodate the amount of added jobs." (`claude/job-tree-research.md`). **Test 115
+ran** (22:36): the bends met square, two lines stopped short of Sage, and his order
+and the game's shared lines: put right as 1.52.0 (above).
+
+- **Each line has its own way, all the way from the job it starts at**: a line
+  going up leaves the needed job's box a little above the straight line's height, a
+  line going down a little below it, each by a lead of its own to its corridor (the
+  line along the needed job's row that every bent line shared is no longer made);
+  each needed job's lines into a column run in a corridor of their own; each line
+  goes into its job at a height of its own, the straight one where the game's own go
+  in, then those from above, then those from below. So no line runs along another.
+- **A lit line is drawn in front of every other line**: each line has a lit copy of
+  itself (a bent one's lead too), made after every other line and drawn only while
+  the cursor's job lights it. Under it the line keeps its look.
+- **The jobs no line joins stand first**: the new jobs that need no other new job
+  and that no new job needs fill the leftmost columns, five to a column; the jobs
+  joined by lines start in the next column (first the ones others need, then each
+  job right of the job it needs, as before), so a mod's jobs that need its other
+  jobs grow to the right.
+- **The view slides four columns at a time for as many columns as there are**, as
+  it already did (his sixteen never needed a fifth column). The framework takes up to
+  58 jobs (a free skillset each); the tree was rehearsed with 58 in one chain.
+- No new words in the log.
+- Rehearsed (`dev/test_jobs.py`, "(1.51.0 ...)", and the 1.49.0 and 1.50.0 sections'
+  checks of where things stand brought up to them; the rule held by
+  `dev/research/sidequests/job_lines.py`'s `arrange`, `line_at` and `lead_at`): the
+  plan for several sets of jobs, 58 among them; the view over 58 jobs in one chain;
+  each line's own way over five shapes; test 115's sixteen drawn and lit; over the
+  stand-in for the tree (`helper/Checks/TreeChecks.cs`). **What could not be run
+  here**: the game's drawing of what is placed, as with 1.50.0.
+- **Not changed**: the pointing hand covers the first small icon of the job under
+  the cursor (put to him with test 115). Battlemage's figure is a blue checkerboard
+  in its box on Job Progress (its own test texture drawn right: not a fault, found at
+  1.52.0's close).
+
+**1.50.0: the lines and the small icons on Job Progress** (test 114,
+`make_test114.py`, `Job_Test_114.zip`: test 113's two mods, 1.12.0 and 1.5.0, with
+Evoker needing Duelist 1 and Sage 2 and Herald Sage 4, so a line of each kind is
+drawn; and this helper). The last of the four steps of the Job Tree's build (the
+design he signed off: "Between two new jobs: a line, with the level it asks, as the
+game draws its own. For each of the game's jobs a new job needs: a small icon of
+that job with the level, beside the new job's box."; his screenshots' words: "green
+line for level requirements already met. Red lines for job levels not yet met.";
+`claude/job-tree-research.md`). **Test 114 ran** (21:06): "largely a success";
+two of Sage's lines didn't join back to it: put right as 1.51.0 (above).
+
+- **A job's file needs nothing new**: its `Needs` (1.48.0) say what is drawn.
+- **A line between two of the mods' jobs** where one needs the other: a copy of one
+  of the game's own lines, sized by the game's own sizing of a box (its animations
+  size references so while it runs) and put with the game's lines. In one row a
+  straight line from the needed job's box to an arrow's head before the needing
+  job's; in different rows a line down or up a corridor 180 left of the needing
+  job's box that turns into its side, off a line along the needed job's row (its
+  head not drawn). A job's needs are of the game's jobs or of its own mod's, so a
+  line is always within one mod.
+- **A small icon for each of the game's jobs a job needs**, left of its box, three a
+  row (the second row above the first): a copy of a picture box of the tree's own
+  given the job's icon by the game's own name board writer (the question mark where
+  the game hides that job from the unit), with a copy of a level's label under it
+  showing the level asked. Not shown until the game has given it its icon.
+- **The colors are the game's own**: a line light where the unit has the needed job
+  open at the level asked and dark where it hasn't; an icon's level green or red
+  the same way. With the cursor on a job the lines into it and out of it light up
+  green or red, as the game's own do, and by each line into it the level asked
+  shows beside the job it starts from.
+- **Where any of it can't be drawn** the boxes stand without it. The log, once:
+  "Job Progress draws a line between two of the mods' jobs where one needs the
+  other, and beside a job a small icon of each of the game's jobs it needs with the
+  level asked: green where the unit has the level, red where it doesn't." Where it
+  can't be: "Job Progress shows the mods' jobs without their lines and small icons:
+  {why}." A fault while they are brought up: "the lines and small icons on Job
+  Progress couldn't be drawn (...); the boxes show without them."
+- Rehearsed (`dev/test_jobs.py`, "(1.50.0 ...)"; the measure held to his program's
+  bytes and his layouts by `dev/research/sidequests/job_lines.py`): **his program's
+  own play of a line and of a label and its name board's writer, run in his
+  program's own code as the framework calls them**; where each need is drawn, the
+  copies, the looks for two units and under the cursor, every way it can fail, over
+  a stand-in for the tree (`helper/Checks/TreeChecks.cs`). **What could not be run
+  here**: what the game's layout code does with a copied line sized, a picture box
+  given an icon and a label's copy. Only his test shows it.
+- Battlemage's figure (the one test job with sprites and textures of its own) is a
+  blue checkerboard in its box on Job Progress (its own test texture drawn right: not
+  a fault, found at 1.52.0's close).
+
+**1.49.1: test 112's three faults put right** (test 113, `make_test113.py`,
+`Job_Test_113.zip`: test 112's two mods, 1.11.0 and 1.4.0, nothing else of them
+changed; and this helper). **Test 113 passed** (13 November, 16:56: "Test 113 was a
+complete success and functioned how you said it would.").
+
+- **The game's own tree right for the unit as it is now**: with the framework's rows
+  of the job screen scrolled down, the game's fillings gave the tree only the jobs on
+  the rows shown, so the game's places kept what another filling had left (his
+  Chemist kept the check mark of the job the unit was in before it was made an
+  Alchemist; a fault since 1.39.1, never seen until the tree had the unit's own box
+  beside it). Where the rows shown don't start at the game's first, the filling is
+  now run for the game's own list first, each of the game's jobs going to its own
+  place.
+- **Only the box under the cursor shows the ring and its name**: each copy is played
+  the piece's own `CursorOut` as it is made (a copy came up showing them).
+- **The level's number shows after "Lv."**: the copied level's text had given its
+  key to the tree's own text setter (binding a setter takes a text's key); the
+  copy's text is given that key back before the framework's setter is bound.
+
+**1.49.0: the new jobs on Job Progress** (test 112, `make_test112.py`,
+`Job_Test_112.zip`: test 111's two mods, 1.10.0 and 1.3.0, nothing else of them
+changed; and this helper). The second and third of the four steps of the Job Tree's
+build: the new jobs' boxes, the cursor and the view (his words of 13 November: "All
+jobs new and vanilla jobs together on the Job Progress (the tree). Ideally nothing
+about the original Job Progress but in addendum to it our framework adds boxes and
+lines for the new jobs around the original job progress."; his choice of the sketch,
+"Slide to the side"; `claude/job-tree-research.md`). **Test 112 ran** (13 November,
+16:32): the boxes, each with its figure, and the slide shown in his game; his three
+faults put right as 1.49.1 (above).
+
+- **A job's file needs nothing new.** Every one of the mods' jobs gets a box; where a
+  job's `Needs` name another job of its mod, its box stands right of that job's.
+- **Where the boxes stand**: right of the game's tree, in columns of five (from 1,960
+  every 340 in the layer the game's boxes are in, rows from 120 every 175: the
+  sketch he signed off). The jobs in the order the framework is given them. First
+  the jobs others need that need none of their mod, from the first column's top;
+  then each job that needs one, in the column after it and in its row (the nearest
+  free row where that is taken; the next column where the column is full); last the
+  jobs that neither need nor are needed, in the places left.
+- **A box is a copy of one of the game's own** (Squire's), made by the game's own
+  copy of a box as a mod's places on the world map are, named `MsqJob` and its
+  number, tagged as the tree tags its own with a place from 20 on. Everything it
+  shows is the game's piece's own: the unit's figure in the job, the ring and the
+  name board with the level under the cursor, the grey figure of a locked job, the
+  black one and "???" of a job no unit has open, the check mark on the job the unit
+  is in.
+- **A job's record is the game's own**: after each of the game's fillings of the job
+  screen the framework has the filling run again for the mods' jobs alone (18 at a
+  time after the unit's first job), the two calls that touch the job screen left out
+  meanwhile, the list and its count put back. A unit whose list is the game's own (a
+  guest, a monster) has the boxes put away.
+- **A figure's slot of the framework's own**: the game numbers its figures 0 to 255
+  (the job screen's from 0x3D, the tree's from 0x50). The framework takes its own
+  from 76 numbers no screen was seen to use (0x89 to 0xAD, 0xB8 to 0xC7, 0x6D to
+  0x7C, 0x64 to 0x6A), each only while the game has it free. Not every place that
+  numbers a figure was read. A job that gets none still shows its name and level,
+  said in the log.
+- **The cursor**: the tree's update is hooked. One of the mods' jobs chosen (F or
+  Enter, or a click) shows its row on the job screen and goes back there with the
+  cursor on it, as the game does for its own (its Learn Abilities and Change Job
+  menu, or the Level Requirements window for a job that isn't open). Every move is
+  the game's own update, run over the tree or over a copy of it in which the
+  cursor's place's directions name the framework's boxes: right from Black Mage,
+  Time Mage or Summoner goes to the first column's box at that height (until now it
+  went round to Archer, Monk or Thief), left from the first column comes back. The
+  framework reads no key itself.
+- **The view**: the layer that holds the game's boxes and lines is moved left 1,400
+  for the first four columns and 1,360 more for each four after, a part of the way
+  each frame; the stone board is another box and stays. As the tree comes up on a
+  unit in one of the mods' jobs it is put there at once, the cursor on that job.
+  (The sketch moved it 1,160; at that the fourth column's name board would pass the
+  screen's edge.)
+- **The mouse** reaches the boxes on screen; the keys move the view.
+- **Only where the framework's own rows of the job screen are made** and every place
+  of the tree is found in the program. Otherwise Job Progress is the game's.
+- The log, once, as the boxes are first made: "Job Progress shows the mods' jobs in
+  columns to the right of the game's tree: move right past Black Mage, Time Mage or
+  Summoner and the view slides over to them." Where they can't be: "Job Progress
+  doesn't show the mods' jobs: {why}. The job screen's own rows show them as
+  before." A job with no slot free: "{job} has no figure on Job Progress: none of
+  the figures' places the framework takes its own from was free."
+- Rehearsed (`dev/test_jobs.py`, "(1.49.0 ...)", 22 checks; the measure held to his
+  program's bytes by `dev/research/sidequests/job_boxes.py`): the plan; the boxes,
+  the giving, the slots and what can't be made, over a stand-in for the tree
+  (`helper/Checks/TreeChecks.cs`); the filling run again over the stand-in screen;
+  **his program's own update run over each tree the framework would run it over**,
+  every direction from each of the sixteen test jobs' boxes and from the game's
+  three rightmost; the filling's three changed calls run in his program's own code.
+  **What could not be run here**: everything the game's layout code does with the
+  copies. Only his test shows it.
+- **Not in this helper**: the lines between new jobs and the small icons of the
+  game's jobs a new job needs (the tree's last step: 1.50.0, above).
+
+**1.48.0: what opens a job** (test 111, `make_test111.py`, `Job_Test_111.zip`:
+test 110's two mods, the first 1.9.0 and the second 1.2.0, six of their sixteen jobs
+given Needs; and this helper). The first of the four steps of the Job Tree's build
+(his order of 13 November; `claude/job-tree-research.md`). Until now a mod's job was
+open to every unit: what opens one of the game's jobs is a table inside the program
+that a mod's job isn't in.
+
+- **A job's file may give `Needs`**: a list of up to 6, each with a `Job` (one of the
+  game's generic jobs, 74 to 93, or the `Name` of another job of the same mod) and a
+  `Level` (1 to 8). Left out, or null, is none: the job is open to every unit, as
+  before.
+
+  ```json
+  "Needs": [ { "Job": 76, "Level": 3 }, { "Job": "Battlemage", "Level": 2 } ]
+  ```
+
+- **A file whose Needs aren't such a list leaves the job out, said**: "its Needs
+  {aren't a list | are {n} | hold something that isn't a Job with a Level | ask the
+  level {x} | name the job {x} | name the job itself | name {x} twice}: a list of up
+  to 6, each with a Job (one of the game's generic jobs, 74 to 93, or the Name of
+  another job of this mod) and a Level (1 to 8)". Between a mod's jobs: "{mod}'s job
+  {Name}: its Needs name {x}, which isn't a job this mod gives", and "{mod}'s job
+  {Name}: its Needs go round in a ring (a job it needs needs it in turn)"; a job that
+  needed one taken out so goes too. A needed job of the mod's that has no number here
+  (it was left out: the free numbers ran out, say): "{job} can't be opened by any unit: it needs {x}, a job
+  of its mod that isn't given here."
+- **The framework tests it itself** (`JobNeeds.Plan.Open`): a job is open to a unit
+  that has every needed job open and at the level asked or more. The game's jobs are
+  read from the unit's menu record as the game keeps them (its opened jobs' bits at +
+  0x78, its levels' nibbles at + 0xBD); a mod's own needed job is tested the same way
+  in turn, its level from the unit's progress in it (`JobProgress.Level`). **The job
+  a unit is in is always open to that unit.** No rule of a man's or a woman's job is
+  added: a need of the Bard is a need only a man can meet, of the Dancer only a
+  woman.
+- **On the job screen's own rows** (`JobScreen.Listed`) a job that isn't open to the
+  unit gets the game's own mark: locked (0x4000) where another unit of the party has
+  it open, not to be seen (0x2000) where none has. Everything after that is the
+  game's: the place's record, its look, "???" for a name, and confirm opening the
+  window of what the job needs.
+- **The window of what a job needs** (the game's `0x1321FC`) reads the game table
+  GeneralJob by the job's slot, and finds each needed job among the 19 places on
+  screen. Three things are given it:
+  - **GeneralJob gets a row for each mod's job** as it loads (key 0x100 plus the
+    job's number, past the game's 0 to 21): the JP each level needs (the game's
+    own list), its needs with their levels, no place on Job Progress yet. A row
+    another mod already has at a key is kept, said.
+  - **Two calls in the window** (`0x132255`, `0x1323CC`: a job's slot asked) go to
+    code of the framework's that answers 0x100 plus the number for a mod's job and
+    the game's own answer for any other.
+  - **The window's one call** (`0x12FDE9`) goes through `JobScreen.Needs`: where a
+    needed job isn't on one of the places shown, the 19 records are, for that call
+    alone, the cursor's own and one for each needed job (its name and icon from the
+    Job table, the unit's level, whether it is open), and are put back as they were
+    after it. This also puts right the game's own third row's jobs while the rows
+    are scrolled down (a needed job on a row not shown had its level alone).
+- **A job that isn't open to a unit isn't offered to it**: its skillset in the list
+  of second skillsets (the list's one call, `0x28A71D`, keeps the unit's record
+  number for it) and its reaction, support and movement abilities. Both ask the
+  framework (`open`, every register kept but rax).
+- **Only where the framework's own rows of the job screen are made.** With Dark
+  Knight & Onion Knight (Generic) showing the jobs on its page, or the job screen
+  not found, nothing is asked and every unit has every one of the mods' jobs open,
+  said.
+- The log, as the game starts: "what opens a job: {n} of the mods' {m} jobs need
+  other jobs first; a unit sees such a job locked on the job screen until it has
+  them, and the window there says what is missing."; as the tables load:
+  "GeneralJob: the mods' jobs' needs' {n} rows written." A table that can't be
+  given its rows: "GeneralJob gets no rows: {why}. The window of what a locked job
+  needs shows nothing for the mods' jobs."
+- Rehearsed in his program's own code (`dev/test_jobs.py`, "(1.48.0 ...)", 26
+  checks; the measure held to its bytes by `dev/research/sidequests/job_needs.py`):
+  the window run whole with GeneralJob set up by the game's own setup and the
+  framework's rows, the Mime's the same as the unchanged game's over the same
+  records, a mod's job's needs found with one of its mod's own among them; both
+  lists with a job open and not, every kept register kept whatever the framework's
+  function loses (the six xmm registers too), each asking made with the stack 16
+  bytes aligned; the two changed calls; the native code inside its room with 58
+  jobs.
+- **Test 111 passed** (13 November, 12:15): "Test 111 was a complete success and functioned how you said it would." For
+  Aerith, Skirmisher, Lancer and Warden are black figures with no name, and
+  Battlemage, Brawler and Sage are open; the Level Requirements window shows
+  Lancer's Dragoon (Lv. 5, her Lv. 1 in red), Warden's Sage and Geomancer
+  (Geomancer with its icon and name though its row isn't on screen) and
+  Skirmisher's Thief, Monk and Battlemage (with Battlemage's own icon); in a
+  party that only knows Squire and Chemist, Sage's window shows them at Lv. 1
+  in red and four rows of the question mark, "???" and "Locked". The log's two
+  lines, with 6 of 16 jobs and 16 rows.
+- **Job Progress (the tree) is not changed by this helper**: the mods' jobs aren't
+  on it yet. The boxes and the cursor are 1.49.0 (above); the lines are after.
+- **Combat Sets** still show a set with a mod's job as usable whatever the unit's
+  levels (the stand in of 1.37.2); left as it is for now.
+
+**1.47.0: a job's own words on Job Summary** (test 110, `make_test110.py`,
+`Job_Test_110.zip`: test 109's two mods, the first 1.8.0 with Battlemage's file
+giving a Summary; and this helper). His order of 13 November: "the Job Tree and Job
+Summary for our new jobs". Job Summary (the job screen's Y: Job Overview, Usable
+Equipment, Select Abilities and the rest) is one text, a row of the game table
+UiJobAbilityHelp that the job's row of the Job table names. A mod's job's row was
+the row of the game's job it looks like, so Job Summary showed that job's words (a
+Battlemage the Knight's). His word on a job whose file gives no words of its own:
+"Its own description (Recommended)".
+
+- **A job's file's `Words` may give a `Summary`**: the whole text as the game shows
+  it, 1 to 4,000 characters, line breaks allowed and no other control character;
+  left out, or null, is none. The game's own marks work in it (a heading as the
+  game's: `<color=abilityhint_cap_01><icon=104>Job Overview</color>`). A Summary
+  that isn't such text leaves the job out, said: "its Words' Summary is {value}, not
+  text of 1 to 4000 characters".
+- **Every mod's job's Job row names a row of its own** in UiJobAbilityHelp (key
+  0x10000 plus the job's number, far past the game's 0 to 34 and the other mods'
+  40), and the table is given that row as it loads: the job's Summary, or its
+  Description under the heading the loaded language's first two jobs share ("Job
+  Overview" in English; where they share none, as in French, whose headings name
+  each job, the Description alone). Each line of the Description starts with a
+  space, as the game's own lines do.
+- **No code of the game's is changed**: the job screen's two reads of the table
+  (`0x130792`, `0x13088E`) find the row by the key the Job row gives them. A row
+  another mod already has at a key is kept, said ("{mod}'s {job}'s Job Summary
+  keeps the row another mod gives it ({key})."); a table that isn't one of one key
+  gets none, said ("UiJobAbilityHelp gets no rows: {why}. The mods' jobs show no
+  words of their own on Job Summary.").
+- The log, as the tables load: "UiJobAbilityHelp: the mods' jobs' Job Summary
+  words' {n} rows written."
+- Rehearsed in his program's own code: the tables set up by the game's own setup
+  with the jobs' rows, both of the job screen's reads run to the text box's call
+  (a mod's job's own words handed to it, the game's jobs' their own); over the
+  game's tables, the other mod's English and French tables and WotL Restoration's;
+  test 110's package from its zip.
+- **Test 110 passed** (13 November, 02:13): "Test 110 was a complete success and
+  functioned how you said it would." Battlemage's own words on both pages of its
+  summary; Skirmisher and Brawler each their Description under Job Overview; the
+  Knight as the game has it; the log's line with 16 rows.
+- **The Job Tree (Job Progress) is not in this helper.** It is measured and its
+  design signed off (`claude/job-tree-research.md`): what opens a job is a table
+  inside the program that a mod's job isn't in, so a mod's job stays open to every
+  unit until the framework keeps and tests its requirements itself (the next
+  build).
+
+**1.46.0: a job's own icons and pictures** (test 109, `make_test109.py`,
+`Job_Test_109.zip`: test 108's two mods, the first 1.7.0 with Battlemage giving
+its own icon, skillset icon and pictures, and Skirmisher the game's icons, a man's
+picture of its own and no woman's art; and this helper). The road's step 5, its
+third part (his pick of 11 November, "Job screen picture and icons"). A job's art is
+four pictures the game names from its tables: its icon (the Job row's
+TexturePartsIndex, a number printed into `j_%03d_uitx`), its skillset's icon (the
+JobCommand row's IconId, printed into `jc_%03d_uitx`), and its two job screen
+pictures, a man's and a woman's (its jobtype+Id names a JobType row whose two keys
+name rows of the Icon table). The job screen shows those pictures only for the
+game's 20 generic jobs, so a mod's job showed none there, and its Like's on the
+equipment screen and in Combat Sets. His word (12 November, his second on it): "The
+modder can pick either their own files or one of the game's for the job icon and
+skillset icon but not for the man art or woman art. The modder should be able to
+choose their own art for male and or female or no art for the male and or female.";
+and where a job has no art of its own, "No picture there either".
+
+- **A job's file can pick its two icons**: `"Icon"` (74 to 93, the generic job whose
+  icon it shows, or the name of a part list in its mod at
+  `FFTIVC/data/enhanced/ui/ffto/icon/job/textureparts/`) and its Skillset's
+  `"Icon"` (5 to 24, the skillset whose icon it shows, or a part list at
+  `.../icon/job_comm/textureparts/`). One not picked is its Like's, as before.
+- **And give its two pictures**: `"Pictures": {"Man": ..., "Woman": ...}`, each a
+  part list at `.../icon/job_visual/textureparts/` or none (left out, or null). A sex
+  with no art shows no picture anywhere: the job screen, the equipment screen, Combat
+  Sets. A part list is laid out as the game's (one part, the whole sheet) and names
+  its texture; the game reads both through the mod loader.
+- **The game's icons a job picks are its rows only**: its Job row's
+  TexturePartsIndex and its skillset's JobCommand row's IconId are the picked one's.
+- **Its own icon and its skillset's own icon are numbered as the job**: three hooks
+  name its part lists for that number, on the icon routine (`0x29B054`: through the
+  game's box loader, `0x29BC00`, as the routine calls it), on the skillset icon's
+  name routine (`0xFBF30`) and at the start of the skillset icon routine (`0xFBF9C`,
+  by the skillset: its bound would turn the number into the empty icon). Made only
+  where a job gives an icon of its own.
+- **Every job's pictures are answered at the picture routine** (`0xFBEB8`, its hook
+  made wherever a mod gives a job): after the game's answer, its own picture's key
+  (0x10000 and twice the job, the woman's the next), shown on the job screen as the
+  game shows its generic jobs', with a row of the Icon table for each such key as the
+  table loads (its path the job's own part list; a row another mod gives at a key is
+  kept, said); or 0 for no art, which the game shows nowhere. Its jobtype+Id stays
+  its Like's: the game also takes two jobs as the same job, clears the units' "new"
+  marks and tells a Chemist by it.
+- Each routine is found by a call of it, and taken where the game's program file
+  has it if another mod hooks it (as 1.44.2's).
+- New in the log: the job's line ends with what it shows ("It shows its own icon,
+  its skillset's own icon and pictures of its own.", "It shows the game's job 87's
+  icon, the game's skillset 18's icon and the man's picture of its own.", "It shows
+  the game's job 74's icon, its skillset's own icon and the woman's picture of its
+  own."); "Icon: the mods' jobs' own pictures' {n} rows written."; once each, "the
+  game was given a job's own icon for the first time ({mod}'s {job})." (and "skillset
+  icon", "man's picture", "woman's picture"); where they can't be given, "the jobs'
+  own icons and pictures can't be given: {why}. A job with an icon of its own shows
+  its Like's and a skillset with an icon of its own its Like's; the game's icons a job
+  picks are still shown. Each job's pictures are as they were before: none on the job
+  screen, its Like's elsewhere." ({why}: "a call of the picture routine (0 places like
+  it, not 1) wasn't found in {program}. A game update may have changed it: look for a
+  newer Mod Studio Framework", and the like for the icon routine, the skillset icon's
+  name routine, the skillset icon routine and the box loader; or "their hooks
+  couldn't be made ({kind}: {message})"); "Icon gets no rows: {why}. The jobs with
+  pictures of their own show none."; "a job's own picture couldn't be given
+  ({error}).", "a job's own icon couldn't be given ({error}).", "a job's skillset's
+  own icon couldn't be named ({error})." (each said once). A job's file's faults:
+  "its Icon is {value}, not one of the game's generic jobs whose icon it shows (74 to
+  93) or the name of its own icon's part list (1 to 64 letters, digits and _)", "its
+  Skillset's Icon is {value}, not one of the game's skillsets whose icon it shows (5
+  to 24) or ...", "its Pictures' {Man or Woman} is {value}, not the name of its own
+  picture's part list (1 to 64 letters, digits and _)", "its {which}, {name}, isn't
+  in its mod's folder ({folder}/{name}.utexpt)", "its Pictures isn't a list of fields
+  with a Man's or a Woman's picture".
+- Only the Enhanced look (his word).
+- Rehearsed in his program's own code: the tables with the jobs' rows read by the
+  game's own setup and getters, the picture routine whole, where a picture is set
+  and the image box's reads for the row as the hook leaves it, the icon's and the
+  skillset icon's numbers on their way to the routines that name them; test 109's
+  package from its zip.
+- **Test 109 passed** (12 November, 21:50): "The test was a complete success and
+  functioned how you said it would." Battlemage's own icon, skillset icon and
+  pictures on the job screen, the status screen's job panel and Combat Sets;
+  Skirmisher with the Dragoon's icon, its man's picture and no woman's picture.
+
+**1.45.1: a job's own portraits on the big cards too** (test 107,
+`make_test107.py`, `Job_Test_107.zip`: test 106's two mods as they were, and
+this helper). His test 106: "The portrait for the male and female battlemage
+is empty", the faces showing in the formation's list and the battle's turn
+list but not in the big cards: the job screen's at the top left, the
+formation's and the battle's at the bottom right. His log named the first of
+the job's own portraits given only when the formation opened.
+
+- **The cards in a battle** are written by four routines; two of them read the
+  graphics slots' numbers themselves and bounded them at 205 before handing
+  them to the card (`0x228778` and its twin `0x2DF374`, the same fourteen
+  bytes at `0x229A50` and `0x2E065A`, found by them twice). A call of the
+  framework's code in their place keeps a number of the framework's (256 to
+  340) with its offset into the older drawing's face sprites 0, as for none;
+  every other number as the game's.
+- **The cards outside a battle** (the job screen, the status screen, the party
+  list) come through the face routine's way for the party's units, which asks
+  a portrait routine (`0x32AB3C`) that takes a face word with bit 8 or 9 set as
+  no face at all: every face of the framework's has bit 8 set, so the card had
+  no number and no colors. A call of the framework's code in place of that
+  test (`0x32AC46`) answers a face of the framework's with itself and writes
+  its colors as the game's own routine writes them; any other word is tested
+  as the game's.
+- New in the log, where they aren't found: "the bounds of a battle's unit
+  cards ({n} places like them, not 2)", "the test of the party's faces ({n}
+  places like it, not 1)" or "the test of the party's faces (it isn't the
+  game's)", in the line "the jobs' own portraits can't be given: ...". Each
+  job then keeps its Look's portraits.
+- Rehearsed in his program's own code: both card routines from the slots'
+  table through their bound for every number and face; the portrait routine
+  whole for a unit of the roster; the face routine whole for one (a Battlemage
+  man 256, a woman 257, in the first team's colors; every generic job as the
+  game's); test 107's package from its zip.
+- **Test 107 passed** (12 November, 17:10): "Test 107 was a success and
+  functioned how you said it would." The faces on every card. His one note, a
+  line across the talking face where its eyes' part and its mouth's part meet,
+  was the test's own faces' (cut at one row, black under the see through
+  pixels); test 108 makes them as the game's own are, with Mod Studio's
+  portrait seam fix, the helper as it was: passed (17:24, "They are now
+  talking and blinking perfectly").
+
+**1.45.0: a job's own portraits** (test 106, `make_test106.py`,
+`Job_Test_106.zip`: test 105's two mods, the first 1.6.0 with Battlemage given
+portraits of its own, and this helper). The road's step 5, its second part,
+the last in his order. He sent the game's faces to read their format: a sheet
+of 520 by 388 for each portrait and team color, its part list naming nine
+parts (the sheet, three eye frames, four mouth frames, the whole face).
+
+- **A job's file's Look can give its own portraits**: `"Portraits": {"Man":
+  [...], "Woman": [...]}`, either or both, each 1 to 5 names of part lists in
+  the job's mod at `FFTIVC/data/enhanced/ui/ffto/common/face/textureparts/`
+  (one a team's colors, the first the player's team's), laid out as the
+  game's faces and naming their textures. The game reads them itself, through
+  the mod loader.
+- **Each of the job's own sprites so given has a portrait number of the
+  framework's**: its sprite's plus 86 (256 to 340), past the game's 205 and
+  the numbers other mods use. Its face word names that number; the face to
+  portrait routine answers such a face with itself (a call of the framework's
+  code in place of its first two instructions, WotL Restoration's bytes left
+  as they are); its graphics slot's number is that number; the six bounds at
+  205 on the way to the Enhanced look are widened to 340 (three in place,
+  three held in a register whose switch answer is made from another so face
+  0xCD stays 205).
+- **A hook on the face's file's routine** (`0xFC22C`, found by a call of it,
+  taken where the game's program file has it if another mod hooks it) names
+  the job's own part list for such a number, the one of the team's colors
+  (the first where the job gives fewer). Every other number is the game's own
+  routine's.
+- New in the log: the job's line ends "... and portraits of their own." (or
+  ", with the man's portraits of its own", or the woman's); once, "the game
+  was given a job's own portrait for the first time (Test 74 New Job's
+  Battlemage, the man's first portrait)."; where it can't be done, "the jobs'
+  own portraits can't be given: {why}. Each job with portraits of its own has
+  its Look's." A job's file's faults: a Portraits that isn't a list of fields,
+  a list not of 1 to 5 names, a name not of 1 to 64 letters, digits and _, a
+  part list not in the job's mod.
+- Only the Enhanced look (his word): in the Classic look a job's own portrait
+  is none or another's.
+- **Test 106** (12 November, 16:11): the faces in the formation's list and the
+  battle's turn list, none in the big cards (1.45.1).
+
+**1.44.2: hooked routines taken where the game's program file has them**
+(test 105, `make_test105.py`, `Job_Test_105.zip`: test 104's two mods as they
+were, and this helper). His test 104: "Their texture did not change", and the
+man red in the menus and purple in battle (his own colors under the battle's
+blue light: settled). His log: "the jobs' own textures can't be used: the
+textures' opening of an entry (the place the call names starts as neither the
+routine nor a jump), ..."; the mod loader's own lines in it name the routines
+it hooks, the same two. Its hooks start with a jump of a kind 1.44.1 didn't
+take.
+
+- **A routine the calls name is taken where its own first bytes are**: in the
+  game as it runs or, whatever another mod's hook starts with there, in the
+  game's program file at the same place (`ProgramFile.cs`: each section's
+  bytes read from the file's own place for it; the file's path from the
+  game's process). The framework's hook is then made in front of the other
+  mod's, as Reloaded-II's shared hooks stack them.
+- **A hook that can't be made** turns both off and is said ("the jobs' own
+  textures can't be used: their hooks couldn't be made (...)"); the jobs are
+  added as they are.
+- **Once in all**, the first time the game is given one of the jobs' own
+  textures: "the game was given a job's own texture for the first time (Test
+  74 New Job's Battlemage, the man's upper texture)."
+- New in the log, where a routine can't be taken: "the textures' opening of
+  an entry (the place the call names isn't the routine as the game runs, and
+  the game's program file couldn't be read to see whether another mod has
+  hooked it there)" or "... (the place the call names isn't the routine, as
+  the game runs or in the game's program file)".
+- Rehearsed: the routines found past near and far jumps, a far jump through a
+  pointer, a push and return and jumps through a register, each with his
+  program's file beside; with no file, and with a file whose routine differs,
+  said; the file read at each section's own place; test 105's package, and
+  its zip over his numbers over a program hooked as the mod loader's.
+- **Test 105 passed** (12 November, 13:41): "The texture changed as you said
+  it would." His log had the first line ("the game was given a job's own
+  texture for the first time (Test 74 New Job's Battlemage, the man's upper
+  texture).") and no "can't be used" line; his screenshots showed each
+  Battlemage a checkered box on the job screen (its preview and its cell in
+  the grid), in the formation and in battle.
+
+**1.44.1: a job's own textures found by their calls** (test 104,
+`make_test104.py`, `Job_Test_104.zip`: test 103's two mods, the first 1.5.0
+with Battlemage's man in shades of red, and this helper). His test 103: "The
+texture did not change"; his log: "the jobs' own textures can't be used: the
+textures' opening of an entry (0 places like it, not 1), the textures'
+unpacking of an entry (0 places like it, not 1) wasn't found". In the running
+game the mod loader has hooked both routines (it serves its `tex_N.bin`
+through them), so their first bytes are its jumps.
+
+- **The routines are found by the menus' figures' calls of them** (`0xCE31F`,
+  found once: the opening's, the unpacking's and the closing's calls), each
+  taken where it starts as the game's routine or with another mod's hook's
+  jump. Reloaded-II's shared hooks stack the framework's hook on the mod
+  loader's; the framework's, made later, is asked first.
+- New in the log, where they can't be found: "the menus' read of a texture (0
+  places like it, not 1)", "the textures' opening of an entry (the place the
+  call names starts as neither the routine nor a jump)".
+- Rehearsed: the routines found the same in a program whose two starts carry a
+  near and a far jump, one starting as neither said, test 104's package from
+  its zip, over that program too.
+- **Test 104** (12 November): the man red in the menus and purple in battle,
+  his own colors (settled). The textures didn't change: the mod loader's
+  hooks start with a jump of another kind, and neither routine was taken
+  (1.44.2).
+
+**1.44.0: a job's own textures** (test 103, `make_test103.py`,
+`Job_Test_103.zip`: test 102's two mods, Battlemage given textures of its
+own, and this helper). The road's step 5, its second part, next in his order
+after the colors.
+
+- **A job's file's Look can give its own textures**: `"Textures": {"Man":
+  ["upper", "lower"], "Woman": [...]}`, either or both, each two names of
+  files in the job's folder, its upper texture and its lower, as g2d.dat
+  keeps a sprite's: 4 bits a pixel, 512 pixels wide, the left pixel in a
+  byte's low four bits; the upper 512 rows (131,072 bytes), the lower 1 to
+  512 rows (the game's own 464, 118,784 bytes; other mods' `tex_N.bin` 512).
+  Drawn for its Like's frames, colored by its colors (its own or its
+  Look's).
+- **How the game reads a sprite's textures**: the sprites' table names its
+  upper texture's g2d.dat entry, its lower is the next. The menus' figures
+  (`0xCE204`), the textures as they are drawn (`0x415D30`) and the screens'
+  (`0x41E05C`) each open one entry (`0x3D2450`, by the file's own index; its
+  count is never asked), unpack it into their memory (`0x3D25D8`) and close
+  (`0x3D25A4`).
+- **The framework's part**: each of the job's own sprites with textures of
+  its own is given two entries of the framework's (from 0x4000, far past
+  the file's 2,450), named in the sprites' table in place of its Look's; two
+  hooks answer them: the opening of one of them opens nothing and says it
+  did, the unpacking copies the job's texture and says how many bytes.
+  Every other entry and file is the game's own routine's. No change of the
+  game's code. Where the routines aren't found, said, and the job wears its
+  Look's textures.
+- Rehearsed in his program: the menus' figures' read run in the game's own
+  code (a job's own sprite's entries opened alone, unpacked and closed,
+  given its texture; any other sprite's the game's), the battle's figure's
+  entries, the sprites' table and its Sync, the job file's faults, test
+  103's package over his numbers and from its zip.
+- New in the log: the job's line says "... which use textures of their own"
+  (or "the game's job 78's textures, the man's textures of its own", or the
+  woman's); where the routines aren't found, "the jobs' own textures can't
+  be used: the textures' opening of an entry (0 places like it, not 1)
+  wasn't found in FFT_enhanced.exe. A game update may have changed it: look
+  for a newer Mod Studio Framework. Each job with textures of its own wears
+  its Look's." A job's file's faults: "its Look's Textures isn't a list of
+  fields with a Man's or a Woman's textures", "its Look's Textures' Man isn't
+  a list of two file names (its upper texture's and its lower texture's)",
+  "its Look's Textures' Man's upper texture is "../up.bin", not the name of a
+  file in the job's folder", "..., gone.bin, isn't in the job's folder",
+  "... is 131,071 bytes, not 131,072 (512 by 512 pixels at 4 bits a pixel)",
+  "its Look's Textures' Man's lower texture, low.bin, is 300 bytes, not 512
+  pixels wide at 4 bits a pixel with 1 to 512 rows (the game's own are
+  118,784 bytes)".
+- **Test 103** (12 November): each Battlemage in a checkerboard made up for
+  the test, in its own colors. The textures didn't change: the routines
+  weren't found in his running game (1.44.1).
+
+**1.43.0: a job's own colors** (test 102, `make_test102.py`,
+`Job_Test_102.zip`: test 101's two mods, Battlemage given colors of its own,
+and this helper). The road's step 5, its second part, a mod's own art; his
+order of it (12 November): "Colors first", then the sprites' textures, then
+the portraits, a test each.
+
+- **A job's file's Look can give its own colors**: `"Colors": {"Man":
+  [...], "Woman": [...]}`, either or both, each a list of 1 to 5 palettes in
+  the order the game keeps a figure's (the first the player's team's), each
+  16 colors written "#RRGGBB", the first "#000000" (see through). A palette
+  not given keeps its Look's colors, as do the portraits.
+- **How the game colors a figure**: both routes, the menus' (`0x26E750`)
+  and the battle's (`0x26E838`), copy its 16 palettes from its classic file
+  and hand its sprite to one routine (`0x26C7AC`). Where the sprite's
+  CharShape row names a CharCLUT number (+0xC), the game table **CharCLUT**
+  (sheet 0xD2, two keys: that number and a palette's; 16 colors of red,
+  green and blue a row, used when +0x14 isn't 0) is written over the
+  palettes its rows name, as colors of 15 bits (`0x26C530`): how the game colors
+  Ramza's three looks.
+- **The framework's part**: a job's own sprites' CharShape rows name a
+  CharCLUT number of their own (the sprite's own number) where that sex has
+  colors, and CharCLUT gets a row for each palette as it loads
+  (`SpriteRoom.WithClutRows`, from the jobs' hook of the tables' setup, only
+  with a job with sprites and colors of its own). A row another mod has
+  there is kept, said. No change of the game's code.
+- Rehearsed in his program: the coloring of every sprite 0 to 255 run in the
+  game's own code with CharShape and CharCLUT kept as the game keeps them
+  (the game's tables color only Ramza's; the helper's the jobs' own sprites
+  too, every other palette as handed), the tables read by the game's own
+  setup and lookups, the job file's faults, test 102's package over his
+  numbers.
+- New in the log: the job's line ends "... which use the game's job 78's
+  textures in colors of its own." (or ", the man's in colors of its own." or
+  ", the woman's ..."); "CharCLUT: the mods' jobs' own colors' 2 rows
+  written."; where another mod has a row there, "Mod S's Battlemage's sprite
+  171 keeps the CharCLUT row another mod gives its first palette."; where the
+  table can't be given them, "CharCLUT gets no rows: it isn't a table of two
+  keys (byte 8: 1). The jobs with colors of their own wear their Look's
+  colors instead." A job's file's faults: "its Look's Colors isn't a list of
+  fields with a Man's or a Woman's palettes", "its Look's Colors' Man isn't a
+  list of 1 to 5 palettes", "its Look's Colors' Man's second palette isn't a
+  list of 16 colors", "... has "#12345", not a color written "#RRGGBB"", "...
+  starts with a color that isn't "#000000" (the first color is
+  see through)".
+- One more thing the game does with a CharCLUT number: as a save loads or a
+  battle starts again (`0x1009E8`), a figure whose sprite names one wears the
+  palette its first row's color skin gives (0 for none): for the party's
+  units the palette they wear. For a unit of another team in a mod's job
+  (jobs in a quest's battle, a later step) it would be the player's colors
+  after a load; to be measured then.
+- **Test 102 passed** (12 November): the log's lines as rehearsed; the party
+  menu, the job screen's figures and its grid's small figure, the battle's
+  formation and the battle, each Battlemage in its own colors. (His battle
+  screenshots were first read as the man in the woman's colors; every unit
+  of his team there, the game's own too, carried the same blue light, and
+  with it taken away each Battlemage wears its own.) A grey screen entering
+  a battle on one of his saves came with 1.42.2 too, not from the colors.
+
+**1.42.2: a job's own sprites' colors and portraits in battle** (test 101,
+`make_test101.py`, `Job_Test_101.zip`: test 99's two mods as they were, and
+this helper). His test 100: "I can place them down now but what appears to
+be the palette and portrait is incorrect", with two screenshots of the
+formation: each Battlemage in other colors than a Monk's, and the panel's
+portrait a story character's.
+
+- **The battle colors a figure from the classic file its loader reads**
+  (`0x26FB28`, by the classic files' tables at `0x26FD69` and `0x26FD5C`), in
+  the Enhanced look too: the figure's palettes function (`0x26E838`, called
+  with the loaded file at `0x26EF81`) copies the file's first 512 bytes into
+  the figure's graphics slot. For a job's own sprites those rows were its
+  Like's (the Knight's file) while its sheets were its Look's. **They are its
+  Look's now**, as the palettes' copy the menus read (`0x26E750`) already
+  was; its attributes stay its Like's (the same frames).
+- **The battle's panels show the graphics slot's sprite as the portrait**:
+  the same function keeps each slot's sprite in a table of ten (`0x37A59E0`,
+  two writes), and ten readers take it as the unit's portrait (a generic's
+  numbered as its sprite; 170 and 171 are the game's own portraits of
+  others). **At both writes the framework's code writes a job's own sprite as
+  its Look's** (a woman's the woman's), every other as it is: the fourth and
+  fifth of the places the sprites take, each a call, held to its bytes as
+  measured (the write names the table in four bytes its pattern leaves open).
+- Rehearsed in his program: the write run alone at both places for every
+  sprite 0 to 255 (a job's own written as its Look's, the rest as the game
+  writes them, every register but ecx as the game's), the classic files'
+  rows, a program whose write names another table (said, and no job is given
+  sprites of its own), test 101's package.
+- Only the Enhanced look is supported (his word, 12 November).
+
+**1.42.1: a job's own sprites on the battlefield** (test 100,
+`make_test100.py`, `Job_Test_100.zip`: test 99's two mods as they were, and
+this helper). His test 99: the party menu, the portraits with their talking
+and blinking frames, and the job screen's figures showed Battlemage as a
+Monk; putting it on a tile in the battle's formation stopped the game, and
+Windows's record of it named an access violation at `0x217172` of his
+program. And his word the same night: "I do not want to support classic
+mode only Enhanced."
+
+- **One more table is keyed by a sprite**, a game table: CharShape (sheet
+  0xAE), a row for each of the game's sprites (0 to 158; WotL Restoration's
+  0 to 169 and Dark Knight & Onion Knight (Generic)'s 0 to 162, each adding
+  rows for its own): a unit's height above the ground (+0x2C) and its
+  shadow, colors and light as rows of other tables. Twelve places get it to
+  find a sprite's row; five read the row with no test for none (`0x217172`,
+  `0x221AB9`, `0x26456E`, `0x2648C6`, `0x264CE9`; a sixth, `0x21714B`, its
+  +0x2F the same way). The first is in the function that shows a unit on
+  the battlefield: for Battlemage's sprite 170 it read the height of no row.
+- **Each job's own sprite is given a row as the table loads**
+  (`SpriteRoom.WithShapeRows`, from the jobs' hook of the tables' setup): its
+  Look's sprite's row, a woman's the woman's, its Comment empty. A row
+  another mod already has at that number is kept, said. A table found by its
+  rows' places whose keys no longer follow on is searched by key, as
+  `Nxd.WithRows` has done since 1.5.0.
+- Rehearsed in his program (`dev/test_jobs.py`): the game's own setup and
+  lookup find the new rows in the game's table, the other mod's and WotL
+  Restoration's, every row they had as it was; the crash's stretch, run with
+  the game's table, faults at `0x217172` as his did, and with the
+  framework's reads the Monk's height and goes on.
+- New in the log: "CharShape: the mods' jobs' own sprites' 2 rows
+  written."; where another mod has a row there, "Mod S's Battlemage's sprite
+  171 keeps the CharShape row another mod gives it."; where the table can't
+  be given them, "CharShape gets no rows: it has no row for the game's
+  sprite 104, which Mod S's Battlemage looks like. Putting a unit of a job
+  with its own sprites on the battlefield stops the game."
+
+**1.42.0: a job's own sprites** (test 99, `make_test99.py`,
+`Job_Test_99.zip`). The road's step 5, its first part. His word on test 98:
+"Continue on. I believe Sprites are next on our list for new Jobs"; his
+picks for the step, built in this order: battle sprite and faces, the job
+screen's picture and icons, its own colors; not the Classic look (there a
+mod's job shows the job it is like).
+
+- **A job's file can name a look of its own**: `"Look": {"Like": 74 to
+  93}`, the game's generic job whose look it wears. It must be drawn for the
+  same frames as the job's Like (the sprite's attributes' first two bytes),
+  or the job keeps its Like's look and the log says so.
+- **Two sprite numbers a job** (`Numbers.json`'s `Sprites`, kept for good):
+  a man's (even) and the woman's after it, past the game's 169, below 255,
+  not 202 to 209 (the game keeps faces for 203 to 209): 38 pairs. The
+  routines that make a sprite from a job (the sprite set, the five
+  portraits', the face's, the job screen's cell) are handed a job number of
+  the framework's that makes them make those two ((sprite + 0x34) / 2, 111
+  to 126 and 131 to 152); the atlas of units the Look's place.
+- **The tables of what a sprite looks like made longer** (`SpriteRoom`,
+  its places written by `make_sprite_sites.py` into `SpriteRoomSites.cs`):
+  14 tables of 255 rows in memory near the program, after the jobs' cells
+  (and the longer job records, where made): the attributes, the classic
+  files (two copies: the classic look's and the palettes' the Enhanced
+  sheets are drawn with), the big monsters' second classic files, the
+  sheets, the second sheets, and five face words' tables. The game's rows as
+  they are, the Squire's past them for numbers no job has, and each job's
+  own two rows: its Like's where the classic look reads and where both
+  looks read the same, its Look's where the Enhanced look reads and in its
+  faces. The 44 instructions that name those tables name the same place in
+  the longer ones, the 16 bounds of a sprite are widened, the two tests that
+  sort a sprite as a generic's or a story unit's take 170 to 254 as a
+  generic's, and the job screen's cell draws a job with its own sprites by
+  its job. One place not found and no job has a look of its own.
+- What others write to the game's own tables (WotL Restoration's portraits'
+  faces) is brought over to the longer ones as the job records' is.
+- New in the log, for a job with its own sprites: "Test 74 New Job's
+  Battlemage is job 142, looking like the game's job 76, with its own
+  skillset 77 and its own sprites 170 and 171, which use the game's job
+  78's textures."; where its Look can't be used: "Mod S's Mismatch keeps the
+  look of the game's job 76: the game's job 79's sprites have other frames,
+  so its look can't be used." or "...: all 38 pairs of sprite numbers are
+  given."; where a place isn't found: "the jobs' own looks can't be made:
+  the sprites' test 3 (0 places like it, not 1) wasn't found in
+  FFT_enhanced.exe. A game update may have changed it: look for a newer Mod
+  Studio Framework. Each job looks like the game's job it is like."
+
+**1.41.4: the units the game moves reach them through Arithmeticks too**
+(test 98, `make_test98.py`, `Job_Test_98.zip`). His word on test 97: "a
+complete success", and "all Arithmeticks should be able to use new
+abilities as well just like we can now, enemies, charmed, or confused."
+
+- **The units choose an Arithmeticks spell in two routines of their own**,
+  both over the game's four skillsets (a table at `0x684E44`): the thinking
+  one (`0x388EB4`), which kept the spell as its word's low byte (550,
+  Mending Light, would have been 38, Float) and passed over a word whose
+  low byte is 0; and the random one (`0x38BF34`, a unit acting at random),
+  which picked one of the four by the game's random number and 3.
+- **The framework's code there** (`JobRoom`, found apart; where either isn't
+  found, the jobs and the player's list are made without it and the log
+  says so): the thinking one goes through the framework's list of
+  skillsets, keeps the whole word in a cell of the framework's (the game's
+  byte as before) and reads it where it read the byte; the random one picks
+  a skillset of the list at the random number less every whole multiple of
+  the list's length, with 256 tries for each four of the list. Both pass
+  over a word with no action record.
+- New in the log: "Units the game moves choose Arithmeticks's spells from
+  the mods' jobs' own skillsets too.", or where it isn't found, "Units the
+  game moves can't choose Arithmeticks's spells from the mods' jobs' own
+  skillsets: its thinking choice (n places like it, not 1) wasn't found in
+  FFT_enhanced.exe. ..."
+
+**1.41.3: Arithmeticks reaches the mods' jobs' own skillsets** (test 97,
+`make_test97.py`, `Job_Test_97.zip`). His word on test 96: "a complete
+success", and Flame Lance's and Mending Light's pages say "Castable with
+Arithmeticks", but learned on his Arithmetician as a Battlemage neither was
+in Arithmeticks's list of spells.
+
+- **The battle's list of Arithmeticks's spells** (`0x30EA38`: the battle
+  menu's, its twin's and the counter's of a skillset's entries) goes through
+  four skillsets written in its own code (White, Black and Time Magicks and
+  the Mystic Arts), lists what the unit learned of each and keeps each spell
+  whose action record has the flag. A job's own skillset was not among them.
+- **The framework's code there** (`JobRoom`, found apart from the jobs'
+  places: where it isn't found the jobs are made without it and the log
+  says so): the round's skillset read from a list of its own (the game's
+  four, then each job's in the order the jobs are given); a spell kept only
+  where it has an action record (a job's skillset may hold an item's, a
+  jump's, a charge's or a throw's number, as test 86's Alchemist, Lancer,
+  Marksman and Shade do, which has none: the game would have read its flag
+  at address 5), has the flag, isn't in the list already (a game's spell,
+  as Haste in Battle Magicks, may be learned in its own job too) and the
+  list holds fewer than 64; as many rounds as skillsets.
+- What follows a spell chosen was already the framework's (1.41.0 and
+  1.41.2): the action's check, its setup with its own record and formula;
+  Arithmeticks costs no MP.
+- The units the game moves choose an Arithmeticks spell from the game's four
+  as before.
+- New in the log: "Arithmeticks reaches the mods' jobs' own skillsets: a
+  spell a unit has learned in one of them is in its list when it says
+  Castable with Arithmeticks.", or where it isn't found, "Arithmeticks
+  can't reach the mods' jobs' own skillsets: its list (n places like it, not
+  1) wasn't found in FFT_enhanced.exe. ..."
+
+**1.41.2: a mod's ability used in battle as itself** (test 96, `make_test96.py`,
+`Job_Test_96.zip`). His word on test 95: in battle Mending Light (550, 4 MP)
+said "Insufficient MP to use Mending Light" with 13 MP, the Combat Timeline
+called it "Wind Anima", and Float was cast (its 50%, its 8 MP), then "Failed
+to perform ability!".
+
+- **The battle menu's confirm** (`0x237FA4`) made the chosen word of the
+  menu's list (an ability's text code, 0x7000 and its number) the action's
+  ability by keeping nine bits: 550 became 38, Float. The framework's code
+  there (`AbilityRoom.MenuCut`): a word with the text code 0x7000 and a
+  number from 549 to 1023 in its eleven bits gives that number; any other
+  word is cut as the game cuts it.
+- **Six compares more** (`abilities.py`'s `MISSED_COMPARES`, now in
+  `COMPARE_SITES` and `AbilityRoom.Compares`, each taking a mod's ability
+  for a plain action by the same code): three of "1 to 367" written as one
+  less (`lea eax, [x - 1]` and 366, so the framework's edges are 548 and
+  1022 there: `Less`), among them the battle menu's own list of each
+  action's MP and charge time, which the "Insufficient MP" box reads; two
+  on a register still holding 367 (the MP a charged ability costs, as it is
+  done and as the action is set up: a mod's ability cost nothing); and the
+  action's setup's own (`0x309CFF`), where a mod's ability had its formula
+  made a weapon's.
+- **The turn order**: 1.41.0 made a readied ability again from the turn
+  order's low byte and past 255 flag with the unit's own word as the
+  timeline is drawn; while the menu is open the game works the turn order
+  out with the chosen action put in the unit and puts the unit's own back
+  after. The writer itself is taken now (`AbilityRoom.Writer`): where it
+  loads a unit's readied word it keeps the word in a table of the
+  framework's (`TurnOrderAt`, a word for each of the 21 units), and the
+  four places that make an entry's ability again read that table: the two
+  of 1.41.0 and two more that make it a text code for the timeline's list
+  (`AbilityRoom.Texts`).
+- 83 changes of the program now (the code's 50). `test_jobs` runs each
+  piece alone and the battle's own routines with test 94's package: the
+  action's setup takes Mending Light's own record and Cure's formula, the
+  MP paid as it is done is 4, the MP asked as it is set up is 4, and the
+  menu's list gives the three their own MP and charge time.
+
 ## Building
 
 With the .NET 8 SDK, offline, from Mod Studio's folder:
@@ -2561,7 +4900,9 @@ nowhere, as every helper from 1.29.0 to 1.35.0 would once no mod's place
 was numbered; 1.35.1 (a save's place looked at whatever the numbers
 remember) passed his test 73 (5 November: "Test 73 was a complete success
 and functioned exactly as you said it would"), test 72's items part with
-it, so **1.35.1 is the one to publish now**, 1.30.0 to 1.35.0 within it
+it, so **1.35.1 is the one to publish now** (1.36.3 passed his test 77 and
+can be published in its place when he chooses, 1.36.0 to 1.36.2 within it;
+1.37.0 is not one to publish, 1.37.1 passed his test 79 and 1.37.2 his test 80 and either can be published when he chooses, 1.38.0 is never to be published (it loses a job's progress), 1.38.1 isn't one to publish either (a battle started again keeps its JP), nor 1.38.2 (its status card shows another job's numbers), 1.38.3 passed his test 84 and 1.38.4 his test 85, so 1.38.4 can be published when he chooses, 1.39.0 is not one to publish (its rows never move: test 86), nor 1.39.1 (a short row's window opens off the screen: test 87), nor 1.39.2 (the game's slide puts the places on the game's rows for a few frames: test 88), nor 1.39.3 (Q and E on the abilities' page can stop the game: test 89), and 1.39.4 waits for test 90), 1.30.0 to 1.35.0 within it
 (never 1.35.0 alone). Every helper from 1.7.0
 (a mod's place a destination) to 1.23.0
 stops the game as Ramza arrives at a mod's place numbered 68 or more, and

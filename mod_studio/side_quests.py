@@ -380,15 +380,30 @@ class Fight:
 @dataclass
 class Battle:
     """A quest's own battle: its name and its units' file (640 bytes) in the quest's folder; (Mod Studio Framework
-    1.33.0) its units' own names, by their place in the file (0 to 15), each shown as the game shows a renamed unit's."""
+    1.33.0) its units' own names, by their place in the file (0 to 15), each shown as the game shows a renamed unit's;
+    (1.53.0, Zodi's order of 13 November: "jobs in a quest's battle") its units' jobs of its mod's own, by their place in
+    the file and the job's Name, each unit put in that job as the framework plans the quests; (Mod Studio Framework
+    2.0.0, Zodi's first point of 16 November 2026: War of the Lions' items in "modders new Battles") its units' items
+    past the 255 a byte of its file holds, by their place in the file and the place each is worn
+    (`mod_battles.PLACES`): a number (256 to 315) or the Name of one of its mod's own items, put on the unit as
+    the game makes it."""
     name: str
     units: str
     names: dict = field(default_factory=dict)
+    jobs: dict = field(default_factory=dict)
+    items: dict = field(default_factory=dict)
 
     def to_json(self) -> dict:
         out = {"Name": self.name, "Units": self.units}
         if self.names:
             out["Names"] = [{"Unit": slot + 1, "Name": self.names[slot]} for slot in sorted(self.names)]
+        if self.jobs:
+            out["Jobs"] = [{"Unit": slot + 1, "Job": self.jobs[slot]} for slot in sorted(self.jobs)]
+        worn = {slot: found for slot, found in self.items.items() if found}
+        if worn:
+            from . import mod_battles as mb
+            out["Items"] = [{"Unit": slot + 1, **{place: worn[slot][place] for place in mb.PLACES
+                                                  if place in worn[slot]}} for slot in sorted(worn)]
         return out
 
 
@@ -413,6 +428,24 @@ def good_own_name(text) -> bool:
     if any(unicodedata.category(c) == "Cc" for c in text):
         return False
     return unicodedata.category(text[0]) not in SPACE_KINDS and unicodedata.category(text[-1]) not in SPACE_KINDS
+
+
+#: (Mod Studio Framework 1.53.0) A job's Name at the most (the helper's `JobFile.NameMost`), which a battle's Jobs name one of
+#: its mod's jobs by.
+JOB_NAME_MOST = 40
+
+
+def good_job_name(text) -> bool:
+    """(1.53.0) A job's Name as a job's file gives it: 1 to 40 characters (counted as the helper counts them, in UTF-16),
+    none a control character, under 1,024 bytes of UTF-8 (the helper's `JobFile.GoodJobName`, character for character)."""
+    if not isinstance(text, str):
+        return False
+    try:
+        units, size = len(text.encode("utf-16-le")) // 2, len(text.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+    return (1 <= units <= JOB_NAME_MOST and size < 1024
+            and not any(unicodedata.category(c) == "Cc" for c in text))
 
 
 #: (1.15.0) A tavern rumor's title (as an objective's words) and words at the most; the towns whose taverns tell rumors
@@ -737,7 +770,58 @@ def _read_battle(b, read, problems: list) -> Optional[Battle]:
                 problems.append(f"the battle {name} gives unit {unit} two own names")
                 return None
             names[unit - 1] = _get(entry, "Name")
-    return Battle(name, units_name, names)
+    # (1.53.0) Its units' jobs of its mod's own: each a unit of its 16 (1 to 16) and a job's Name, a unit given one job.
+    jobs = {}
+    if _has(b, "Jobs"):
+        listed = _get(b, "Jobs")
+        if not isinstance(listed, list):
+            problems.append(f"the battle {name}'s Jobs isn't a list")
+            return None
+        for n, entry in enumerate(listed, 1):
+            unit = _get(entry, "Unit") if isinstance(entry, dict) else None
+            if not _whole(unit) or not 1 <= unit <= UNITS:
+                problems.append(f"the battle {name}'s job {n} names no unit: its Unit is 1 to {UNITS}")
+                return None
+            if not good_job_name(_get(entry, "Job")):
+                problems.append(f"the battle {name}'s unit {unit}'s Job isn't a job's Name: 1 to {JOB_NAME_MOST} "
+                                "characters, none a control character")
+                return None
+            if unit - 1 in jobs:
+                problems.append(f"the battle {name} gives unit {unit} two jobs")
+                return None
+            jobs[unit - 1] = _get(entry, "Job")
+    # (2.0.0) Its units' items past 255: each a unit of its 16 (1 to 16) and, by the place each is worn, an item's
+    # number (256 to 315) or its mod's own item's Name (the helper's `BattleFile.ReadItems`), a unit given once.
+    items = {}
+    if _has(b, "Items"):
+        from . import mod_battles as mb
+        listed = _get(b, "Items")
+        if not isinstance(listed, list):
+            problems.append(f"the battle {name}'s Items isn't a list")
+            return None
+        for n, entry in enumerate(listed, 1):
+            unit = _get(entry, "Unit") if isinstance(entry, dict) else None
+            if not _whole(unit) or not 1 <= unit <= UNITS:
+                problems.append(f"the battle {name}'s items {n} name no unit: its Unit is 1 to {UNITS}")
+                return None
+            worn = {}
+            for place in mb.PLACES:
+                if not _has(entry, place) or _get(entry, place) is None:
+                    continue
+                if not mb.good_item(_get(entry, place)):
+                    problems.append(f"the battle {name}'s unit {unit}'s {place} is an item past the 255 a byte holds "
+                                    f"by its number ({mb.FIRST_WIDE} to {mb.LAST_WIDE}) or the Name of one of its "
+                                    f"mod's own items, not {json.dumps(_get(entry, place), ensure_ascii=False)}")
+                    return None
+                worn[place] = _get(entry, place)
+            if not worn:
+                problems.append(f"the battle {name}'s unit {unit}'s items name none ({', '.join(mb.PLACES)})")
+                return None
+            if unit - 1 in items:
+                problems.append(f"the battle {name} gives unit {unit}'s items twice")
+                return None
+            items[unit - 1] = worn
+    return Battle(name, units_name, names, jobs, items)
 
 
 def _read_fight(name: str, battle, battles: list, problems: list) -> Optional[Fight]:

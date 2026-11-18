@@ -286,18 +286,31 @@ def innate_ability_choices(state=None, language: str = "en") -> dict:
             if ability_id in allowed}
 
 
-def command_choices(state) -> dict:
+def command_choices(state, language: str = "en") -> dict:
     """
     Job command id -> name, for the Jobs page's skillset dropdown.
 
     Reads the same `job_command_records` the Job Commands tab lists, so the
-    two cannot disagree about what a skillset is called. Empty until setup
+    two cannot disagree about which skillsets there are. Empty until setup
     has loaded that table, which is why the page takes it through a setter
     rather than reading it once at construction.
+
+    **Each named as Job Commands names it** (`JobCommandsPage._command_label`):
+    the name as it stands in `language` (`nxd_data.effective_names`: the
+    `JobCommand-<lang>` table and any rename typed but not yet exported),
+    else the bundled table's own name. This read the bundled names alone, so
+    a skillset renamed on Job Commands kept its old name here (a community
+    report, 17 November 2026: a skillset of the game's with no name, named
+    on Job Commands, still "(unnamed command)" on Jobs).
     """
+    from .. import nxd_data
+    from .widgets.actions import ensure_language_loaded
+    ensure_language_loaded(state, nxd_data.spec_for("job_command").records_attr, language)
+    live = nxd_data.effective_names(state, "job_command", language)
     found = {0: "(None / Unset)"}
     for record in getattr(state, "job_command_records", None) or []:
-        found[record.command_id] = record.name or "(unnamed command)"
+        found[record.command_id] = (live.get(record.command_id) or record.name
+                                    or "(unnamed command)")
     return found
 
 
@@ -346,7 +359,10 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
     commands = JobCommandsPage(state)
     commands.set_ability_choices(ability_choices(state),
                                  getattr(state, "ability_types", None))
-    jobs.set_command_choices(command_choices(state))
+    # A source rather than a list (17 November 2026): the page asks for the
+    # names again each time it comes back and on its language, so a skillset
+    # renamed on Job Commands or in All Game Data shows its new name there.
+    jobs.set_command_names(lambda language: command_choices(state, language))
     # Jobs has ability dropdowns too now - its four innate slots.
     jobs.set_ability_choices(innate_ability_choices(state))
 
@@ -444,7 +460,7 @@ def build_window(state: WizardState, versions: dict | None = None) -> MainWindow
         # twice and cannot drift out of step with the rest.
         jobs_page = pages.get("Jobs")
         if jobs_page is not None:
-            jobs_page.set_command_choices(command_choices(state))
+            jobs_page.refresh_command_choices()
             jobs_page.set_ability_choices(innate_ability_choices(state))
         commands_page = pages.get("Job Commands")
         if commands_page is not None:

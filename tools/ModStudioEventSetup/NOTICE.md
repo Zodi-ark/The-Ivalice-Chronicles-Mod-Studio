@@ -16,6 +16,14 @@ the GNU Lesser General Public License, version 3, whose text follows:
   Reloaded.SharedLib.Hooks 1.9.0. Its source:
   https://github.com/Sewer56/Reloaded.SharedLib.Hooks
 
+It also carries the icons of War of the Lions' 40 new items (its
+`FFTIVC/data/enhanced/ui/ffto/icon/` folder, `msf_wotl_<number>` files):
+Zodi's own pictures, as he gave them for it: his icons of 16 November 2026
+(the small ones) and his art of 17 November (the menus'). The items'
+stats are facts read from FFTPatcher's PSP resources (Glain's FFTPatcher,
+GPL-3.0-or-later) and their descriptions War of the Lions' words as Zodi
+gave them: Mod Studio's `NOTICE.md` says it whole.
+
 The helper uses them as the separate files they are, so each can be
 replaced by another version of it that works with the helper. The hooks
 themselves are the `reloaded.sharedlib.hooks` mod's, which Reloaded-II

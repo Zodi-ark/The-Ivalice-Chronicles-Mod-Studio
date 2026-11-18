@@ -2078,9 +2078,104 @@ def battle_block(edits: QuestEdits, battle: str) -> bytes:
 
 
 def set_unit(edits: QuestEdits, battle: str, slot: int, **fields) -> None:
-    """One of a battle's 16 units' fields changed by name (`entd.unit_with`)."""
+    """One of a battle's 16 units' fields changed by name (`entd.unit_with`); (Mod Studio Framework 1.53.0) its main job
+    changed, its job of its mod's own (the battle's Jobs) given up, so the job the card shows is the one it wears."""
     units = next(b for b in edits.quest.battles if b.name == battle)
     edits.files[units.units] = entd.battle_with(edits.files[units.units], slot, **fields)
+    if "main_job" in fields:
+        units.jobs.pop(slot, None)
+
+
+def unit_job(edits: QuestEdits, battle: str, slot: int) -> str:
+    """The job of its mod's own a battle's unit wears (the battle's Jobs: the job's Name), "" when it wears none."""
+    units = next(b for b in edits.quest.battles if b.name == battle)
+    return units.jobs.get(slot, "")
+
+
+def unit_items(edits: QuestEdits, battle: str, slot: int) -> dict:
+    """(Mod Studio Framework 2.0.0, Zodi's first point of 16 November 2026) The items past 255 a battle's unit wears
+    (the battle's Items): `{the place worn (`mod_battles.PLACES`): the item's number or its mod's own item's Name}`."""
+    units = next(b for b in edits.quest.battles if b.name == battle)
+    return dict(units.items.get(slot) or {})
+
+
+def set_unit_item(edits: QuestEdits, battle: str, slot: int, place: str, item) -> None:
+    """(2.0.0) One of a battle's units given an item past 255 at one of the five places it wears one
+    (`mod_battles.PLACES`), or none there (`item` None: its file's byte is its item there again)."""
+    from . import mod_battles as mb
+    if place not in mb.PLACES or (item is not None and not mb.good_item(item)):
+        raise ValueError(f"{item!r} at {place} isn't an item past 255 a unit can wear")
+    units = next(b for b in edits.quest.battles if b.name == battle)
+    worn = dict(units.items.get(slot) or {})
+    if item is None:
+        worn.pop(place, None)
+    else:
+        worn[place] = item
+    if worn:
+        units.items[slot] = worn
+    else:
+        units.items.pop(slot, None)
+
+
+def item_renamed(quests: dict, old: str, new) -> None:
+    """(2.0.0) One of the mod's items given another name (or, `new` None, taken out of the mod): every unit of the
+    mod's quests that wears it wears it still (or no more)."""
+    for edits in quests.values():
+        for battle in edits.quest.battles:
+            for slot in list(battle.items):
+                worn = {place: (new if item == old and isinstance(item, str) else item)
+                        for place, item in battle.items[slot].items()
+                        if not (new is None and isinstance(item, str) and item == old)}
+                if worn:
+                    battle.items[slot] = worn
+                else:
+                    battle.items.pop(slot)
+
+
+def set_unit_job(edits: QuestEdits, battle: str, slot: int, job: str, like: int) -> None:
+    """(Zodi's order of 13 November: "choosing a mod's job on a quest unit's card") One of a battle's units put in a
+    job of its mod's own, as the framework plays one (1.53.0, `dev/research/sidequests/quest_jobs.py`): its file's job
+    the game's job its job is based on (`like`, 74 to 93), its career job that job, at the job level its file gives
+    where that is 1 to 8 (else the sample's), and the battle's Jobs naming the job for its place."""
+    units = next(b for b in edits.quest.battles if b.name == battle)
+    found = entd.battle_units(edits.files[units.units])[slot]
+    level = found.values["prereq_job_level"]
+    edits.files[units.units] = entd.battle_with(
+        edits.files[units.units], slot, main_job=like, prereq_job=like - FIRST_GENERIC_JOB,
+        prereq_job_level=level if 1 <= level <= 8 else SAMPLE_JOB_LEVEL)
+    units.jobs[slot] = job
+
+
+def units_in_job(quests: dict, job: str) -> list:
+    """Every unit of the mod's quests that wears the mod's job `job`: `[(the quest's folder, its battle's name, the
+    unit's place)]`."""
+    return [(folder, battle.name, slot) for folder, edits in quests.items() for battle in edits.quest.battles
+            for slot, name in sorted(battle.jobs.items()) if name == job]
+
+
+def job_renamed(quests: dict, old: str, new: str) -> None:
+    """A job of the mod's given another name: every unit of the mod's quests that wears it wears it still."""
+    for edits in quests.values():
+        for battle in edits.quest.battles:
+            for slot, name in battle.jobs.items():
+                if name == old:
+                    battle.jobs[slot] = new
+
+
+def job_removed(quests: dict, job: str) -> None:
+    """A job of the mod's taken out: every unit of the mod's quests that wore it is left in its file's job (the
+    game's job the job was based on)."""
+    for edits in quests.values():
+        for battle in edits.quest.battles:
+            for slot in [s for s, name in battle.jobs.items() if name == job]:
+                battle.jobs.pop(slot)
+
+
+def job_based_on(quests: dict, job: str, like: int) -> None:
+    """A job of the mod's based on another of the game's jobs: every unit of the mod's quests that wears it has that
+    job for its file's job and its career job (`set_unit_job`)."""
+    for folder, battle, slot in units_in_job(quests, job):
+        set_unit_job(quests[folder], battle, slot, job, like)
 
 
 #: An empty place for a unit, as the game's battle files most often hold one (289 of their empty places): no
@@ -2122,22 +2217,34 @@ def add_unit(edits: QuestEdits, battle: str, slot: Optional[int] = None) -> Opti
     """
     A copy of unit `slot` (or, when that place is empty, the battle's first
     unit) in the battle's first empty place, with a unit id no other unit of
-    the battle has (`unit_added`). Returns its place, or None when the
-    battle's 16 places are all taken or it has no unit to copy.
+    the battle has (`unit_added`); (Mod Studio Framework 1.53.0) in the job
+    of its mod's own the one copied wears, if it wears one. Returns its
+    place, or None when the battle's 16 places are all taken or it has no
+    unit to copy.
     """
     units = next(b for b in edits.quest.battles if b.name == battle)
+    found = [u.slot for u in entd.battle_units(edits.files[units.units]) if u.occupied]
+    # The one copied, as `unit_added` picks it.
+    source = slot if slot in found else next(iter(found), None)
     edits.files[units.units], empty = unit_added(edits.files[units.units], slot)
+    if empty is not None and source in units.jobs:
+        units.jobs[empty] = units.jobs[source]
+    # (2.0.0) And wearing the items past 255 the one copied wears.
+    if empty is not None and units.items.get(source):
+        units.items[empty] = dict(units.items[source])
     return empty
 
 
 def take_out_unit(edits: QuestEdits, battle: str, slot: int, lengths: Optional[es.Lengths] = None) -> None:
     """Unit `slot` out of the battle: its place empty, as the game's battle files hold an empty place; (1.33.0) its own
-    name gone with it, (his test 69) and with `lengths` its lines' marks of it."""
+    name gone with it, (his test 69) and with `lengths` its lines' marks of it; (1.53.0) and its job of its mod's own."""
     units = next(b for b in edits.quest.battles if b.name == battle)
     if lengths is not None and units.names.get(slot):
         _remark(edits, battle, slot, units.names[slot], "", lengths)
     edits.files[units.units] = unit_taken_out(edits.files[units.units], slot)
     units.names.pop(slot, None)
+    units.jobs.pop(slot, None)
+    units.items.pop(slot, None)
 
 
 #: (1.33.0) Why an own name isn't taken: the page says it. (His test 69) None of `UNMARKABLE` either, as the name over

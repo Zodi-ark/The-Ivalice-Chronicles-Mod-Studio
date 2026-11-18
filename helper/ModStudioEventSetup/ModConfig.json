@@ -2,7 +2,7 @@
   "ModId": "fftivc.utility.modstudio.eventsetup",
   "ModName": "Mod Studio Framework",
   "ModAuthor": "Mod Studio",
-  "ModVersion": "1.35.1",
+  "ModVersion": "2.0.4",
   "ModDescription": "Needed by mods made with The Ivalice Chronicles Mod Studio: it adds their side quests, places, roads, dungeons, maps and event changes to the game. Place it directly after the mod loader in your load order.",
   "ModDll": "ModStudioEventSetup.dll",
   "ModIcon": "Preview.png",

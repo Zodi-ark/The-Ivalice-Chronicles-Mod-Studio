@@ -30,6 +30,7 @@
 //     dotnet Checks.dll --ramza <request.json> <report.json>    (1.30.0, the party's Ramza and map 116's name)
 //     dotnet Checks.dll --names <request.json> <report.json>    (1.33.0, NameChecks.cs: a unit's own name)
 //     dotnet Checks.dll --rewards <request.json> <report.json>  (1.31.0, quests' rewards planned over given records)
+//     dotnet Checks.dll --textures <request.json> <report.json> (2.0.0, TextureChecks.cs: sprites at a higher resolution)
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -292,6 +293,16 @@ static class Program
     /// taken numbers, "free": its slots left), the mods given ("mods": [id, name, folder]) and their items' numbers
     /// ("items": {key: number}): each quest event's number, the events whose scripts have units join, the rewards
     /// (as the --quests report has them) and what is said.</summary>
+    /// <summary>(1.31.0) Whether a script holds CallFunction (0x43) 1, the function that has the scene's units marked to
+    /// join the party join it: what the suite's reports call a script joining units.</summary>
+    static bool JoinsUnits(byte[] script)
+    {
+        for (int at = 0; at + 1 < script.Length; at++)
+            if (script[at] == 0x43 && script[at + 1] == 1)
+                return true;
+        return false;
+    }
+
     static int Rewards(string[] args)
     {
         using var request = JsonDocument.Parse(File.ReadAllText(args[1]));
@@ -321,9 +332,8 @@ static class Program
         var report = new Dictionary<string, object?>
         {
             ["problems"] = problems, ["events"] = events, ["rewards"] = rewards, ["said"] = plan.Said,
-            ["joins"] = plan.Events.FindAll(e => e.Event.Battle == null && Framework.JoinsUnits(e.Event.Script))
+            ["joins"] = plan.Events.FindAll(e => e.Event.Battle == null && JoinsUnits(e.Event.Script))
                                    .ConvertAll(e => e.Number),
-            ["joinsFrom"] = Framework.JoinsFrom,
         };
         File.WriteAllText(args[2], JsonSerializer.Serialize(report));
         return 0;
@@ -388,8 +398,22 @@ static class Program
             return Ramza(args);
         if (args.Length > 0 && args[0] == "--items")
             return ItemChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--jobs")
+            return JobChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--tree")
+            return TreeChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--screen")
+            return JobChecks.RunScreen(args);
+        if (args.Length > 0 && args[0] == "--progress")
+            return ProgressChecks.Run(args);
         if (args.Length > 0 && args[0] == "--names")
             return NameChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--abilities")
+            return AbilityChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--battles")
+            return BattleChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--textures")
+            return TextureChecks.Run(args);
         var image = Load(args[0]);
         var report = new Dictionary<string, object?>();
         var table = Finder.Find(image, out string why);
@@ -563,8 +587,16 @@ static class Program
         // (1.22.0) A mod given as "id|name=folder" has that name, else its id; each named in the log as the helper
         // names it (Framework.LogName: with its id beside it when another mod given has its name).
         var modsGiven = new List<(string Id, string Name, string Folder)>();
+        // (1.53.0) The mods' jobs given to the game (each key and number, as Mod.PlanJobs keeps them for the quests),
+        // from an argument "--jobs-given=<a JSON file of keys and numbers>" among the mods.
+        Dictionary<string, int>? jobsGiven = null;
         for (int n = 6; n < args.Length; n++)
         {
+            if (args[n].StartsWith("--jobs-given=", StringComparison.Ordinal))
+            {
+                jobsGiven = JsonSerializer.Deserialize<Dictionary<string, int>>(File.ReadAllText(args[n].Substring(13)));
+                continue;
+            }
             int split = args[n].IndexOf('=');
             string modId = args[n].Substring(0, split), modFolder = args[n].Substring(split + 1), modName = modId;
             int bar = modId.IndexOf('|');
@@ -594,6 +626,8 @@ static class Program
         report["problems"] = problems;
         // (1.8.0) Each start as the reader gives it: its place (-1 for one of its mod's own, by name) and that name.
         report["readStarts"] = quests.ConvertAll(q => q.Starts.ConvertAll(s => new object[] { s.Place, s.PlaceName }));
+        // (1.53.0) Each battle's Jobs as the reader gives them: its name and, by the unit's place (0 to 15), the job's Name.
+        report["battleJobs"] = quests.ConvertAll(q => q.Battles.ConvertAll(b => new object[] { b.Name, b.Jobs }));
         // (1.3.0) The mods' own places as the helper reads them; (1.16.0) each one's description.
         report["mapPlaces"] = mapPlaces.ConvertAll(p => new object[]
         {
@@ -796,7 +830,7 @@ static class Program
                                   room ? EventRoom.LastEvent : Framework.LastEvent, mapNumbers, mapBases,
                                   squadsFound != null, places.Rumors, squadsFound != null ? grounds : null,
                                   places.Battles, towns, darkPlaces, squadsFound != null ? dungeons : null,
-                                  places.FloorStarts, itemNumbers);
+                                  places.FloorStarts, itemNumbers, jobsGiven);
         report["squads"] = plan.Squads.ConvertAll(s => new object[] { s.Number, Convert.ToHexString(s.Bytes) });
         // (1.17.0) The battle grounds as planned: each its place's number, how many of 100 arrivals start one, and its
         // battles (its name, its battle's number, its map's, its deploy area's squad, the story's progress it waits
@@ -970,8 +1004,8 @@ static class Program
                                     plan.RewardGiven(flag, 1, 0) != null, plan.RewardGiven(flag, 0, 0) != null },
             };
         report["rewards"] = rewards;
-        // (1.31.0) The quests' events whose scripts have units join the party (numbered from Framework.JoinsFrom).
-        report["joins"] = plan.Events.FindAll(e => e.Event.Battle == null && Framework.JoinsUnits(e.Event.Script))
+        // (1.31.0) The quests' events whose scripts have units join the party.
+        report["joins"] = plan.Events.FindAll(e => e.Event.Battle == null && JoinsUnits(e.Event.Script))
                                      .ConvertAll(e => e.Number);
         // (1.33.0) The quests' battles' units' own names, by the battle's number and the unit's place (1 to 16).
         var ownNames = new Dictionary<string, object>();
@@ -983,6 +1017,17 @@ static class Program
             ownNames[number.ToString()] = named;
         }
         report["ownNames"] = ownNames;
+        // (2.0.0) The quests' battles' units' items past 255, as their files name them.
+        var wideItems = new Dictionary<string, object>();
+        foreach (var quest in plan.WideItems)
+        {
+            var wearing = new Dictionary<string, object>();
+            foreach (var (slot, worn) in quest.Items)
+                wearing[(slot + 1).ToString()] = Array.ConvertAll(worn, w => w == null ? null : w.Value.ToString());
+            wideItems[quest.Battle.ToString()] = new Dictionary<string, object> { ["who"] = quest.Who, ["mod"] = quest.ModId,
+                                                                                   ["units"] = wearing };
+        }
+        report["wideItems"] = wideItems;
         var rules = new Dictionary<string, object>();
         foreach (var (key, (quest, chains)) in plan.RuleSets)
             rules[key.ToString()] = chains.ConvertAll(steps => steps.ConvertAll(Hex));

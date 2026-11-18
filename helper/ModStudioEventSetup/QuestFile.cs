@@ -42,7 +42,10 @@
 // (1.33.0) A battle's `Names` (Zodi's choice of 5 November: "As a renamed
 // unit") give its units their own names, each written into its unit as the
 // game makes it (as the game keeps a renamed unit's), which the game copies
-// when the unit joins the party.
+// when the unit joins the party. (1.53.0, Zodi's order of 13 November: "jobs in
+// a quest's battle") A battle's `Jobs` put its units in jobs of its mod's own,
+// each by the job's Name: the framework writes the number the job was given
+// into the unit's job as it plans the quests.
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
@@ -239,18 +242,28 @@ namespace ModStudioEventSetup
 
     /// <summary>A quest's own battle's units: 16 units of 40 bytes, as the game's battle files
     /// hold a battle (ENTD). (1.33.0, Zodi's choice of 5 November: "As a renamed unit") Its units' own names, by their
-    /// place in the file (0 to 15).</summary>
+    /// place in the file (0 to 15). (1.53.0) Its units' jobs of its mod's own, by their place in the file and the job's
+    /// Name.</summary>
     public sealed class QuestBattle
     {
         public string Name { get; }
         public byte[] Units { get; }
         public SortedDictionary<int, string> Names { get; }
+        public SortedDictionary<int, string> Jobs { get; }
+        /// <summary>(2.0.0, Zodi's first point of 16 November 2026: items past 255 in "modders new Battles") Its units'
+        /// items past the 255 a byte of its file holds, by their place in the file: each of the five places a unit
+        /// wears an item (BattleFile.Places), an item by its number or its mod's own item's Name, or none.</summary>
+        public SortedDictionary<int, BattleFile.ItemRef?[]> Items { get; }
 
-        public QuestBattle(string name, byte[] units, SortedDictionary<int, string>? names = null)
+        public QuestBattle(string name, byte[] units, SortedDictionary<int, string>? names = null,
+                           SortedDictionary<int, string>? jobs = null,
+                           SortedDictionary<int, BattleFile.ItemRef?[]>? items = null)
         {
             Name = name;
             Units = units;
             Names = names ?? new SortedDictionary<int, string>();
+            Jobs = jobs ?? new SortedDictionary<int, string>();
+            Items = items ?? new SortedDictionary<int, BattleFile.ItemRef?[]>();
         }
     }
 
@@ -385,6 +398,9 @@ namespace ModStudioEventSetup
         /// have.</summary>
         public const int Units = 16, UnitBytes = 40, UnitIdAt = 32, PresenceAt = 24, PresenceMask = 0xC0,
                          AlwaysPresent = 0x80, MostShare = 99, MostTile = 255, MostObjective = 64;
+        /// <summary>(1.53.0) Where a unit's job is in its 40 bytes (FFTPatcher's EventUnit's Job), which a battle's Jobs
+        /// write.</summary>
+        public const int MainJobAt = 10;
         /// <summary>(1.15.0) A rumor's title (as an objective's words, on one line) and words (line breaks between
         /// paragraphs, as the game's own), at the most; the towns whose taverns tell rumors (the world map's places 0 to
         /// 14, as the program's masks of the game's own rumors name them).</summary>
@@ -800,7 +816,82 @@ namespace ModStudioEventSetup
                     names[unit - 1] = text;
                 }
             }
-            return new QuestBattle(name, units, names);
+            // (1.53.0, Zodi's order of 13 November: "jobs in a quest's battle") Its units' jobs of its mod's own: each a unit
+            // of its 16 (1 to 16) and the Name of one of its mod's jobs, a unit given one job. Whether its mod gives that job
+            // is known as the quests are planned (Framework.Plan): where it doesn't, the unit keeps its file's job.
+            var jobs = new SortedDictionary<int, string>();
+            if (Has(b, "Jobs", out var jobList))
+            {
+                if (jobList.ValueKind != JsonValueKind.Array)
+                {
+                    problems.Add($"the battle {name}'s Jobs isn't a list");
+                    return null;
+                }
+                int n = 0;
+                foreach (var entry in jobList.EnumerateArray())
+                {
+                    n++;
+                    if (entry.ValueKind != JsonValueKind.Object || !Number(entry, "Unit", out int unit) || unit < 1
+                        || unit > Units)
+                    {
+                        problems.Add($"the battle {name}'s job {n} names no unit: its Unit is 1 to {Units}");
+                        return null;
+                    }
+                    string? job = Has(entry, "Job", out var value) && value.ValueKind == JsonValueKind.String
+                        ? value.GetString() : null;
+                    if (job == null || !JobFile.GoodJobName(job))
+                    {
+                        problems.Add($"the battle {name}'s unit {unit}'s Job isn't a job's Name: 1 to {JobFile.NameMost} "
+                                     + "characters, none a control character");
+                        return null;
+                    }
+                    if (jobs.ContainsKey(unit - 1))
+                    {
+                        problems.Add($"the battle {name} gives unit {unit} two jobs");
+                        return null;
+                    }
+                    jobs[unit - 1] = job;
+                }
+            }
+            // (2.0.0) Its units' items past 255: each a unit of its 16 (1 to 16) and, for any of the five places a unit
+            // wears an item, an item past the 255 its file's byte holds (BattleFile.ReadItems), a unit listed once.
+            // Whether the game has that item this time is known as the battles are planned (BattleFile.Make).
+            var items = new SortedDictionary<int, BattleFile.ItemRef?[]>();
+            if (Has(b, "Items", out var itemList))
+            {
+                if (itemList.ValueKind != JsonValueKind.Array)
+                {
+                    problems.Add($"the battle {name}'s Items isn't a list");
+                    return null;
+                }
+                int n = 0;
+                foreach (var entry in itemList.EnumerateArray())
+                {
+                    n++;
+                    if (entry.ValueKind != JsonValueKind.Object || !Number(entry, "Unit", out int unit) || unit < 1
+                        || unit > Units)
+                    {
+                        problems.Add($"the battle {name}'s items {n} name no unit: its Unit is 1 to {Units}");
+                        return null;
+                    }
+                    var worn = BattleFile.ReadItems(entry, $"the battle {name}'s unit {unit}", problems);
+                    if (worn == null)
+                        return null;
+                    if (Array.TrueForAll(worn, w => w == null))
+                    {
+                        problems.Add($"the battle {name}'s unit {unit}'s items name none ("
+                                     + $"{string.Join(", ", BattleFile.Places)})");
+                        return null;
+                    }
+                    if (items.ContainsKey(unit - 1))
+                    {
+                        problems.Add($"the battle {name} gives unit {unit}'s items twice");
+                        return null;
+                    }
+                    items[unit - 1] = worn;
+                }
+            }
+            return new QuestBattle(name, units, names, jobs, items);
         }
 
         /// <summary>(1.33.0) A unit's own name at the most: the game shows a renamed unit's own text (64 bytes at a battle

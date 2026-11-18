@@ -11,7 +11,8 @@
        save's mark (NumberChecks.cs); (1.23.0) a mod's dungeon's list's looks over a
        stand-in for the Deep's list (LooksChecks.cs); (1.26.0) a mod's own items over his program
        (ItemChecks.cs), and (1.28.0) the game's weapons' looks (ItemLooks.cs); (1.29.0) the numbers given as
-       each game starts and freed, and the settings' file (NumberChecks.cs). Not shipped. -->
+       each game starts and freed, and the settings' file (NumberChecks.cs); (1.36.0) a mod's own job over his
+       program (JobChecks.cs). Not shipped. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
@@ -51,6 +52,38 @@
     <Compile Include="..\ModStudioEventSetup\ItemFile.cs" Link="ItemFile.cs" />
     <Compile Include="..\ModStudioEventSetup\ItemLooks.cs" Link="ItemLooks.cs" />
     <Compile Include="..\ModStudioEventSetup\ItemRoom.cs" Link="ItemRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\WotLItems.cs" Link="WotLItems.cs" />
+    <Compile Include="..\ModStudioEventSetup\BattleFile.cs" Link="BattleFile.cs" />
     <Compile Include="..\ModStudioEventSetup\Settings.cs" Link="Settings.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobFile.cs" Link="JobFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobRoom.cs" Link="JobRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobProgress.cs" Link="JobProgress.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobScreen.cs" Link="JobScreen.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobNeeds.cs" Link="JobNeeds.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobTree.cs" Link="JobTree.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobTreeLines.cs" Link="JobTreeLines.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobRecords.cs" Link="JobRecords.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobRecordSites.cs" Link="JobRecordSites.cs" />
+    <Compile Include="..\ModStudioEventSetup\SpriteRoom.cs" Link="SpriteRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\SpriteRoomSites.cs" Link="SpriteRoomSites.cs" />
+    <Compile Include="..\ModStudioEventSetup\SpriteTextures.cs" Link="SpriteTextures.cs" />
+    <Compile Include="..\ModStudioEventSetup\ProgramFile.cs" Link="ProgramFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\BigTextures.cs" Link="BigTextures.cs" />
+    <Compile Include="..\ModStudioEventSetup\EffectTextures.cs" Link="EffectTextures.cs" />
+    <Compile Include="..\ModStudioEventSetup\OwnColors.cs" Link="OwnColors.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobArt.cs" Link="JobArt.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobArtSites.cs" Link="JobArtSites.cs" />
+    <Compile Include="..\ModStudioEventSetup\JobWords.cs" Link="JobWords.cs" />
+    <Compile Include="..\ModStudioEventSetup\SpritePortraits.cs" Link="SpritePortraits.cs" />
+    <Compile Include="..\ModStudioEventSetup\SpritePortraitSites.cs" Link="SpritePortraitSites.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityRecords.cs" Link="AbilityRecords.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityRecordSites.cs" Link="AbilityRecordSites.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityFile.cs" Link="AbilityFile.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityRoom.cs" Link="AbilityRoom.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityEffects.cs" Link="AbilityEffects.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityWords.cs" Link="AbilityWords.cs" />
+    <Compile Include="..\ModStudioEventSetup\DarkKnightAbilities.cs" Link="DarkKnightAbilities.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityAnimations.cs" Link="AbilityAnimations.cs" />
+    <Compile Include="..\ModStudioEventSetup\AbilityPlan.cs" Link="AbilityPlan.cs" />
   </ItemGroup>
 </Project>

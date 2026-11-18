@@ -39,10 +39,10 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout,
+    QApplication, QButtonGroup, QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
     QMenu, QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QTabBar,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -57,6 +57,7 @@ from ... import game_install
 from ... import map_classic
 from ... import map_places as mp
 from ... import map_roads as mr
+from ... import mod_battles as mb
 from ... import mod_items as mi
 from ... import place_edits as pe
 from ... import nxd_data
@@ -71,8 +72,11 @@ from .. import layout_preview as lp
 from .. import theme
 from ..widgets.actions import page_intro
 from ..widgets.field_rows import CollapsibleSection
+from ..widgets.flow_layout import FlowLayout
+from ..widgets.layout_settle import retire, settle_layout
 from ..workers import Worker, run_in_thread
 from . import encounters as enc
+from . import job_tabs as jt
 from . import event_music as emu
 from . import event_words as words
 from . import map_editor as me_page
@@ -93,9 +97,11 @@ TITLE = "New Content"
 # "picture", where a texture is meant)
 # =============================================================================
 
-BLURB = ("Your mod's side quests, and places of its own on the world map for them. Pick a quest, then a step in "
-         "the row below to change it.")
-TABS = ("Quests", "Places", "Items")
+#: (His word of 14 November: a general description, now that the page adds quests, places, items, jobs and
+#: abilities.)
+BLURB = "Your mod's own quests, places, items, jobs and abilities. Pick a tab, then one from its list to see and change it."
+#: (14 November) Jobs and Abilities, the mod's own (`job_tabs.JobTabs`), after the three.
+TABS = ("Quests", "Places", "Items", jt.JOBS_TAB, jt.ABILITIES_TAB)
 QUEST_SEARCH = "Search quests, by name or place"
 PLACE_SEARCH = "Search places and roads, by name"
 NEW_QUEST, REMOVE = "New quest", "Remove"
@@ -107,7 +113,6 @@ NEW_PLACE, NEW_ROAD = "New place", "New road"
 # (1.26.0) The Items tab (Zodi's list of 3 November, his first: "Adding new items to go into the new towns outfitter").
 ITEM_SEARCH = "Search items, by name"
 NEW_ITEM = "New item"
-PICK_AN_ITEM = "Pick an item in the list, or make one with New item."
 ITEM_LIST_LINE = {"none": "{kind}, sold at no town of yours yet", "towns": "{kind}, sold at {towns}",
                   # (1.27.0) and at the game's towns ticked on its card.
                   "game": "{kind}, sold at {count} of the game's towns", "both": "{kind}, sold at {towns} and {count} "
@@ -143,13 +148,7 @@ NO_GAME_ITEMS = "Making an item needs the game's program, found from General Set
 NO_PROGRAM = "it isn't found"
 ITEM_BAND = "ITEM"
 ITEM_COLOR = "#c9a227"
-#: Its card's band: its category (the Items page's names).
-ITEM_CATEGORY_BAND = "{category}"
-#: (Zodi, 4 November: "clear up the large notes clutter to improve readability and productivity on this new items
-#: page") One sentence; the notes that said what a field's name and choices say already taken out.
-ITEM_BLURB = "An item of your mod's own, sold at your towns' Outfitters and at the game's towns you tick."
 ITEM_KIND_WORDS = "{kind} ({category})"
-ITEM_WORDS = "Words"
 SINGULAR, PLURAL = "Singular", "Plural"
 ITEM_NUMBERS = "Numbers"
 PRICE_FIELD = "Price"
@@ -172,10 +171,7 @@ USE_GAME_ICON = "Use the game's icon"
 EXPORT_TEXTURE = "Export as PNG..."
 EXPORT_TEXTURE_TITLE = "Export {texture} of {item} as PNG"
 CHOOSE_ICON_TITLE = "An icon for {item}"
-SOLD_AT_FIELD = "Sold at"
 SOLD_AT_NONE = "No town of yours sells it yet: add it to a town's Outfitter, on its card on the Places tab."
-#: On its card, the map's hint under the map saying how a town of yours comes to sell it.
-SOLD_AT_NO_TOWN = "No town of yours yet."
 # (1.27.0) Zodi's observations of 3 November, after test 58: what an item does, its two icons apart, the game's own
 # Outfitters, its UI values set for him, and no new items to use for now.
 ITEM_TO_USE_NOTE = NO_ITEMS_TO_USE + " This one is still read and sold as it is."
@@ -229,9 +225,37 @@ CHOOSE_SMALL_TITLE = "A small icon for {item}"
 ITEM_REMOVE_ASK = "Take the item {name} out of your mod?"
 ITEM_REMOVE_TOWNS = " {towns} will no longer sell it."
 OWN_ITEM_LINE = "{item} (your mod's own)"
-ITEMS_WORLD_TITLE = {"item": "Where {item} is sold", "none": "Your items"}
-ITEMS_WORLD_HINT = {"towns": "The towns of yours that sell it are outlined.", "none": SOLD_AT_NONE}
-NO_GAME = "No game files yet. Unpack your game on General Setup to make side quests."
+# (14 November, the twenty first session) The Items tab's middle, Zodi's "Yes, after the Jobs tab (Recommended)" to
+# the Jobs page's design (its `Items_tab_middle_idea.png`), with his note of that morning: the Items tab "does not
+# really need the world map in the center of the screen". The item picked as the game shows it, in place of the world
+# map (ITEMS_WORLD_TITLE and ITEMS_WORLD_HINT went with it): its words, its two textures and its battle sprite large,
+# and under them where it is sold. Its title and its look's panel say it as the Jobs tab's middle does: (his note of
+# 14 November, 23:31) its title the item's name alone, and nothing under it while Mod Studio Framework would say
+# nothing (`job_tabs.JobFoot`).
+ITEM_SHEET_TITLE = "{item}"
+#: (His note of 14 November, 19:10: no card for the Items tab) The box of its name, kind and words.
+ITEM_SHEET_ITEM = "The item"
+#: The game's towns ticked in Where it is sold, three to a row.
+ITEM_TOWN_COLUMNS = 3
+ITEM_SHEET_LOOK = jt.SHEET_LOOK
+#: The panel under its look, its title the world map's title had: the towns of yours whose Outfitter sells it, the
+#: game's towns ticked (his note of 14 November, 19:10: in the box, no card), its price and the point of the story it
+#: is sold from.
+ITEM_SHEET_SOLD = "Where {item} is sold"
+ITEM_SHEET_YOUR_TOWNS = "Your towns"
+ITEM_SHEET_GAME_TOWNS = "The game's towns"
+#: The room each picture has in the middle, each drawn a whole number of times its size (its pixels kept sharp): the
+#: Art Texture twice the game's 100 by 100, the Sprite Texture three times its 48 by 48, a sword as it attacks five
+#: times the enhanced look's 48 by 32, an icon held up or thrown three times its 32 by 32.
+ITEM_SHEET_ART, ITEM_SHEET_SMALL = 200, 144
+#: (The thirty second session) The Items page's way for War of the Lions' 40 (`ItemSheet._items_page_layout`): its
+#: groups' names as the Items page names one of the game's items' (Battle Sprite, Base Item Data, Additional Data,
+#: Equip Bonus, Shop Availability), the textures' column as wide as the page's (250) and each texture's room in it.
+ITEMS_PAGE_BATTLE, ITEMS_PAGE_BASE, ITEMS_PAGE_ADDITIONAL = "Battle Sprite", "Base Item Data", "Additional Data"
+ITEMS_PAGE_BONUS, ITEMS_PAGE_SHOPS = "Equip Bonus", "Shop Availability"
+ITEMS_PAGE_COLUMN, ITEMS_PAGE_TEXTURE_ROOM = 250, 112
+ITEM_SHEET_LOOK_ROOM, ITEM_SHEET_HELD_ROOM = (240, 160), (96, 96)
+NO_GAME ="No game files yet. Unpack your game on General Setup to make side quests."
 PICK_A_QUEST = "Pick a quest in the list, or make one with New quest."
 QUEST_BUTTON = "Quest"
 QUEST_BUTTON_TIP = "The quest's own card: its name, marker and flags"
@@ -468,6 +492,9 @@ BACK_TO_BATTLE = "Back to the battle"
 #: (4 November) A scene's own unit's way back.
 BACK_TO_SCENE = "Back to the scene"
 UNIT_TAKE_OUT = "Take out"
+#: (2.0.0) An item past 255 a unit wears that the lists don't have (one of a mod's own items the mod no longer has,
+#: or one of War of the Lions' this build doesn't know): shown as it is kept.
+WIDE_UNKNOWN = "{item}, an item past 255"
 #: (Mod Studio Framework 1.33.0, Zodi's choice of 5 November: "As a renamed unit") A quest's unit's own name: its field's
 #: words when empty, its tooltip, and its Unit Name's tooltip while it has one.
 OWN_NAME_NONE = "None: the name Unit Name gives"
@@ -485,8 +512,15 @@ FORMATION_NOTE = ("Load Formation has the game take this unit from the player's 
 SECTIONS = ("Identity", "Abilities", "Equipment", "Stats and Level", "Placement and Presence", "How It Fights",
             "Spoils", "Unknown Fields")
 SECTION_TITLE = "{name}, {count} fields"
-#: A unit's team: the map's own colors (`encounter_map.TEAM_NAMES`), and who each is in the game.
-TEAMS = {0: "Blue team, the player's", 1: "Red team, the enemy", 2: "Green team, guests", 3: "Light blue team"}
+#: A unit's team: the map's own colors (`encounter_map.TEAM_NAMES`), and who each is in the game. (His test 117, 14
+#: November: a unit of the green team fought as an enemy. The game's battle files hold the blue and red teams only, and
+#: the game puts every team but blue on the enemy's side: fft_decomp's `UNIT_TEAM_MASK`, read for facts only; a guest is
+#: a blue unit the player doesn't control. His choice, "Change them".)
+TEAMS = {0: "Blue team, the player's side", 1: "Red team, the enemy", 2: "Green team, an enemy",
+         3: "Light blue team, an enemy"}
+#: (His choice of 14 November) Who a unit's team and its Control make it: Team's and Control's tooltip.
+TEAM_NOTE = ("A blue unit with Control on is the player's; with Control off it is a guest the game moves. Every other "
+             "team is an enemy.")
 #: A unit's birthday month (FFTPatcher's `Month`, Glain, GPL-3, read for its facts as `entd.py` was).
 MONTHS = {0: "Unknown", 1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June", 7: "July",
           8: "August", 9: "September", 10: "October", 11: "November", 12: "December", 254: "Random", 255: "None"}
@@ -999,8 +1033,11 @@ class CardPane(QFrame):
         self.column.addWidget(self.title)
         # What it is; (Zodi, 4 November: "lets remove these notes") none said where a list has nothing to pick yet.
         self.blurb = muted(blurb)
-        self.blurb.setVisible(bool(blurb))
+        # Added to the column BEFORE `setVisible`: a label with no parent made visible is a window of its own, which
+        # flashed up each time a card was made (his report of 14 November: switching between Items, Jobs and
+        # Abilities "causes a small window to appear and then disappear"; `field_rows.CollapsibleSection`'s note).
         self.column.addWidget(self.blurb)
+        self.blurb.setVisible(bool(blurb))
         self.fields = QVBoxLayout()
         self.fields.setContentsMargins(0, 4, 0, 4)
         self.fields.setSpacing(7)
@@ -1989,7 +2026,1279 @@ class MakeDialog(QDialog):
 # The page
 # =============================================================================
 
-class SideQuestsPage(QWidget):
+def unit_card_of(host, block: bytes, slot: int, set_field, back, take_out,
+                 back_words: Optional[str] = None, own: str = "", set_own=None, own_job: str = "",
+                 set_own_job=None, wide_choices: Optional[dict] = None, worn: Optional[dict] = None, set_wide=None,
+                 blurb: Optional[str] = None) -> CardPane:
+    """One of a battle's 16 units (`block`), every field the game's battle files give it: `set_field(field,
+    value)` changes one, `back` goes back to its battle's card (`back_words` its button, Back to the battle when
+    not given), `take_out` empties its place. (1.17.0) A quest's battle's or a battle ground's random battle's;
+    (4 November) a quest's scene's own. (1.33.0) A quest's unit's own name too (`own`, `set_own(text)`), its Unit
+    Name then Random. (14 November, Zodi's order of 13 November: "choosing a mod's job on a quest unit's card") A
+    quest's unit's Main Job lists the mod's own jobs first (`job_tabs.JobTabs.own_job_choices`): `own_job` the one
+    it wears ("" none), `set_own_job(name)` puts it in one.
+
+    (16 November 2026, Zodi's points of that day: one unit card for both pages) **The Encounters page's too**, for a
+    unit of one of the game's battles the game's table has no row for (`back` None: no way back, no line of the
+    framework's). `host` is the page it is made on: its `field_widgets`, its `_open_sections`, its `_choices(column)`
+    (`encounters.base_choices_for`), its `_unit_words(values, own_job)` and its `own_job_choices()`. And the items
+    past the 255 a byte holds, on both pages: `wide_choices` (`{a place's field: [(key, words)]}`: War of the Lions'
+    items and the mod's own, `encounters.wide_item_choices`), `worn` (`{a place's field: the item past 255 worn
+    there}`) and `set_wide(field, item or None)`."""
+    back_words = back_words or BACK_TO_BATTLE
+    unit = entd.battle_units(block)[slot]
+    v = unit.values
+    card = CardPane(UNIT_BAND, UNIT_SLOT.format(n=slot + 1), UNIT_COLOUR,
+                    host._unit_words(v, own_job) if unit.occupied else EMPTY_SLOT,
+                    UNIT_BLURB if blurb is None else blurb)
+    worn = dict(worn or {})
+
+    def item_box(field: str, column: str) -> QComboBox:
+        """One of the five places a unit wears an item: the game's items a byte holds, then (2.0.0, with
+        `wide_choices`) the items past 255, each under the words of its key (`mod_battles.ref_key`): one of those
+        picked is the unit's item past 255 there (`set_wide`), any other its entry's byte again."""
+        choices = table(column, specials[column])
+        wide = list((wide_choices or {}).get(field, ())) if set_wide is not None else []
+        now = worn.get(field)
+        picked = mb.ref_key(now) if now is not None else v[field]
+        if now is not None and picked not in [key for key, _words in wide]:
+            wide.append((picked, WIDE_UNKNOWN.format(item=now)))
+        box = combo(choices + wide, picked)
+
+        def changed(_index, b=box, f=field):
+            data = b.currentData()
+            if isinstance(data, str):
+                set_wide(f, mb.key_ref(data))
+            else:
+                # One of the game's items a byte holds: the item past 255 it wore there, if any, comes off (asked
+                # of the page each time: `worn` is the card's as it was made).
+                if set_wide is not None:
+                    set_wide(f, None)
+                set_field(f, data)
+        box.currentIndexChanged.connect(changed)
+        host.field_widgets[f"unit_{field}"] = box
+        return box
+
+    def chosen(field: str, choices: list) -> QComboBox:
+        box = combo(choices, v[field])
+        box.currentIndexChanged.connect(lambda _i, b=box, f=field: set_field(f, b.currentData()))
+        host.field_widgets[f"unit_{field}"] = box
+        return box
+
+    def number(field: str, most: int = 255) -> QSpinBox:
+        box = spin(min(v[field], most), 0, most)
+        box.valueChanged.connect(lambda value, f=field: set_field(f, value))
+        host.field_widgets[f"unit_{field}"] = box
+        return box
+
+    def ticks(*pairs, columns: int = 2) -> QWidget:
+        grid = QWidget()
+        layout = QGridLayout(grid)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setHorizontalSpacing(10)
+        layout.setVerticalSpacing(3)
+        for n, (field, label) in enumerate(pairs):
+            box = QCheckBox(label)
+            box.setChecked(bool(v[field]))
+            box.toggled.connect(lambda on, f=field: set_field(f, bool(on)))
+            host.field_widgets[f"unit_{field}"] = box
+            layout.addWidget(box, n // columns, n % columns)
+        return grid
+
+    def section(name: str, count: int, *widgets) -> None:
+        body = QWidget()
+        fields = QVBoxLayout(body)
+        fields.setContentsMargins(4, 2, 0, 6)
+        fields.setSpacing(5)
+        for w in widgets:
+            fields.addWidget(w)
+        opened = host._open_sections.get(name, name in SECTIONS[:3])
+        box = CollapsibleSection(SECTION_TITLE.format(name=name, count=count), body, expanded=opened)
+        box.header.toggled.connect(lambda on, n=name: host._open_sections.__setitem__(n, on))
+        host.field_widgets[f"section_{name}"] = box
+        card.fields.addWidget(box)
+
+    def table(column: str, specials: dict, most: int = 255) -> list:
+        """A field's choices: its special values first, then the game's names for the rest it can hold."""
+        names = host._choices(column)
+        return list(specials.items()) + [(k, names[k]) for k in sorted(names) if k <= most and k not in specials]
+
+    def numbers(least: int, most: int, specials: dict, words_: Optional[dict] = None) -> list:
+        words_ = words_ or {}
+        return list(specials.items()) + [(n, words_.get(n, str(n))) for n in range(least, most + 1)
+                                         if n not in specials]
+
+    specials = c.ENTRY_SPECIAL_VALUES
+    random_byte = {entd.RANDOM_BYTE: RANDOM}
+    items = nxd_names(host.state, "item")
+    name_box = chosen("unit_name", table("Unknown4", specials["Unknown4"]))
+    # (14 November) Its Main Job: the mod's own jobs first for a quest's unit, the one it wears picked.
+    main_choices = table("MainJob", specials["MainJob"])
+    if set_own_job is not None:
+        main_choices = host.own_job_choices() + main_choices
+    main_job = combo(main_choices, own_job if own_job and set_own_job is not None else v["main_job"])
+    main_job.currentIndexChanged.connect(
+        lambda _i, b=main_job: (set_own_job(b.currentData()) if isinstance(b.currentData(), str)
+                                else set_field("main_job", b.currentData())))
+    host.field_widgets["unit_main_job"] = main_job
+    # (1.33.0) A quest's unit's own name, beside its Unit Name, which it makes Random.
+    own_rows = []
+    if set_own is not None and unit.occupied:
+        own_edit = QLineEdit(own)
+        own_edit.setMaxLength(sq.MOST_OWN_NAME)
+        own_edit.setPlaceholderText(OWN_NAME_NONE)
+        own_edit.setToolTip(OWN_NAME_TIP)
+        own_edit.editingFinished.connect(lambda e=own_edit: set_own(e.text().strip()))
+        host.field_widgets["own_name"] = own_edit
+        name_box.setEnabled(not own)
+        if own:
+            name_box.setToolTip(OWN_NAME_RANDOM_TIP)
+        own_rows.append(pair(("Own Name", own_edit)))
+    section(SECTIONS[0], 12 + len(own_rows),
+            pair(("Spriteset", chosen("sprite_set", table("Spriteset", {}))),
+                 ("Unit Name", name_box)),
+            *own_rows,
+            pair(("Main Job", main_job),
+                 ("Unit ID", number("unit_id"))),
+            pair(("Job Unlock", chosen("prereq_job", table("JobUnlock", {0: BASE_JOB}))),
+                 ("Job Level", number("prereq_job_level", c.ENTRY_JOB_LEVEL_MAX))),
+            ticks(("male", "Male"), ("female", "Female"), ("monster", "Monster"),
+                  ("zodiac_monster", "Zodiac Monster")),
+            pair(("Palette", number("palette")),
+                 ("Birthday", row(chosen("month", list(MONTHS.items())),
+                                  chosen("day", numbers(0, 31, random_byte))))))
+    section(SECTIONS[1], 5,
+            pair(("Primary Job Command", chosen("primary_command", table("EntryUnknown1D",
+                                                                         specials["EntryUnknown1D"]))),
+                 ("Secondary Job Command", chosen("secondary_command",
+                                                  table("SecondarySkillset", specials["SecondarySkillset"])))),
+            pair(("Reaction", chosen("reaction", table("Reaction", specials["Reaction"], 0x1FF))),
+                 ("Support", chosen("support", table("Support", specials["Support"], 0x1FF)))),
+            pair(("Movement", chosen("movement", table("Movement", specials["Movement"], 0x1FF)))))
+    section(SECTIONS[2], 5,
+            pair(("Right Hand", item_box("right_hand", "RightHand")),
+                 ("Left Hand", item_box("left_hand", "LeftHand"))),
+            pair(("Head", item_box("head", "Head")),
+                 ("Body", item_box("body", "Body"))),
+            pair(("Accessory", item_box("accessory", "Accessory"))))
+    section(SECTIONS[3], 4,
+            pair(("Level", chosen("level", numbers(0, 255, random_byte, c.entry_level_choices()))),
+                 ("Experience", number("experience"))),
+            pair(("Bravery", chosen("bravery", numbers(0, c.ENTRY_TRAIT_MAX, random_byte))),
+                 ("Faith", chosen("faith", numbers(0, c.ENTRY_TRAIT_MAX, random_byte)))))
+    section(SECTIONS[4], 13,
+            pair(("Position X", number("x")), ("Position Y", number("y"))),
+            pair(("Initial Direction", chosen("facing", list(entd.FACING_NAMES.items()))),
+                 ("Team", chosen("team", list(TEAMS.items())))),
+            ticks(("upper_level", "Higher Elevation"), ("always_present", "Always Present"),
+                  ("randomly_present", "Randomly Present"), ("control", "Control"), ("immortal", "Immortal"),
+                  ("join_after_event", "Join After Event"), ("load_formation", "Load Formation"),
+                  ("save_formation", "Save Formation"), ("save_ct", "Save CT")))
+    # (Zodi, 4 November: "clean up some of the very long notes") What Load Formation and Save Formation do, on them.
+    for field in qx.FORMATION_FLAGS:
+        host.field_widgets[f"unit_{field}"].setToolTip(FORMATION_NOTE)
+    # (His choice of 14 November, after test 117) Who a team and Control make a unit, on both.
+    for field in ("team", "control"):
+        host.field_widgets[f"unit_{field}"].setToolTip(TEAM_NOTE)
+    section(SECTIONS[5], 7,
+            ticks(("focus_unit", "Focus Unit"), ("stay_near_xy", "Stay Near X and Y"),
+                  ("aggressive", "Aggressive"), ("defensive", "Defensive")),
+            pair(("Target", number("target"))),
+            pair(("Target X", number("target_x")), ("Target Y", number("target_y"))))
+    section(SECTIONS[6], 2,
+            pair(("War Trophy", chosen("war_trophy", [(0, NOTHING)] + [(k, items[k]) for k in sorted(items)
+                                                                      if 0 < k <= 255])),
+                 ("Bonus Money", number("bonus_money"))))
+    section(SECTIONS[7], 16,
+            pair(("Unknown10", number("unknown10")), ("Unknown12", number("unknown12"))),
+            muted(UNNAMED_NOTE),
+            ticks(*[(name, UNNAMED_LABEL.format(byte=name.split("_")[1], bit=name.split("_")[2]))
+                    for name in entd.UNNAMED_FLAGS], columns=3))
+    if back is None:
+        # (2.0.0) The Encounters page's: no way back to a battle's card, and nothing of Mod Studio Framework's to say.
+        card.status_label.setVisible(False)
+        card.add_buttons(UNIT_TAKE_OUT)
+    else:
+        card.status([])
+        card.add_buttons(back_words, UNIT_TAKE_OUT)
+        card.buttons[back_words].clicked.connect(lambda: back())
+    card.buttons[UNIT_TAKE_OUT].clicked.connect(lambda: take_out())
+    card.buttons[UNIT_TAKE_OUT].setEnabled(unit.occupied)
+    return card
+
+
+class ItemSheet:
+    """
+    (The twenty fifth session, 16 November 2026) A whole item's sheet, a thing two pages use: the New Content page's
+    Items tab, for a mod's own items (`SideQuestsPage`, where every method here was until then, line for line), and
+    the Items page, for War of the Lions' 40 (`lion_items.LionItemPane`). Zodi's choice of 16 November for the 40 on
+    the Items page ("I go with your recommendations": the New Content tab's item sheet shown inside the Items page,
+    said to him before it was built): one editor for an item Mod Studio Framework gives the game whole, so one set
+    of rules to keep right.
+
+    **What the page it is mixed into gives it**: `state`; `field_widgets` and `item_sheet_widgets` (the fields and
+    the parts shown, each a dict the page empties before a sheet is made); `item_foot` (set by `_item_sheet`);
+    `_building` (True while a sheet is made: no change is taken then); the signal `edits_changed`; `_picked_item()`
+    (the `mod_items.ItemEdit` shown, the same one from call to call); `_ask(what, ask)` and `_say(words)`;
+    `_fill_items()` (its list's lines again) and `_items_changed(refill)` (the sheet made again after a change that
+    needs it); `in_items()`; `rename_item(name)`; `find_program()`; `places_store()` where `sheet_your_towns()` is
+    kept as it is.
+
+    **What a page may answer otherwise** (each as the New Content page has it unless it does): `sheet_your_towns`
+    (the towns of the mod's own that sell the item, or None for an item no town of the mod's can sell),
+    `sheet_shop_points` (the points of the story an item may be sold from), `sheet_own_art` (an icon that is neither
+    the mod's own picture nor a game item's), `sheet_icon_choices` and `sheet_icon_now` (the list under its
+    textures), `sheet_back_words` (the menu's line that puts its own textures aside) and `sheet_never_sold`. (What
+    Mod Studio Framework would say of an item doesn't turn on how its icon is named, so that isn't one of them:
+    two mutants showed an answer for it changed nothing, and it went.)
+    """
+
+    def _sheet_box(self, title: str, *widgets) -> QFrame:
+        """One of the sheet's boxes, as the Jobs tab makes its own (`job_tabs.JobTabs._sheet_box`: the one maker)."""
+        return jt.JobTabs._sheet_box(self, title, *widgets)
+
+    def game_items(self) -> tuple:
+        """(the game's items read from its program, `mod_items.GameItems`, or None; why not, in words)."""
+        path = self.find_program()
+        if path is None:
+            return None, NO_PROGRAM
+        try:
+            return mi.game_items(path), ""
+        except (OSError, mi.ItemsError) as exc:
+            return None, str(exc)
+
+    def _game_item_choices(self) -> list:
+        """`[(number, words)]`: the game's items an item may start as a copy of (1 to 253, 256 to 260), by name."""
+        names = nxd_names(self.state, "item")
+        return [(n, f"{names.get(n) or n} ({n})") for n in mi.GAME_ITEMS]
+
+    def _item_problems(self, edit: mi.ItemEdit) -> list:
+        """What Mod Studio Framework would say of the item as Export writes it (its own icon's files written with it)."""
+        written = mi.written_item(edit, "x")
+        _item, problems = mi.read_item_text(mi.item_text(written), lambda _path: True,
+                                            never_sold=self.sheet_never_sold())
+        return problems
+
+    # -- what a page may answer otherwise (the class's notes) ----------------------------------------------------
+
+    def sheet_never_sold(self) -> bool:
+        """Whether the item may be one no shop sells (`mod_items.NEVER_SOLD`: War of the Lions' own are)."""
+        return False
+
+    def sheet_your_towns(self, item: mi.ModItem):
+        """The towns of the mod's own whose Outfitter sells the item, by name; None for an item none can sell (the
+        sheet then says nothing of the mod's towns)."""
+        return pe.towns_selling_item(self.places_store(), item.name)
+
+    def sheet_shop_points(self) -> list:
+        """The points of the story an item may be sold from, each with its words."""
+        return [(n, SOLD_FROM_POINTS.get(n, str(n))) for n in range(1, mi.MOST_SHOP_POINT + 1)]
+
+    def sheet_own_art(self, edit: mi.ItemEdit, which: str):
+        """Its art (`which` "art") or its small icon ("small") where it is neither the mod's own picture nor a game
+        item's: (a QImage or None, why not), or None where it isn't such an icon."""
+        return None
+
+    def sheet_icon_choices(self, edit: mi.ItemEdit) -> list:
+        """The list under its two textures: the game's items whose icon it may use."""
+        return self._game_item_choices()
+
+    def sheet_icon_now(self, edit: mi.ItemEdit) -> int:
+        """Which of `sheet_icon_choices` it uses now."""
+        return self._game_icon_number(edit)
+
+    def sheet_back_words(self) -> str:
+        """The texture menu's line that puts its own textures aside."""
+        return USE_GAME_ICON
+
+    def sheet_as_items_page(self) -> bool:
+        """(The thirty second session, his ask of 17 November: the Items page's War of the Lions items "closer to that
+        of the original items") Whether the sheet's parts are laid out as the Items page lays out one of the game's
+        items: its textures in a narrow column beside its words, then Battle Sprite, Base Item Data, Additional Data,
+        Equip Bonus and Shop Availability, one under another (`_items_page_layout`)."""
+        return False
+
+    def _item_boxes(self, edit: mi.ItemEdit) -> dict:
+        """The item's fields, a box for each group of its card before (his note of 14 November, 19:10): The item (its
+        name, its kind, its words), its numbers, what it does as it attacks (a weapon), its equipment bonuses with
+        their statuses and elements (not an item to use), and its values in the menus. The parts that go under its
+        look's pictures and in where it is sold are made with those (`_item_sheet`)."""
+        item = edit.item
+        boxes = {}
+
+        # -- The item: its name, its kind, its words ----------------------------------------------------------------
+        name = QLineEdit(item.name)
+        name.setMaxLength(64)
+        name.setToolTip(ITEM_NAME_TIP)
+        name.editingFinished.connect(lambda box=name: self.rename_item(box.text()))
+        kind = mi.KIND_WORDS[item.kind]
+        kind_words = [muted(ITEM_KIND_WORDS.format(kind=kind[:1].upper() + kind[1:],
+                                                   category=self._category_words(item)))]
+        if item.kind == mi.ITEM:
+            # (1.27.0) Kept, as Zodi chose: read and sold, its box saying why no new one is made.
+            kind_words.append(muted(ITEM_TO_USE_NOTE))
+        singular, plural = QLineEdit(item.singular), QLineEdit(item.plural)
+        for box, key in ((singular, "singular"), (plural, "plural")):
+            box.setMaxLength(mi.WORD_MOST)
+            box.editingFinished.connect(lambda b=box, k=key: self.set_item_word(k, b.text()))
+        description = QPlainTextEdit(item.description)
+        description.setFixedHeight(90)
+        description.textChanged.connect(lambda box=description: self.set_item_word("description", box.toPlainText()))
+        self.field_widgets.update(item_name=name, item_singular=singular, item_plural=plural,
+                                  item_description=description)
+        boxes["item"] = self._sheet_box(ITEM_SHEET_ITEM, pair((NAME, name)), caption(KIND), *kind_words,
+                                        pair((SINGULAR, singular), (PLURAL, plural)), caption(DESCRIPTION),
+                                        description)
+
+        # -- Numbers ------------------------------------------------------------------------------------------------
+        numbers = []
+        for label, where, at, width, most in mi.NUMBERS[item.kind]:
+            box = spin(mi.number(item, where, at, width), 0, most)
+            box.valueChanged.connect(lambda v, w=where, a=at, n=width: self.set_item_number(w, a, n, v))
+            self.field_widgets[f"item_{label}"] = box
+            numbers.append((label, box))
+        boxes["numbers"] = self._sheet_box(ITEM_NUMBERS, *[pair(numbers[n], numbers[n + 1] if n + 1 < len(numbers)
+                                                                else None) for n in range(0, len(numbers), 2)])
+
+        # -- Attack: a weapon's formula, its Inflict Status (or the spell it casts) and its elements ------------------
+        if item.kind == mi.WEAPON:
+            boxes["attack"] = self._sheet_box(ATTACK_FIELD, *self._attack_widgets(item))
+
+        # -- Equipment bonuses, with their statuses and elements ------------------------------------------------------
+        if item.kind != mi.ITEM:
+            bonuses = []
+            for label, where, at, width, most in mi.BONUSES:
+                box = spin(mi.number(item, where, at, width), 0, most)
+                box.valueChanged.connect(lambda v, a=at: self.set_item_number("bonus", a, 1, v))
+                self.field_widgets[f"item_{label}"] = box
+                bonuses.append((label, box))
+            # (1.27.0) Its statuses and elements too, each set's names in words, ticked in a dialog.
+            ticked = []
+            for which, label in enumerate(BONUS_STATUS_LABELS):
+                ticked.append(self._ticked_row("status", which, label, mi.bonus_statuses(item, which)))
+            for which, label in enumerate(BONUS_ELEMENT_LABELS):
+                ticked.append(self._ticked_row("element", which, label, mi.bonus_elements(item, which)))
+            boxes["bonuses"] = self._sheet_box(BONUSES_FIELD, *[pair(bonuses[n], bonuses[n + 1] if n + 1 < len(bonuses)
+                                                                     else None) for n in range(0, len(bonuses), 2)],
+                                               *ticked)
+
+        # -- In the menus: (1.27.0) its UI values, set from what it does (Zodi's choice: automatically, shown) --------
+        ui_words = muted("")
+        ui_words.setToolTip(UI_NOTE)
+        self.field_widgets["item_ui_words"] = ui_words
+        self._show_ui_words(item)
+        boxes["ui"] = self._sheet_box(UI_FIELD, ui_words)
+        return boxes
+
+    def _item_status(self) -> None:
+        """What Mod Studio Framework would say of the item shown, again, under the middle's title (the card's foot
+        before)."""
+        edit = self._picked_item()
+        if edit is not None and self.item_foot is not None and self.in_items():
+            self.item_foot.status(self._item_problems(edit))
+
+    def _attack_widgets(self, item: mi.ModItem) -> list:
+        """(1.27.0) A weapon's formula, its Inflict Status (or the spell it casts) and its elements: its Attack box's
+        parts."""
+        formulas = reference_names.formula_names()
+        formula = combo([(n, f"{formulas[n]} ({n})") for n in sorted(formulas) if 0 <= n <= 255], mi.formula(item))
+        formula.currentIndexChanged.connect(lambda _i, b=formula: self.set_item_formula(b.currentData()))
+        inflict_caption = caption("")
+        inflict = combo([])
+        self.field_widgets.update(item_formula=formula, item_inflict=inflict, item_inflict_caption=inflict_caption)
+        self._fill_inflict(item)
+        inflict.currentIndexChanged.connect(lambda _i, b=inflict: self.set_item_inflict(b.currentData()))
+        elements = QWidget()
+        grid = QGridLayout(elements)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(2)
+        boxes = []
+        ticked = mi.weapon_elements(item)
+        for n, element in enumerate(c.ELEMENT_FLAGS):
+            box = QCheckBox(element)
+            box.setChecked(element in ticked)
+            box.toggled.connect(lambda _on: self.set_item_elements([b.text() for b in boxes if b.isChecked()]))
+            grid.addWidget(box, n // 4, n % 4)
+            boxes.append(box)
+        self.field_widgets["item_elements"] = boxes
+        return [caption(FORMULA_LABEL), formula, inflict_caption, inflict, caption(WEAPON_ELEMENTS), elements]
+
+    def _category_words(self, item: mi.ModItem) -> str:
+        """(Zodi after test 62) Its category as the Items page names it."""
+        from ..widgets.field_rows import split_words
+        category = item.record[mi.CATEGORY_AT]
+        return split_words(c.ITEM_CATEGORIES[category]) if 0 <= category < len(c.ITEM_CATEGORIES) else str(category)
+
+    def _item_looks(self, item: mi.ModItem):
+        """The looks a weapon may swing (`mod_items.looks_of`: the game's weapons whose swings share its frames), or
+        (5 November) a shield guard with (the game's shields'), or None and why not."""
+        game, why = self.game_items()
+        if game is None:
+            return None, why
+        try:
+            return mi.looks_of(game, item.record[mi.CATEGORY_AT]), ""
+        except mi.ItemsError as exc:
+            return None, str(exc)
+
+    @staticmethod
+    def _show_picture(label, picture, width: int, height: int, tip: str) -> None:
+        """A battle sprite drawn into `label` (a whole number of times its size, or a
+        whole number of times smaller), named by its tooltip; hidden when there is none."""
+        if label is None:
+            return
+        if picture is None:
+            label.clear()
+            label.setVisible(False)
+            return
+        image = QImage(picture.rgba, picture.width, picture.height, picture.width * 4, QImage.Format_RGBA8888).copy()
+        across, down = max(1, picture.width), max(1, picture.height)
+        if across <= width and down <= height:
+            times = min(width // across, height // down)
+            size = (across * times, down * times)
+        else:
+            parts = max(-(-across // width), -(-down // height))
+            size = (max(1, across // parts), max(1, down // parts))
+        label.setPixmap(QPixmap.fromImage(image.scaled(size[0], size[1], Qt.IgnoreAspectRatio,
+                                                       Qt.FastTransformation)))
+        label.setToolTip(tip)
+        label.setVisible(True)
+
+    @classmethod
+    def _sheet_picture(cls, label, picture, room: tuple, tip: str) -> None:
+        """(14 November) A half of the battle sprite in the Items tab's middle, drawn as `_show_picture` draws one, in
+        its room; one that can't be drawn leaves its room saying so (the texture panels' words), not gone."""
+        if label is None:
+            return
+        cls._show_picture(label, picture, room[0], room[1], tip)
+        if picture is None:
+            label.setText(NO_TEXTURE)
+            label.setToolTip("")
+            label.setVisible(True)
+
+    def _refresh_item_pictures(self, item: mi.ModItem) -> None:
+        """(Zodi after test 62: "changing a new items palette ... does not update its appearance in the preview") Its
+        battle sprite's two halves drawn again as the item has them now, each named in its tooltip (the look's game
+        weapon and palette, the icon's sprite and palette), and the palettes under them following."""
+        from ... import unit_sprites as us
+        sprites = self.battle_sprites()
+        category = item.record[mi.CATEGORY_AT]
+        flags = {mi.WEAPON: {"Weapon"}, mi.SHIELD: {"Shield"}}.get(item.kind, set())
+        kind = us.sprite_kind(flags, category)
+        look = None
+        if sprites is not None and kind in ("attack", "guard") and len(item.sprite_pair) == mi.PAIR_BYTES:
+            look = sprites.attack(us.frames_type(kind, category), bytes(item.sprite_pair))
+        palette, sprite = mi.held(item)
+        held = sprites.held(palette, sprite) if sprites is not None else None
+        name = BATTLE_ATTACK if kind == "attack" else BATTLE_GUARD
+        if item.kind in (mi.WEAPON, mi.SHIELD):
+            looks, _why = self._item_looks(item)
+            names = nxd_names(self.state, "item")
+            # (Zodi, 4 November: "many of them share the same design") Every one of the game's weapons that shares
+            # its look, by name.
+            name = look_words(mi.look_group(looks or [], bytes(item.sprite_pair)),
+                              lambda n: names.get(n) or ITEM_NUMBERED.format(n=n), mi.battle_palette(item))
+        # (14 November) In the Items tab's middle, large (`_item_sheet`; his note of 14 November, 19:10: no card, so
+        # only there).
+        self._sheet_picture(self.item_sheet_widgets.get("battle_look"), look, ITEM_SHEET_LOOK_ROOM, name)
+        self._sheet_picture(self.item_sheet_widgets.get("battle_held"), held, ITEM_SHEET_HELD_ROOM,
+                            HELD_PICKED.format(sprite=sprite, palette=palette))
+        for key, value in (("item_palette", mi.battle_palette(item)), ("item_held_palette", palette)):
+            box = self.field_widgets.get(key)
+            if box is None or value < 0 or box.currentData() == value:
+                continue
+            box.blockSignals(True)
+            index = box.findData(value)
+            if index < 0:
+                box.addItem(PALETTE_CHOICE.format(n=value), value)
+                index = box.count() - 1
+            box.setCurrentIndex(index)
+            box.blockSignals(False)
+        choose = self.field_widgets.get("item_choose_held")
+        if choose is not None:
+            choose.setEnabled(sprites is not None and sprites.items_drawable)
+
+    def choose_item_look(self) -> None:
+        """(Zodi after test 62) Choose a look: the looks that swing the same way, drawn in the palette chosen
+        (`LookDialog`); the look and palette taken."""
+        from ... import unit_sprites as us
+        edit = self._picked_item()
+        if edit is None:
+            return
+        looks, _why = self._item_looks(edit.item)
+        if not looks:
+            return
+        names = nxd_names(self.state, "item")
+        category = edit.item.record[mi.CATEGORY_AT]
+        # (Zodi, 4 November) Each look once, under the weapon type it is drawn for.
+        game, _why = self.game_items()
+        categories = {n: game.item(n).record[mi.CATEGORY_AT] for n, _pair in looks} if game is not None else None
+        # (Zodi, 5 November: "Make sure you can also change the look in the New Items card") A shield's as it guards.
+        guard = edit.item.kind == mi.SHIELD
+        dialog = LookDialog(self, self.battle_sprites(), us.frames_type("guard" if guard else "attack", category),
+                            looks, names, mi.look_now(looks, edit.item.sprite_pair), mi.battle_palette(edit.item),
+                            edit.item.name, categories=categories, pair=bytes(edit.item.sprite_pair), guard=guard)
+        answer = self._ask("item_look", lambda: dialog.choice() if dialog.exec() == QDialog.Accepted else None)
+        if not answer:
+            return
+        number, palette = answer
+        self.set_item_look(number)
+        if palette is not None:
+            self.set_item_palette(palette)
+
+    def choose_item_held(self) -> None:
+        """(Zodi after test 62) Choose an icon: the enhanced item texture's icons in the palette chosen, as the Items
+        page's (`items.HeldSpriteDialog`)."""
+        from .items import HeldSpriteDialog
+        edit = self._picked_item()
+        if edit is None:
+            return
+        palette, sprite = mi.held(edit.item)
+        dialog = HeldSpriteDialog(self.battle_sprites(), palette, sprite, edit.item.name, self)
+        answer = self._ask("item_held", lambda: dialog.choice() if dialog.exec() else None)
+        if not answer:
+            return
+        self.set_item_held(*answer)
+
+    def set_item_held(self, palette, sprite) -> None:
+        """(Zodi after test 62) The icon a unit holds up or throws in battle: its palette and its sprite."""
+        edit = self._picked_item()
+        if edit is None or self._building or palette is None or sprite is None:
+            return
+        mi.set_held(edit.item, int(palette), int(sprite))
+        self._refresh_item_pictures(edit.item)
+        self.edits_changed.emit()
+
+    def set_item_held_palette(self, palette) -> None:
+        edit = self._picked_item()
+        if edit is None or self._building or palette is None:
+            return
+        self.set_item_held(palette, mi.held(edit.item)[1])
+
+    def _fill_inflict(self, item: mi.ModItem) -> None:
+        """The row under a weapon's formula: its Inflict Status, or with the formula that casts a spell, the spell (the
+        Items page's choices: the Inflict Status rows as that page names them, the abilities by their names)."""
+        box, label = self.field_widgets.get("item_inflict"), self.field_widgets.get("item_inflict_caption")
+        if box is None or label is None:
+            return
+        value = mi.inflict(item)
+        if mi.casts_spell(item):
+            from ..app import ability_choices
+            named = ability_choices(self.state)
+            choices = [(n, f"{named[n]} ({n})") for n in sorted(named) if 0 <= n <= 255]
+            label.setText(CAST_LABEL)
+        else:
+            from .table_editor import inflict_status_descriptor
+            records = (getattr(self.state, "item_table_records", None) or {}).get("item_options", [])
+            edits = (getattr(self.state, "item_table_edits", None) or {}).get("item_options", {})
+            choices = [(r.item_id, f"{inflict_status_descriptor({**r.values, **edits.get(r.item_id, {})})} "
+                                   f"({r.item_id})") for r in records if 0 <= r.item_id <= 255]
+            if not choices:
+                choices = [(n, str(n)) for n in range(256)]
+            label.setText(INFLICT_LABEL)
+        box.blockSignals(True)
+        box.clear()
+        for data, words in choices:
+            box.addItem(words, data)
+        index = box.findData(value)
+        if index < 0:
+            box.addItem(str(value), value)
+            index = box.count() - 1
+        box.setCurrentIndex(index)
+        box.blockSignals(False)
+
+    def _ticked_row(self, kind: str, which: int, label: str, names: list) -> QWidget:
+        """(1.27.0) One of its bonus row's sets in words (a status the game names Unused kept but not said), and
+        Change, which ticks them in a dialog."""
+        words = muted(TICKED_LINE.format(label=label, names=_listed(_said(names)) or TICKED_NONE))
+        change = QPushButton(CHANGE)
+        change.clicked.connect(lambda _c=False, k=kind, w=which: self.change_item_ticks(k, w))
+        self.field_widgets[f"item_{kind}_{which}"] = words
+        self.field_widgets[f"item_{kind}_{which}_change"] = change
+        return row(words, change)
+
+    def _show_ui_words(self, item: mi.ModItem) -> None:
+        """(1.27.0) Its UI values in words, as Export writes them (`mod_items.ui_values`)."""
+        label = self.field_widgets.get("item_ui_words")
+        if label is None:
+            return
+        ui_status, random_damage = mi.ui_values(item)
+        if item.ui_category >= 0 and item.sort >= 0:
+            listed = UI_LISTED_WORDS["copy"].format(category=item.ui_category, sort=item.sort)
+        else:
+            category = item.ui_category if item.ui_category >= 0 else UI_CATEGORY_OF_KIND[item.kind]
+            listed = UI_LISTED_WORDS["own"].format(category=category)
+        lines = [listed]
+        if item.kind == mi.WEAPON:
+            lines = [UI_STATUS_WORDS.get(ui_status, UI_STATUS_WORDS[0]), UI_RANDOM_WORDS[random_damage], listed]
+        label.setText("\n".join(lines))
+
+    def _icon_choice(self, edit: mi.ItemEdit) -> list:
+        """Its icon (Zodi, 4 November: "You should still be able to cycle through the games items icons though that's a
+        good feature"): the game's item whose icon it uses, picked in a list (Your own textures while it has its own),
+        and what is missing of the game's textures; put under its two textures in its look (`_item_sheet`), each
+        texture with its menu on a right click (`texture_menu`)."""
+        own = bool(edit.icon_png)
+        choices = self.sheet_icon_choices(edit)
+        if own:
+            choices = [(-1, OWN_TEXTURES)] + choices
+        shown = combo(choices, -1 if own else self.sheet_icon_now(edit), enabled=not own)
+        shown.currentIndexChanged.connect(lambda _i, b=shown: self.set_game_icon(b.currentData()))
+        problems = [why for which in ("art", "small") for _image, why in (self._item_texture_image(edit, which),) if why]
+        icon_said = muted(GAME_ICON_MISSING.format(problem="; ".join(dict.fromkeys(problems)))
+                          if problems and not own else "")
+        icon_said.setVisible(bool(problems) and not own)
+        self.field_widgets.update(item_icon=shown, item_icon_said=icon_said)
+        return [caption(ICON_FIELD), shown, icon_said]
+
+    def _game_icon_number(self, edit: mi.ItemEdit) -> int:
+        """The game's item whose icon it uses (or would, once its own textures are put aside)."""
+        return edit.item.icon if edit.item.icon in mi.GAME_ITEMS else edit.copied_from or 1
+
+    def _item_texture_image(self, edit: mi.ItemEdit, which: str) -> tuple:
+        """(4 November) Its art (`which` "art") or its small icon ("small") as it has it now, a QImage: its own (the
+        small one made from its art until one of its own is chosen), else the game's item's texture; (None, why) when
+        the game's can't be read."""
+        from ... import texture_data as td
+        if edit.icon_png:
+            png = edit.icon_png if which == "art" else (edit.small_png or self._small_made(edit))
+            image = QImage.fromData(png)
+            return (image, "") if not image.isNull() else (None, "")
+        other = self.sheet_own_art(edit, which)
+        if other is not None:
+            return other
+        number = self._game_icon_number(edit)
+        relative = td.item_art_texture_path(number) if which == "art" else td.item_sprite_texture_path(number)
+        return self._game_texture(relative)
+
+    def texture_menu(self, which: str) -> QMenu:
+        """(4 November) Its texture's menu (`which` "art" or "small"), as the Items page's: Replace..., Make from its
+        art (its own small icon only), Use the game's icon (its own textures only), Export as PNG... (what it shows)."""
+        edit = self._picked_item()
+        menu = QMenu(self)
+        replace = menu.addAction(REPLACE_TEXTURE)
+        replace.triggered.connect(lambda _c=False: self.choose_icon() if which == "art" else self.choose_small_icon())
+        if which == "small":
+            made = menu.addAction(MAKE_FROM_ART)
+            made.setEnabled(edit is not None and bool(edit.small_png))
+            made.triggered.connect(lambda _c=False: self.small_from_art())
+        back = menu.addAction(self.sheet_back_words())
+        back.setEnabled(edit is not None and bool(edit.icon_png))
+        back.triggered.connect(lambda _c=False: self.use_game_icon())
+        menu.addSeparator()
+        export = menu.addAction(EXPORT_TEXTURE)
+        export.setEnabled(edit is not None and self._item_texture_image(edit, which)[0] is not None)
+        export.triggered.connect(lambda _c=False: self.export_item_texture(which))
+        return menu
+
+    def _game_texture(self, relative: str):
+        """One of the unpacked game's textures as a QImage, decoded once for each file's size and time (as the Items
+        page's texture slots decode theirs), or (None, why)."""
+        from ... import texture_data as td
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        if not root or not Path(root).is_dir():
+            return None, "it isn't set"
+        path = Path(root) / relative
+        try:
+            stat = path.stat()
+        except OSError:
+            return None, f"{path.name} isn't there"
+        key = (str(path), stat.st_size, stat.st_mtime_ns)
+        cache = self.__dict__.setdefault("_game_textures", {})
+        if key not in cache:
+            try:
+                image = td.load_game_texture_preview(path, getattr(self.state, "ff16tools_cli_path", None),
+                                                     paths.local_data_dir() / "texture_preview_cache")
+                image = image.convert("RGBA")
+                cache[key] = (QImage(image.tobytes(), image.width, image.height, image.width * 4,
+                                     QImage.Format_RGBA8888).copy(), "")
+            except Exception as exc:                          # noqa: BLE001
+                cache[key] = (None, f"{path.name} couldn't be read ({exc})")
+        return cache[key]
+
+    def battle_sprites(self):
+        """The unpacked game's battle sprites (`unit_sprites.BattleSprites`, as the Items page's), read again when
+        its files change."""
+        from ... import unit_sprites as us
+        root = getattr(self.state, "nxd_unpack_dir", None)
+        game = Path(root) if root and Path(root).is_dir() else None
+        if game is None:
+            return None
+
+        def stamp(path):
+            try:
+                return path.stat().st_mtime_ns
+            except OSError:
+                return None
+        key = (str(game), stamp(game / us.WEAPON_SPR_FILE), stamp(game / us.ITEM_BIN_FILES[0]),
+               stamp(game / us.G2D_FILE))
+        if key != self.__dict__.get("_battle_sprites_key"):
+            self._battle_sprites, self._battle_sprites_key = us.BattleSprites(game), key
+        return self._battle_sprites
+
+    @staticmethod
+    def _small_made(edit: mi.ItemEdit) -> bytes:
+        """The small icon Export makes from its art (`mod_items.small_of`), as a PNG, or nothing without its art."""
+        if not edit.icon_png:
+            return b""
+        import io
+
+        from PIL import Image
+        return mi.icon_png(mi.small_of(Image.open(io.BytesIO(edit.icon_png))), mi.SMALL_ICON_SIZE)
+
+    def set_item_word(self, key: str, text: str, show: bool = True) -> None:
+        """One of the item's words (its singular, plural or description); none given its name's. (His note of 14
+        November, 19:10: no card) Nothing made again: the middle's words follow (`show` kept for its callers)."""
+        edit = self._picked_item()
+        if edit is None or self._building:
+            return
+        if key == "description":
+            edit.item.description = text
+        else:
+            setattr(edit.item, key, text or edit.item.name)
+        self._item_status()
+        # (14 November) The middle's description following it as it is typed.
+        self._item_sheet_words(edit.item)
+        self.edits_changed.emit()
+
+    def set_item_number(self, where: str, at: int, width: int, value: int) -> None:
+        edit = self._picked_item()
+        if edit is None or self._building:
+            return
+        mi.set_number(edit.item, where, at, width, int(value))
+        self._item_status()
+        if (where, at) == mi.PRICE[1:3]:
+            # (14 November) The middle's price following it.
+            self._item_sheet_words(edit.item)
+        self.edits_changed.emit()
+
+    def set_item_formula(self, value) -> None:
+        """(1.27.0) A weapon's formula: the row under it its Inflict Status or the spell it casts as the formula has
+        it, its UI values with it."""
+        edit = self._picked_item()
+        if edit is None or self._building or value is None:
+            return
+        mi.set_formula(edit.item, int(value))
+        self._fill_inflict(edit.item)
+        self._show_ui_words(edit.item)
+        self._item_status()
+        self.edits_changed.emit()
+
+    def set_item_look(self, number) -> None:
+        """(1.27.0) A weapon's look in battle that of the game's weapon `number` (its picture and palettes), its
+        palette's choice following it; (5 November) a shield's that of the game's shield `number`."""
+        edit = self._picked_item()
+        if edit is None or self._building or not number:
+            return
+        game, _why = self.game_items()
+        if game is None:
+            return
+        looks = dict(mi.looks_of(game, edit.item.record[mi.CATEGORY_AT]))
+        if int(number) not in looks:
+            return
+        mi.set_battle_look(edit.item, looks[int(number)])
+        # (Zodi after test 62) Its battle sprite, its look and their words drawn again.
+        self._refresh_item_pictures(edit.item)
+        self.edits_changed.emit()
+
+    def set_item_palette(self, palette) -> None:
+        """(1.27.0) A weapon's (or, 5 November, a shield's) palette in battle (0 to 15), its picture as it was."""
+        edit = self._picked_item()
+        if edit is None or self._building or palette is None:
+            return
+        mi.set_battle_palette(edit.item, int(palette))
+        # (Zodi after test 62: "changing a new items palette ... does not update its appearance in the preview")
+        self._refresh_item_pictures(edit.item)
+        self.edits_changed.emit()
+
+    def set_item_inflict(self, value) -> None:
+        edit = self._picked_item()
+        if edit is None or self._building or value is None:
+            return
+        mi.set_inflict(edit.item, int(value))
+        self.edits_changed.emit()
+
+    def set_item_elements(self, names: list) -> None:
+        """(1.27.0) A weapon's elements."""
+        edit = self._picked_item()
+        if edit is None or self._building:
+            return
+        mi.set_weapon_elements(edit.item, names)
+        self.edits_changed.emit()
+
+    def change_item_ticks(self, kind: str, which: int) -> None:
+        """(1.27.0) One of its bonus row's sets ticked in a dialog (`kind` "status": the three sets of statuses,
+        "element": the five of elements); a status the game names Unused kept as it was."""
+        edit = self._picked_item()
+        if edit is None:
+            return
+        statuses = kind == "status"
+        label = (BONUS_STATUS_LABELS if statuses else BONUS_ELEMENT_LABELS)[which]
+        now = mi.bonus_statuses(edit.item, which) if statuses else mi.bonus_elements(edit.item, which)
+        names = [n for n in c.STATUS_FLAGS if not n.startswith("Unused")] if statuses else list(c.ELEMENT_FLAGS)
+        dialog = TicksDialog(self, TICKS_TITLE.format(item=edit.item.name, label=label),
+                             (STATUS_TICKS_INTRO if statuses else ELEMENT_TICKS_INTRO).format(item=edit.item.name),
+                             names, now, 5 if statuses else 4)
+        answer = self._ask("ticks", lambda: dialog.answer() if dialog.exec() == QDialog.Accepted else None)
+        if answer is None:
+            return
+        if statuses:
+            mi.set_bonus_statuses(edit.item, which, set(answer) | {n for n in now if n.startswith("Unused")})
+        else:
+            mi.set_bonus_elements(edit.item, which, answer)
+        words = self.field_widgets.get(f"item_{kind}_{which}")
+        if words is not None:
+            ticked = mi.bonus_statuses(edit.item, which) if statuses else mi.bonus_elements(edit.item, which)
+            words.setText(TICKED_LINE.format(label=label, names=_listed(_said(ticked)) or TICKED_NONE))
+        self._item_status()
+        self.edits_changed.emit()
+
+    def set_item_town(self, town: int, sold: bool) -> None:
+        """(1.27.0) One of the game's towns' Outfitters selling the item, or not: ticked in the middle's Where it is sold
+        (his note of 14 November, 19:10), the list following; nothing made again."""
+        edit = self._picked_item()
+        if edit is None or self._building:
+            return
+        towns = set(edit.item.shops)
+        (towns.add if sold else towns.discard)(int(town))
+        mi.set_shops(edit.item, towns)
+        self._fill_items()
+        self._item_status()
+        self.edits_changed.emit()
+
+    def set_item_shop_point(self, point) -> None:
+        edit = self._picked_item()
+        if edit is None or self._building or point is None:
+            return
+        mi.set_shop_point(edit.item, int(point), never_sold=self.sheet_never_sold())
+        # (14 November) The middle's Sold from following it.
+        self._item_sheet_words(edit.item)
+        self.edits_changed.emit()
+
+    def set_game_icon(self, number) -> None:
+        """Its icon one of the game's items' (its own, if it had one, put aside)."""
+        edit = self._picked_item()
+        if edit is None or self._building or number not in mi.GAME_ITEMS:
+            return
+        edit.item.icon = int(number)
+        edit.icon_png, edit.icon_from = b"", ""
+        edit.small_png, edit.small_from = b"", ""
+        self._items_changed(refill=False)
+
+    def use_game_icon(self) -> None:
+        """(4 November) Use the game's icon: the game's item's icon picked in its list again, its own textures put
+        aside."""
+        edit = self._picked_item()
+        if edit is None or self._building or not edit.icon_png:
+            return
+        self.set_game_icon(self._game_icon_number(edit))
+
+    def export_item_texture(self, which: str) -> None:
+        """(4 November) Export as PNG...: its art or its small icon as it shows it, saved where asked."""
+        from .. import export_dialogs
+        edit = self._picked_item()
+        if edit is None:
+            return
+        image, _why = self._item_texture_image(edit, which)
+        if image is None:
+            return
+        title = ART_TEXTURE_TIP if which == "art" else SPRITE_TEXTURE_TIP
+        path = self._ask("export_texture", lambda: export_dialogs.save_file(
+            self, EXPORT_TEXTURE_TITLE.format(texture=title, item=edit.item.name),
+            f"{edit.item.name} {title}.png", "PNG image (*.png)"))
+        if path:
+            image.save(str(path), "PNG")
+
+    def choose_icon(self) -> None:
+        """Choose: an item's own icon made from any image file, fitted to the game's icon sizes."""
+        from .. import export_dialogs
+        from PIL import Image
+        edit = self._picked_item()
+        if edit is None:
+            return
+        path = self._ask("icon", lambda: export_dialogs.open_file(
+            self, CHOOSE_ICON_TITLE.format(item=edit.item.name), IMAGE_FILES))
+        if not path:
+            return
+        try:
+            with Image.open(path) as image:
+                edit.icon_png = mi.icon_png(image)
+        except Exception as exc:                                      # noqa: BLE001
+            self._say(CANT_READ_IMAGE.format(problem=exc))
+            return
+        edit.icon_from = Path(path).name
+        self._say("")
+        self._items_changed(refill=False)
+
+    def choose_small_icon(self) -> None:
+        """(1.27.0) Choose: its own small icon (the lists' 48 by 48) made from any image file, apart from its art.
+        (4 November) While it uses the game's icon, the image is its art too (an item's own icon is its art and its
+        small icon together), each fitted to its size."""
+        from .. import export_dialogs
+        from PIL import Image
+        edit = self._picked_item()
+        if edit is None:
+            return
+        path = self._ask("small_icon", lambda: export_dialogs.open_file(
+            self, CHOOSE_SMALL_TITLE.format(item=edit.item.name), IMAGE_FILES))
+        if not path:
+            return
+        try:
+            with Image.open(path) as image:
+                small = mi.icon_png(image, mi.SMALL_ICON_SIZE)
+                art = mi.icon_png(image) if not edit.icon_png else edit.icon_png
+        except Exception as exc:                                      # noqa: BLE001
+            self._say(CANT_READ_IMAGE.format(problem=exc))
+            return
+        if not edit.icon_png:
+            edit.icon_from = Path(path).name
+        edit.icon_png, edit.small_png = art, small
+        edit.small_from = Path(path).name
+        self._say("")
+        self._items_changed(refill=False)
+
+    def small_from_art(self) -> None:
+        """(1.27.0) Use its art: its small icon made from its art again."""
+        edit = self._picked_item()
+        if edit is None or not edit.small_png:
+            return
+        edit.small_png, edit.small_from = b"", ""
+        self._items_changed(refill=False)
+
+    def _item_sheet(self, edit: mi.ItemEdit) -> QWidget:
+        """The middle for an item: the item as the game shows it, and (his note of 14 November, 19:10: "remove the card
+        so users can make edits on the main window instead as we have done for the Jobs tab") everything of it edited
+        there, in boxes: The item (its name, its kind, its words); Its look (its Art Texture and Sprite Texture, each
+        with its menu on a right click, the game's item whose icon it uses under them, and its battle sprite as it
+        attacks or guards and as a unit holds it up or throws it, each half's palette and Choose under it, all large);
+        its numbers, what it does as it attacks, its equipment bonuses and its values in the menus; and where it is
+        sold (the towns of yours whose Outfitter sells it, the game's towns ticked, its price and the point of the
+        story it is sold from). What Mod Studio Framework would say of it under the title. The parts shown are kept in
+        `item_sheet_widgets`, its fields in `field_widgets`."""
+        item = edit.item
+        parts = self.item_sheet_widgets
+        holder, column = jt._box(spacing=8)
+        title = QLabel(ITEM_SHEET_TITLE.format(item=item.name))
+        title.setStyleSheet("font-weight: 600; font-size: 12pt;")
+        column.addWidget(title)
+        parts["title"] = title
+        foot = QLabel("")
+        foot.setWordWrap(True)
+        column.addWidget(foot)
+        self.item_foot = jt.JobFoot(foot)
+        scroll = jt.SheetScroll()
+        inside, sheet = jt._box(spacing=10)
+        scroll.setWidget(inside)
+        column.addWidget(scroll, 1)
+        boxes = self._item_boxes(edit)
+        if self.sheet_as_items_page():
+            self._items_page_layout(edit, boxes, sheet)
+            self._refresh_item_pictures(item)
+            self.item_foot.status(self._item_problems(edit))
+            scroll.fit()
+            return holder
+        sheet.addWidget(boxes["item"])
+
+        # -- its look: its words, its two textures and its battle sprite, large, what changes each under it ---------
+        look, look_column = jt._panel(ITEM_SHEET_LOOK)
+        self.field_widgets[f"section_{ITEM_SHEET_LOOK}"] = look
+        big = QLabel(item.name)
+        big.setStyleSheet("font-weight: 600; font-size: 14pt;")
+        kind = mi.KIND_WORDS[item.kind]
+        kind_words = muted(ITEM_KIND_WORDS.format(kind=kind[:1].upper() + kind[1:],
+                                                  category=self._category_words(item)))
+        description = muted(item.description)
+        for label in (big, kind_words, description):
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            look_column.addWidget(label)
+        parts.update(name=big, kind=kind_words, description=description)
+        # Its two textures (the game's item whose icon it uses under them) and its battle sprite side by side, each
+        # panel as tall as the tallest; in a narrow window the next goes under the others where it doesn't fit
+        # (`FlowLayout`), so nothing is cut off at the right.
+        pictures = QWidget()
+        flow = FlowLayout(pictures, spacing=12)
+        textures, textures_column = jt._box(spacing=6)
+        panels_row, panels = jt._box(QHBoxLayout, spacing=12)
+        texture_panels = []
+        for which, words, room in (("art", ART_TEXTURE_TIP, ITEM_SHEET_ART),
+                                   ("small", SPRITE_TEXTURE_TIP, ITEM_SHEET_SMALL)):
+            image, _why = self._item_texture_image(edit, which)
+            box, view = self._sheet_texture_panel(words, image, room, which)
+            texture_panels.append(box)
+            panels.addWidget(box)
+            parts[f"{which}_texture"] = view
+            self.field_widgets[f"item_{which}_texture"] = view
+        textures_column.addWidget(panels_row)
+        for w in self._icon_choice(edit):
+            textures_column.addWidget(w)
+        textures_column.addWidget(muted(ICON_HINT))
+        battle = self._sheet_battle_sprite(item)
+        tallest = max(panel.sizeHint().height() for panel in texture_panels)
+        for panel in texture_panels:
+            panel.setFixedHeight(tallest)
+        flow.addWidget(textures)
+        flow.addWidget(battle)
+        parts["pictures"] = texture_panels + [battle]
+        look_column.addWidget(pictures)
+        sheet.addWidget(look)
+
+        # -- under it: its numbers, what it does, its bonuses and its values in the menus, two by two -------------
+        rest = [boxes[key] for key in ("numbers", "attack", "bonuses", "ui") if key in boxes]
+        for n in range(0, len(rest), 2):
+            two = jt.Turning(10)
+            for box in rest[n:n + 2]:
+                two.add(box, 1)
+            sheet.addWidget(two)
+            scroll.turnings.append((two, 0))
+
+        # -- where it is sold -------------------------------------------------------------------------------------
+        sold, sold_column = jt._panel(ITEM_SHEET_SOLD.format(item=item.name))
+        self.field_widgets["section_sold"] = sold
+        parts["sold_title"] = sold.findChild(QLabel)
+        towns_parts, price_pair = self._sold_parts(item)
+        for w in towns_parts + [price_pair]:
+            sold_column.addWidget(w)
+        jt._narrow(sold)
+        sheet.addWidget(sold)
+        sheet.addStretch(1)
+        self._refresh_item_pictures(item)
+        self.item_foot.status(self._item_problems(edit))
+        scroll.fit()
+        return holder
+
+    def _sold_parts(self, item: mi.ModItem) -> tuple:
+        """Where it is sold, as parts: (the towns of yours that sell it, with their caption, where the page has any,
+        and the game's towns ticked with theirs; its price and the point of the story it is sold from side by side,
+        each its caption over it). Its fields kept in `field_widgets`, the towns of yours in `item_sheet_widgets`."""
+        parts = self.item_sheet_widgets
+        out = []
+        towns = self.sheet_your_towns(item)
+        if towns is not None:
+            out.append(caption(ITEM_SHEET_YOUR_TOWNS))
+        if towns is None:
+            parts["your_towns"] = None
+        elif towns:
+            chips_box = QWidget()
+            chips = FlowLayout(chips_box, spacing=6)
+            parts["your_towns"] = [self._sheet_chip(name, ITEM_COLOR) for name in towns]
+            for chip in parts["your_towns"]:
+                chips.addWidget(chip)
+            out.append(chips_box)
+        else:
+            parts["your_towns"] = muted(SOLD_AT_NONE)
+            out.append(parts["your_towns"])
+        # (1.27.0) The game's towns' Outfitters ticked (Zodi's choice: none ticked to start), right in the box.
+        out.append(caption(ITEM_SHEET_GAME_TOWNS))
+        game_towns = QWidget()
+        towns_grid = QGridLayout(game_towns)
+        towns_grid.setContentsMargins(0, 0, 0, 0)
+        towns_grid.setHorizontalSpacing(12)
+        towns_grid.setVerticalSpacing(2)
+        town_boxes = []
+        for town, town_name in enumerate(mi.GAME_TOWNS):
+            box = QCheckBox(town_name)
+            box.setChecked(town in item.shops)
+            box.toggled.connect(lambda on, t=town: self.set_item_town(t, on))
+            towns_grid.addWidget(box, town // ITEM_TOWN_COLUMNS, town % ITEM_TOWN_COLUMNS)
+            town_boxes.append(box)
+        out.append(game_towns)
+        _label, where, at, width, most = mi.PRICE
+        price = spin(mi.number(item, where, at, width), 0, most)
+        price.valueChanged.connect(lambda v, w=where, a=at, n=width: self.set_item_number(w, a, n, v))
+        sold_from = combo(self.sheet_shop_points(), mi.shop_point(item))
+        sold_from.currentIndexChanged.connect(lambda _i, b=sold_from: self.set_item_shop_point(b.currentData()))
+        self.field_widgets.update(item_price=price, item_sold_from=sold_from, item_game_towns=town_boxes)
+        return out, pair((PRICE_FIELD, price), (SOLD_FROM, sold_from))
+
+    def _items_page_layout(self, edit: mi.ItemEdit, boxes: dict, sheet) -> None:
+        """(The thirty second session) The sheet's parts as the Items page lays out one of the game's items (his ask
+        of 17 November: the War of the Lions items "closer to that of the original items for the vanilla items
+        page"): its two textures in a narrow column on the left, Sprite Texture first and Art Texture under it, the
+        game's item whose icon it uses and what a right click does under them, its words (The item) beside that
+        column; then, one under another and as wide as the page, Battle Sprite (as it attacks or guards, as a unit
+        holds it up or throws it, each one's palette and Choose), Base Item Data (its kind, its price and the point of
+        the story it is sold from), Additional Data (its numbers and, a weapon, what it does as it attacks), Equip
+        Bonus (its bonuses, statuses and elements), Shop Availability (the towns that sell it) and its values in the
+        menus. The same fields and pictures as the sheet's own layout, each kept as that keeps it."""
+        item = edit.item
+        parts = self.item_sheet_widgets
+        upper = QWidget()
+        row = QHBoxLayout(upper)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        left, left_column = jt._box(spacing=6)
+        texture_panels = []
+        for which, words in (("small", SPRITE_TEXTURE_TIP), ("art", ART_TEXTURE_TIP)):
+            image, _why = self._item_texture_image(edit, which)
+            box, view = self._sheet_texture_panel(words, image, ITEMS_PAGE_TEXTURE_ROOM, which)
+            texture_panels.append(box)
+            left_column.addWidget(box)
+            parts[f"{which}_texture"] = view
+            self.field_widgets[f"item_{which}_texture"] = view
+        for w in self._icon_choice(edit):
+            left_column.addWidget(w)
+        hint = muted(ICON_HINT)
+        left_column.addWidget(hint)
+        left_column.addStretch(1)
+        left.setFixedWidth(ITEMS_PAGE_COLUMN)
+        row.addWidget(left)
+        row.addWidget(boxes["item"], 1)
+        sheet.addWidget(upper)
+        battle = self._sheet_battle_sprite(item)
+        parts["pictures"] = texture_panels + [battle]
+        sheet.addWidget(self._sheet_box(ITEMS_PAGE_BATTLE, battle))
+        kind = mi.KIND_WORDS[item.kind]
+        kind_words = muted(ITEM_KIND_WORDS.format(kind=kind[:1].upper() + kind[1:],
+                                                  category=self._category_words(item)))
+        parts["kind"] = kind_words
+        towns_parts, price_pair = self._sold_parts(item)
+        sheet.addWidget(self._sheet_box(ITEMS_PAGE_BASE, caption(KIND), kind_words, price_pair))
+        additional = jt.Turning(10)
+        for key in ("numbers", "attack"):
+            if key in boxes:
+                additional.add(boxes[key], 1)
+        sheet.addWidget(self._sheet_box(ITEMS_PAGE_ADDITIONAL, additional))
+        if "bonuses" in boxes:
+            sheet.addWidget(self._sheet_box(ITEMS_PAGE_BONUS, boxes["bonuses"]))
+        sold = self._sheet_box(ITEMS_PAGE_SHOPS, *towns_parts)
+        self.field_widgets["section_sold"] = sold
+        parts["sold_title"] = None
+        sheet.addWidget(sold)
+        sheet.addWidget(boxes["ui"])
+        sheet.addStretch(1)
+
+    def _item_sheet_words(self, item: mi.ModItem) -> None:
+        """The words of the middle that follow its fields as they change, nothing made again: its title, its name and
+        its description as the game shows them, and the title of where it is sold."""
+        parts = self.item_sheet_widgets
+        for key, text in (("title", ITEM_SHEET_TITLE.format(item=item.name)), ("name", item.name),
+                          ("description", item.description), ("sold_title", ITEM_SHEET_SOLD.format(item=item.name))):
+            label = parts.get(key)
+            if label is not None:
+                label.setText(text)
+
+    def _sheet_texture_panel(self, words: str, image, room: int, which: str) -> tuple:
+        """One of its two textures in the middle, framed as the card's are (its name over it, its menu on a right
+        click anywhere in its panel: `texture_menu`), drawn a whole number of times its size to fill `room` (its
+        pixels kept sharp), or shrunk to it when larger. (The panel, its picture.)"""
+        box = QFrame()
+        box.setFrameShape(QFrame.StyledPanel)
+        inner = QVBoxLayout(box)
+        inner.setContentsMargins(6, 4, 6, 4)
+        inner.setSpacing(2)
+        inner.addWidget(caption(words))
+        view = QLabel()
+        view.setAlignment(Qt.AlignCenter)
+        view.setFixedSize(room, room)
+        view.setToolTip(words)
+        if image is not None and not image.isNull():
+            times = min(room // max(1, image.width()), room // max(1, image.height()))
+            shown = (image.scaled(image.width() * times, image.height() * times, Qt.IgnoreAspectRatio,
+                                  Qt.FastTransformation) if times >= 1
+                     else image.scaled(room, room, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            view.setPixmap(QPixmap.fromImage(shown))
+        else:
+            view.setText(NO_TEXTURE)
+        for source in (box, view):
+            source.setContextMenuPolicy(Qt.CustomContextMenu)
+            source.customContextMenuRequested.connect(
+                lambda point, s=source, w=which: self.texture_menu(w).exec(s.mapToGlobal(point)))
+        inner.addStretch(1)
+        inner.addWidget(view, 0, Qt.AlignHCenter)
+        inner.addStretch(1)
+        return box, view
+
+    def _sheet_battle_sprite(self, item: mi.ModItem) -> QFrame:
+        """Its battle sprite in the middle, framed as its textures are: as it attacks or guards (a weapon, a shield),
+        then as a unit holds it up or throws it, each named under it (drawn by `_refresh_item_pictures`). (Zodi, 4
+        November: "Together, named by half. Both side by side with the Battle Sprite, one named Attack and one Held or
+        thrown, each changing only its half. Also make sure the field options to change them appear next to each
+        other") Under each half what changes it: a weapon's palette (one the game's own weapons swing in) and Choose a
+        look, (5 November) a shield's look as it guards chosen the same way; any item's palette and Choose an icon.
+        (His note of 14 November, 19:10: no card) They were the card's; now under the large halves. What can't be read
+        or drawn said under them."""
+        from ... import unit_sprites as us
+        sprites = self.battle_sprites()
+        category = item.record[mi.CATEGORY_AT]
+        flags = {mi.WEAPON: {"Weapon"}, mi.SHIELD: {"Shield"}}.get(item.kind, set())
+        kind = us.sprite_kind(flags, category)
+        problems, undrawn = [], []
+        if sprites is None:
+            problems.append("it isn't set")
+        else:
+            if kind in ("attack", "guard") and len(item.sprite_pair) == mi.PAIR_BYTES:
+                if sprites.attack(us.frames_type(kind, category), bytes(item.sprite_pair)) is None:
+                    (undrawn if sprites.weapons_drawable else problems).append(sprites.problem)
+            if sprites.held(*mi.held(item)) is None:
+                (undrawn if sprites.items_drawable else problems).append(sprites.item_problem)
+        box = QFrame()
+        box.setFrameShape(QFrame.StyledPanel)
+        inner = QVBoxLayout(box)
+        inner.setContentsMargins(6, 4, 6, 4)
+        inner.setSpacing(2)
+        inner.addWidget(caption(BATTLE_SPRITE_FIELD))
+        halves = QWidget()
+        grid = QGridLayout(halves)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(4)
+        column = 0
+        if kind in ("attack", "guard"):
+            view = QLabel()
+            view.setAlignment(Qt.AlignCenter)
+            view.setFixedSize(*ITEM_SHEET_LOOK_ROOM)
+            grid.addWidget(view, 0, column, Qt.AlignHCenter | Qt.AlignBottom)
+            grid.addWidget(caption(BATTLE_ATTACK if kind == "attack" else BATTLE_GUARD), 1, column, Qt.AlignHCenter)
+            self.item_sheet_widgets["battle_look"] = view
+            if item.kind in (mi.WEAPON, mi.SHIELD):
+                looks, why = self._item_looks(item)
+                if looks is None:
+                    grid.addWidget(muted(NO_LOOKS.format(problem=why)), 2, column, 2, 1)
+                else:
+                    palette = swing_palette_box(max(0, mi.battle_palette(item)))
+                    palette.currentIndexChanged.connect(lambda _i, b=palette: self.set_item_palette(b.currentData()))
+                    choose = QPushButton(LOOK_CHOOSE)
+                    choose.clicked.connect(lambda _c=False: self.choose_item_look())
+                    grid.addWidget(palette, 2, column, Qt.AlignHCenter)
+                    grid.addWidget(choose, 3, column, Qt.AlignHCenter)
+                    self.field_widgets.update(item_palette=palette, item_choose_look=choose)
+            column += 1
+        view = QLabel()
+        view.setAlignment(Qt.AlignCenter)
+        view.setFixedSize(*ITEM_SHEET_HELD_ROOM)
+        grid.addWidget(view, 0, column, Qt.AlignHCenter | Qt.AlignBottom)
+        grid.addWidget(caption(BATTLE_HELD), 1, column, Qt.AlignHCenter)
+        self.item_sheet_widgets["battle_held"] = view
+        if item.kind != mi.ITEM:
+            palette_now, _sprite = mi.held(item)
+            palette = palette_combo(palette_now)
+            palette.currentIndexChanged.connect(lambda _i, b=palette: self.set_item_held_palette(b.currentData()))
+            choose = QPushButton(HELD_CHOOSE)
+            choose.clicked.connect(lambda _c=False: self.choose_item_held())
+            grid.addWidget(palette, 2, column, Qt.AlignHCenter)
+            grid.addWidget(choose, 3, column, Qt.AlignHCenter)
+            self.field_widgets.update(item_held_palette=palette, item_choose_held=choose)
+        said = muted(" ".join([BATTLE_SPRITE_MISSING.format(problem=p) for p in dict.fromkeys(q for q in problems if q)]
+                              + [BATTLE_SPRITE_UNDRAWN.format(problem=p) for p in dict.fromkeys(q for q in undrawn if q)]))
+        said.setMaximumWidth(ITEM_SHEET_LOOK_ROOM[0] + ITEM_SHEET_HELD_ROOM[0] + 16)
+        self.field_widgets["item_battle_said"] = said
+        inner.addStretch(1)
+        inner.addWidget(halves, 0, Qt.AlignHCenter)
+        inner.addWidget(said)
+        said.setVisible(bool(said.text()))
+        inner.addStretch(1)
+        return box
+
+    @staticmethod
+    def _sheet_chip(words: str, colour: str) -> QLabel:
+        """A town in the middle's Where it is sold, as the Jobs tab's middle draws a job: a framed name."""
+        chip = QLabel(words)
+        chip.setAlignment(Qt.AlignCenter)
+        chip.setStyleSheet(f"border: 1px solid {colour}; border-radius: 4px; padding: 6px 10px;")
+        return chip
+
+
+class SideQuestsPage(jt.JobTabs, ItemSheet, QWidget):
     """The Side Quests page (see the module's notes)."""
 
     #: Something changed in the mod: Export's summary follows (`app.build_window`).
@@ -2052,12 +3361,16 @@ class SideQuestsPage(QWidget):
         # -- the left: Quests and Places ---------------------------------------------------------
         left = QWidget()
         left.setMinimumWidth(200)
+        self._left = left
         column = QVBoxLayout(left)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(6)
         self.tabs = QTabBar()
         self.tabs.setExpanding(True)
         self.tabs.setUsesScrollButtons(False)
+        # (14 November) Five tabs now: each a little narrower, and the list's column never narrower than them all
+        # (`_fit_tabs`), so none is cut off.
+        self.tabs.setStyleSheet("QTabBar::tab { padding: 6px 8px; }")
         for name in TABS:
             self.tabs.addTab(name)
         column.addWidget(self.tabs)
@@ -2166,6 +3479,20 @@ class SideQuestsPage(QWidget):
         self.battle_map.unit_moved.connect(self._unit_moved)
         self.battle_map.tile_clicked.connect(self._deploy_tile)
         self.middle.addWidget(self.battle_map)
+        # (14 November) The Jobs and Abilities tabs: their lists after the three, what the middle shows for them.
+        self._build_job_tabs()
+        # (14 November, the twenty first session) The Items tab's middle: the item picked as the game shows it
+        # (`_item_sheet`, made again as it changes), in place of the world map.
+        self.item_sheet_holder, self._item_sheet_column = jt._box()
+        self.item_sheet: Optional[QWidget] = None
+        #: (His note of 14 November, 19:10: no card) What Mod Studio Framework would say of the item, under the middle's
+        #: title, and the item the middle was last made for (its scroll kept while it is the same).
+        self.item_foot = None
+        self._item_sheet_was = None
+        #: The middle's parts for the item shown, by name (its textures, its battle sprite's two halves, its words and
+        #: where it is sold); `_refresh_item_pictures` draws its battle sprite there again as it changes.
+        self.item_sheet_widgets: dict = {}
+        self.middle.addWidget(self.item_sheet_holder)
         self.panes.addWidget(self.middle)
 
         # -- the right: the card ------------------------------------------------------------------
@@ -2173,7 +3500,7 @@ class SideQuestsPage(QWidget):
         self.card_holder.setMinimumWidth(300)
         self.card: Optional[CardPane] = None
         self.panes.addWidget(self.card_holder)
-        self.panes.setSizes([280, 900, 380])
+        self.panes.setSizes([300, 880, 380])
         self.panes.setStretchFactor(1, 1)
 
         # -- under them: the steps (not with Places: the map takes the height, as the mock-up drew it) --------
@@ -2407,6 +3734,8 @@ class SideQuestsPage(QWidget):
         self._fill_list()
         self._fill_places()
         self._fill_items()
+        self._fill_jobs()
+        self._fill_abilities()
         self.show_quest()
 
     def view_toggles_used(self) -> tuple:
@@ -2418,10 +3747,16 @@ class SideQuestsPage(QWidget):
         """After General Setup (a game unpacked, a mod opened) or Start a new mod: everything read again."""
         self._game_key = None
         self._world_key = None
+        self.__dict__.pop("_job_names", None)
         self.refresh_from_store()
+
+    def _fit_tabs(self) -> None:
+        """(14 November) The list's column at least as wide as its five tabs side by side."""
+        self._left.setMinimumWidth(max(200, self.tabs.sizeHint().width()))
 
     def showEvent(self, event):                                       # noqa: N802
         super().showEvent(event)
+        self._fit_tabs()
         self._share_height()
         # Back from another page: a quest map made, renamed or taken out on the Map Editor, the mod's maps' names.
         self.refresh_from_store()
@@ -2680,7 +4015,7 @@ class SideQuestsPage(QWidget):
     def quests_changed_elsewhere(self) -> None:
         """(C) A quest's scene changed on the Event Editor: the list, the steps' row and the card shown again, as
         it now is (nothing said back to the Event Editor, whose change it was)."""
-        if self.in_places() or self.in_items():
+        if self.in_places() or self.in_items() or self.in_jobs() or self.in_abilities():
             return
         self._fill_list()
         self._fill_strip()
@@ -2691,9 +4026,14 @@ class SideQuestsPage(QWidget):
     def _show_middle(self) -> None:
         edits = self.edits()
         kind = self.picked[0] if self.picked else "quest"
+        if self.in_jobs():
+            self._show_job_middle()
+            return
+        if self.in_abilities():
+            self._show_ability_middle()
+            return
         if self.in_items():
-            self.middle.setCurrentIndex(0)
-            self._show_items_world()
+            self._show_item_middle()
             return
         if self.in_places():
             place, battle = self._picked_battle()
@@ -2892,6 +4232,7 @@ class SideQuestsPage(QWidget):
         return None
 
     def _map_units(self, key) -> list:
+        worn = {}
         if self.in_places():
             # (1.17.0) A random battle's units.
             _place, battle = self._picked_battle()
@@ -2902,6 +4243,7 @@ class SideQuestsPage(QWidget):
             if edits is None or name is None:
                 return []
             block = self._units_block(name)
+            worn = self._worn_jobs(self.own_units(edits.quest.event_named(name)))
         if block is None:
             return []
         out = []
@@ -2914,7 +4256,7 @@ class SideQuestsPage(QWidget):
                                upper=v["upper_level"], facing=v["facing"], sprite=sprite,
                                palette=drawn_palette(sprite, v["sprite_set"], v["palette"]), team=v["team"],
                                randomly_present=v["randomly_present"], disabled=False,
-                               label=self._unit_words(v)))
+                               label=self._unit_words(v, worn.get(unit.slot, ""))))
         return out
 
     def _map_title(self, key) -> str:
@@ -2983,14 +4325,24 @@ class SideQuestsPage(QWidget):
         self._show_card()
         self.battle_map.refresh_units()
 
-    def _unit_words(self, v: dict) -> str:
-        """A unit in a line: its name when it has one of its own (or its job's), its level, its team."""
+    def _unit_words(self, v: dict, own_job: str = "") -> str:
+        """A unit in a line: its name when it has one of its own (or its job's: (14 November) its job of the mod's
+        own, `own_job`, where it wears one), its level, its team."""
         names = self._choices("Unknown4")
         name = names.get(v["unit_name"]) if v["unit_name"] not in c.ENTRY_SPECIAL_VALUES["Unknown4"] else None
         if not name or name == "(unnamed)":
-            name = self._choices("MainJob").get(v["main_job"]) or f"Job {v['main_job']}"
+            name = own_job or self._choices("MainJob").get(v["main_job"]) or f"Job {v['main_job']}"
         return UNIT_LINE.format(who=name, level=self._level_words(v["level"]),
                                 team=TEAM_NAMES.get(v["team"], "").lower())
+
+    def _worn_jobs(self, units_name) -> dict:
+        """(14 November) The jobs of the mod's own the units of one of the quest's own battles wear (its Jobs):
+        `{the unit's place: the job's Name}`, {} for the game's units or none."""
+        edits = self.edits()
+        if edits is None or not isinstance(units_name, str):
+            return {}
+        battle = next((b for b in edits.quest.battles if b.name == units_name), None)
+        return dict(battle.jobs) if battle is not None else {}
 
     def _choices(self, column: str) -> dict:
         """`{value: name}` of one of a unit's fields (`encounters.base_choices_for`), read once a card."""
@@ -3015,6 +4367,10 @@ class SideQuestsPage(QWidget):
     def _card_shown(self) -> tuple:
         """What the card shows: its tab and what is picked there (the item, the place or road, or the quest and its
         step, scene, battle, unit or rumor)."""
+        if self.in_jobs():
+            return ("jobs", self.job_pick)
+        if self.in_abilities():
+            return ("abilities", self.ability_pick)
         if self.in_items():
             return ("items", self.item_pick)
         if self.in_places():
@@ -3023,9 +4379,16 @@ class SideQuestsPage(QWidget):
         return ("quests", edits.folder if edits is not None else None, self.picked)
 
     def _show_card(self) -> None:
+        # (His note of 14 November: "when changing some option on the card the whole main window seems to refresh and
+        # jitter with elements out of position and then fix itself") Made with the window's painting held, and laid
+        # out before it is let go: the one paint after is the finished card.
+        window = self.window()
+        window.setUpdatesEnabled(False)
         self._building = True
         self._choice_cache = {}
-        self.field_widgets = {}
+        # The tabs with no card keep their fields: the middle's (`_show_middle` makes them).
+        if not self.cardless():
+            self.field_widgets = {}
         try:
             old = self.card
             # (Zodi, 5 November) A card made again for what it showed (a drop down's choice, any change that makes it
@@ -3035,7 +4398,11 @@ class SideQuestsPage(QWidget):
                      and getattr(self, "_card_was", None) == shown else 0)
             self._card_was = shown
             edits = self.edits()
-            if self.in_items():
+            if self.in_jobs():
+                card = self._job_card()
+            elif self.in_abilities():
+                card = self._ability_card()
+            elif self.in_items():
                 card = self._item_card()
             elif self.in_places():
                 card = self._places_card()
@@ -3066,8 +4433,15 @@ class SideQuestsPage(QWidget):
                 old.deleteLater()
             if place and isinstance(card, CardPane):
                 card.keep_place(place)
+            # (His notes of 14 November) The Jobs tab has no card: the job is edited on the middle, which takes the room;
+            # (his note of 14 November, 19:10) nor do the Items and Abilities tabs.
+            self.card_holder.setVisible(not self.cardless())
+            if isinstance(card, CardPane):
+                settle_layout(card.inside)
+            QApplication.sendPostedEvents(None, QEvent.LayoutRequest)
         finally:
             self._building = False
+            window.setUpdatesEnabled(True)
 
     def _step_number(self, edits: qx.QuestEdits, start: int) -> int:
         return next((n + 1 for n, s in enumerate(qx.steps(edits.quest)) if s.start == start), 0)
@@ -3792,9 +5166,11 @@ class SideQuestsPage(QWidget):
         units.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         units.setToolTip(UNITS_OWN)
         battle_units = entd.battle_units(qx.battle_block(edits, units_name))
+        worn = self._worn_jobs(units_name)
         for unit in battle_units:
             item = QTreeWidgetItem([str(unit.slot + 1),
-                                    self._unit_words(unit.values) if unit.occupied else EMPTY_SLOT])
+                                    self._unit_words(unit.values, worn.get(unit.slot, "")) if unit.occupied
+                                    else EMPTY_SLOT])
             item.setData(0, Qt.UserRole, unit.slot)
             item.setTextAlignment(0, int(Qt.AlignRight | Qt.AlignVCenter))
             if not unit.occupied:
@@ -4306,150 +5682,22 @@ class SideQuestsPage(QWidget):
                                   lambda: self.pick(("event", ev.name)), lambda: self.take_out_unit(ev.name, slot),
                                   BACK_TO_BATTLE if ev.battle is not None else BACK_TO_SCENE,
                                   qx.own_name(edits, units, slot),
-                                  lambda text: self._set_own_name(ev.name, slot, text))
+                                  lambda text: self._set_own_name(ev.name, slot, text),
+                                  qx.unit_job(edits, units, slot),
+                                  lambda job: self._set_unit_job(ev.name, slot, job),
+                                  # (2.0.0) Its items past 255 (the battle's Items), among its five items' choices.
+                                  enc.wide_item_choices(self.state),
+                                  {mb.PLACE_FIELDS[place]: item
+                                   for place, item in qx.unit_items(edits, units, slot).items()},
+                                  lambda field, item: self._set_unit_wide(ev.name, slot, field, item))
 
     def _unit_card_of(self, block: bytes, slot: int, set_field, back, take_out,
-                      back_words: Optional[str] = None, own: str = "", set_own=None) -> CardPane:
-        """One of a battle's 16 units (`block`), every field the game's battle files give it: `set_field(field,
-        value)` changes one, `back` goes back to its battle's card (`back_words` its button, Back to the battle when
-        not given), `take_out` empties its place. (1.17.0) A quest's battle's or a battle ground's random battle's;
-        (4 November) a quest's scene's own. (1.33.0) A quest's unit's own name too (`own`, `set_own(text)`), its Unit
-        Name then Random."""
-        back_words = back_words or BACK_TO_BATTLE
-        unit = entd.battle_units(block)[slot]
-        v = unit.values
-        card = CardPane(UNIT_BAND, UNIT_SLOT.format(n=slot + 1), UNIT_COLOUR,
-                        self._unit_words(v) if unit.occupied else EMPTY_SLOT, UNIT_BLURB)
-
-        def chosen(field: str, choices: list) -> QComboBox:
-            box = combo(choices, v[field])
-            box.currentIndexChanged.connect(lambda _i, b=box, f=field: set_field(f, b.currentData()))
-            self.field_widgets[f"unit_{field}"] = box
-            return box
-
-        def number(field: str, most: int = 255) -> QSpinBox:
-            box = spin(min(v[field], most), 0, most)
-            box.valueChanged.connect(lambda value, f=field: set_field(f, value))
-            self.field_widgets[f"unit_{field}"] = box
-            return box
-
-        def ticks(*pairs, columns: int = 2) -> QWidget:
-            grid = QWidget()
-            layout = QGridLayout(grid)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setHorizontalSpacing(10)
-            layout.setVerticalSpacing(3)
-            for n, (field, label) in enumerate(pairs):
-                box = QCheckBox(label)
-                box.setChecked(bool(v[field]))
-                box.toggled.connect(lambda on, f=field: set_field(f, bool(on)))
-                self.field_widgets[f"unit_{field}"] = box
-                layout.addWidget(box, n // columns, n % columns)
-            return grid
-
-        def section(name: str, count: int, *widgets) -> None:
-            body = QWidget()
-            fields = QVBoxLayout(body)
-            fields.setContentsMargins(4, 2, 0, 6)
-            fields.setSpacing(5)
-            for w in widgets:
-                fields.addWidget(w)
-            opened = self._open_sections.get(name, name in SECTIONS[:3])
-            box = CollapsibleSection(SECTION_TITLE.format(name=name, count=count), body, expanded=opened)
-            box.header.toggled.connect(lambda on, n=name: self._open_sections.__setitem__(n, on))
-            self.field_widgets[f"section_{name}"] = box
-            card.fields.addWidget(box)
-
-        def table(column: str, specials: dict, most: int = 255) -> list:
-            """A field's choices: its special values first, then the game's names for the rest it can hold."""
-            names = self._choices(column)
-            return list(specials.items()) + [(k, names[k]) for k in sorted(names) if k <= most and k not in specials]
-
-        def numbers(least: int, most: int, specials: dict, words_: Optional[dict] = None) -> list:
-            words_ = words_ or {}
-            return list(specials.items()) + [(n, words_.get(n, str(n))) for n in range(least, most + 1)
-                                             if n not in specials]
-
-        specials = c.ENTRY_SPECIAL_VALUES
-        random_byte = {entd.RANDOM_BYTE: RANDOM}
-        items = nxd_names(self.state, "item")
-        name_box = chosen("unit_name", table("Unknown4", specials["Unknown4"]))
-        # (1.33.0) A quest's unit's own name, beside its Unit Name, which it makes Random.
-        own_rows = []
-        if set_own is not None and unit.occupied:
-            own_edit = QLineEdit(own)
-            own_edit.setMaxLength(sq.MOST_OWN_NAME)
-            own_edit.setPlaceholderText(OWN_NAME_NONE)
-            own_edit.setToolTip(OWN_NAME_TIP)
-            own_edit.editingFinished.connect(lambda e=own_edit: set_own(e.text().strip()))
-            self.field_widgets["own_name"] = own_edit
-            name_box.setEnabled(not own)
-            if own:
-                name_box.setToolTip(OWN_NAME_RANDOM_TIP)
-            own_rows.append(pair(("Own Name", own_edit)))
-        section(SECTIONS[0], 12 + len(own_rows),
-                pair(("Spriteset", chosen("sprite_set", table("Spriteset", {}))),
-                     ("Unit Name", name_box)),
-                *own_rows,
-                pair(("Main Job", chosen("main_job", table("MainJob", specials["MainJob"]))),
-                     ("Unit ID", number("unit_id"))),
-                pair(("Job Unlock", chosen("prereq_job", table("JobUnlock", {0: BASE_JOB}))),
-                     ("Job Level", number("prereq_job_level", c.ENTRY_JOB_LEVEL_MAX))),
-                ticks(("male", "Male"), ("female", "Female"), ("monster", "Monster"),
-                      ("zodiac_monster", "Zodiac Monster")),
-                pair(("Palette", number("palette")),
-                     ("Birthday", row(chosen("month", list(MONTHS.items())),
-                                      chosen("day", numbers(0, 31, random_byte))))))
-        section(SECTIONS[1], 5,
-                pair(("Primary Job Command", chosen("primary_command", table("EntryUnknown1D",
-                                                                             specials["EntryUnknown1D"]))),
-                     ("Secondary Job Command", chosen("secondary_command",
-                                                      table("SecondarySkillset", specials["SecondarySkillset"])))),
-                pair(("Reaction", chosen("reaction", table("Reaction", specials["Reaction"], 0x1FF))),
-                     ("Support", chosen("support", table("Support", specials["Support"], 0x1FF)))),
-                pair(("Movement", chosen("movement", table("Movement", specials["Movement"], 0x1FF)))))
-        section(SECTIONS[2], 5,
-                pair(("Right Hand", chosen("right_hand", table("RightHand", specials["RightHand"]))),
-                     ("Left Hand", chosen("left_hand", table("LeftHand", specials["LeftHand"])))),
-                pair(("Head", chosen("head", table("Head", specials["Head"]))),
-                     ("Body", chosen("body", table("Body", specials["Body"])))),
-                pair(("Accessory", chosen("accessory", table("Accessory", specials["Accessory"])))))
-        section(SECTIONS[3], 4,
-                pair(("Level", chosen("level", numbers(0, 255, random_byte, c.entry_level_choices()))),
-                     ("Experience", number("experience"))),
-                pair(("Bravery", chosen("bravery", numbers(0, c.ENTRY_TRAIT_MAX, random_byte))),
-                     ("Faith", chosen("faith", numbers(0, c.ENTRY_TRAIT_MAX, random_byte)))))
-        section(SECTIONS[4], 13,
-                pair(("Position X", number("x")), ("Position Y", number("y"))),
-                pair(("Initial Direction", chosen("facing", list(entd.FACING_NAMES.items()))),
-                     ("Team", chosen("team", list(TEAMS.items())))),
-                ticks(("upper_level", "Higher Elevation"), ("always_present", "Always Present"),
-                      ("randomly_present", "Randomly Present"), ("control", "Control"), ("immortal", "Immortal"),
-                      ("join_after_event", "Join After Event"), ("load_formation", "Load Formation"),
-                      ("save_formation", "Save Formation"), ("save_ct", "Save CT")))
-        # (Zodi, 4 November: "clean up some of the very long notes") What Load Formation and Save Formation do, on them.
-        for field in qx.FORMATION_FLAGS:
-            self.field_widgets[f"unit_{field}"].setToolTip(FORMATION_NOTE)
-        section(SECTIONS[5], 7,
-                ticks(("focus_unit", "Focus Unit"), ("stay_near_xy", "Stay Near X and Y"),
-                      ("aggressive", "Aggressive"), ("defensive", "Defensive")),
-                pair(("Target", number("target"))),
-                pair(("Target X", number("target_x")), ("Target Y", number("target_y"))))
-        section(SECTIONS[6], 2,
-                pair(("War Trophy", chosen("war_trophy", [(0, NOTHING)] + [(k, items[k]) for k in sorted(items)
-                                                                          if 0 < k <= 255])),
-                     ("Bonus Money", number("bonus_money"))))
-        section(SECTIONS[7], 16,
-                pair(("Unknown10", number("unknown10")), ("Unknown12", number("unknown12"))),
-                muted(UNNAMED_NOTE),
-                ticks(*[(name, UNNAMED_LABEL.format(byte=name.split("_")[1], bit=name.split("_")[2]))
-                        for name in entd.UNNAMED_FLAGS], columns=3))
-        card.status([])
-        card.add_buttons(back_words, UNIT_TAKE_OUT)
-        card.buttons[back_words].clicked.connect(lambda: back())
-        card.buttons[UNIT_TAKE_OUT].clicked.connect(lambda: take_out())
-        card.buttons[UNIT_TAKE_OUT].setEnabled(unit.occupied)
-        return card
+                      back_words: Optional[str] = None, own: str = "", set_own=None, own_job: str = "",
+                      set_own_job=None, wide_choices: Optional[dict] = None, worn: Optional[dict] = None,
+                      set_wide=None) -> CardPane:
+        """One of a battle's 16 units' card (`unit_card_of`, which the Encounters page makes too)."""
+        return unit_card_of(self, block, slot, set_field, back, take_out, back_words, own, set_own, own_job,
+                            set_own_job, wide_choices, worn, set_wide)
 
     def _set_unit(self, event: str, slot: int, field: str, value) -> None:
         if self._building or value is None:
@@ -4468,7 +5716,39 @@ class SideQuestsPage(QWidget):
         self.battle_map.refresh_units()
         if field in TITLE_FIELDS and self.card is not None:
             unit = entd.battle_units(qx.battle_block(edits, units))[slot]
-            self.card.title.setText(self._unit_words(unit.values) if unit.occupied else EMPTY_SLOT)
+            self.card.title.setText(self._unit_words(unit.values, qx.unit_job(edits, units, slot))
+                                    if unit.occupied else EMPTY_SLOT)
+
+    def _set_unit_wide(self, event: str, slot: int, field: str, item) -> None:
+        """(Mod Studio Framework 2.0.0, Zodi's first point of 16 November 2026: War of the Lions' items in "modders
+        new Battles") A quest's unit given an item past 255 at one of its five places (`quest_edits.set_unit_item`:
+        the battle's Items), or none there."""
+        if self._building:
+            return
+        edits = self.edits()
+        ev = edits.quest.event_named(event) if edits is not None else None
+        units = self.own_units(ev)
+        if units is None:
+            return
+        qx.set_unit_item(edits, units, slot, mb.FIELD_PLACES[field], item)
+        self._changed()
+
+    def _set_unit_job(self, event: str, slot: int, job: str) -> None:
+        """(14 November, Zodi's order of 13 November: "choosing a mod's job on a quest unit's card") A quest's unit
+        put in one of the mod's own jobs (`quest_edits.set_unit_job`: its file's job the game's job the job is based
+        on, the battle's Jobs naming the job); its card shown again, its Job Unlock and Job Level as they now are."""
+        if self._building or not job:
+            return
+        edits = self.edits()
+        ev = edits.quest.event_named(event) if edits is not None else None
+        units = self.own_units(ev)
+        like = self.own_job_like(job)
+        if units is None or like is None:
+            return
+        qx.set_unit_job(edits, units, slot, job, like)
+        self._changed()
+        self.battle_map.refresh_units()
+        self._show_card()
 
     def _set_own_name(self, event: str, slot: int, text: str) -> None:
         """(1.33.0) A quest's unit's own name set ("" none): said when it isn't one; its card shown again (its Unit
@@ -4909,6 +6189,11 @@ class SideQuestsPage(QWidget):
         """Whether the Items tab is shown."""
         return self.tabs.currentIndex() == 2
 
+    def cardless(self) -> bool:
+        """(His notes of 14 November) Whether the tab shown has no card, its fields in the middle: Jobs, Items and
+        Abilities."""
+        return self.in_jobs() or self.in_items() or self.in_abilities()
+
     def show_items(self, folder: Optional[str] = None) -> None:
         """The Items tab shown, the item in `folder` picked when given."""
         if folder is not None:
@@ -4970,21 +6255,6 @@ class SideQuestsPage(QWidget):
         self._show_card()
         self._show_middle()
         self.edits_changed.emit()
-
-    def game_items(self) -> tuple:
-        """(the game's items read from its program, `mod_items.GameItems`, or None; why not, in words)."""
-        path = self.find_program()
-        if path is None:
-            return None, NO_PROGRAM
-        try:
-            return mi.game_items(path), ""
-        except (OSError, mi.ItemsError) as exc:
-            return None, str(exc)
-
-    def _game_item_choices(self) -> list:
-        """`[(number, words)]`: the game's items an item may start as a copy of (1 to 253, 256 to 260), by name."""
-        names = nxd_names(self.state, "item")
-        return [(n, f"{names.get(n) or n} ({n})") for n in mi.GAME_ITEMS]
 
     def _game_words(self, number: int) -> dict:
         """The game item's row of the Item table (as Mod Studio has the game's, in English): its words, its UI
@@ -5087,560 +6357,22 @@ class SideQuestsPage(QWidget):
         if not sure:
             return
         pe.item_removed(self.places_store(), edit.item.name)
+        # (2.0.0) No unit wears it and no buried treasure holds it after.
+        mb.item_renamed(self.state.battle_units, self.state.battle_treasures, edit.item.name, None)
+        qx.item_renamed(getattr(self.state, "quests", None) or {}, edit.item.name, None)
         self.items_store().pop(edit.folder, None)
         self.item_pick = next(iter(self.items_store()), None)
         self._say("")
         self._items_changed()
 
-    def _item_problems(self, edit: mi.ItemEdit) -> list:
-        """What Mod Studio Framework would say of the item as Export writes it (its own icon's files written with it)."""
-        written = mi.written_item(edit, "x")
-        _item, problems = mi.read_item_text(mi.item_text(written), lambda _path: True)
-        return problems
-
     def _item_card(self) -> CardPane:
-        """An item's card: its name, kind, words, numbers, price, the story point it is sold from, (1.27.0) what a
-        weapon does, its equipment bonuses with their statuses and elements, its UI values, its two icons and the towns
-        that sell it (the mod's and the game's ticked)."""
-        edit = self._picked_item()
-        if edit is None:
-            card = CardPane(ITEM_BAND, "", ITEM_COLOR, "", PICK_AN_ITEM if self.items_store() else "")
-            card.status([], "")
-            return card
-        item = edit.item
-        category_words = self._category_words(item)
-        card = CardPane(ITEM_BAND, ITEM_CATEGORY_BAND.format(category=category_words), ITEM_COLOR, item.name,
-                        ITEM_BLURB)
-        name = QLineEdit(item.name)
-        name.setMaxLength(64)
-        name.setToolTip(ITEM_NAME_TIP)
-        name.editingFinished.connect(lambda box=name: self.rename_item(box.text()))
-        kind = mi.KIND_WORDS[item.kind]
-        card.field(NAME, name)
-        kind_words = ITEM_KIND_WORDS.format(kind=kind[:1].upper() + kind[1:], category=category_words)
-        if item.kind == mi.ITEM:
-            # (1.27.0) Kept, as Zodi chose: read and sold, its card saying why no new one is made.
-            card.field(KIND, muted(kind_words), muted(ITEM_TO_USE_NOTE))
-        else:
-            card.field(KIND, muted(kind_words))
-        singular, plural = QLineEdit(item.singular), QLineEdit(item.plural)
-        for box, key in ((singular, "singular"), (plural, "plural")):
-            box.setMaxLength(mi.WORD_MOST)
-            box.editingFinished.connect(lambda b=box, k=key: self.set_item_word(k, b.text()))
-        description = QPlainTextEdit(item.description)
-        description.setFixedHeight(90)
-        description.textChanged.connect(lambda box=description: self.set_item_word("description",
-                                                                                     box.toPlainText(), False))
-        card.field(ITEM_WORDS, pair((SINGULAR, singular), (PLURAL, plural)), caption(DESCRIPTION), description)
-        numbers = []
-        for label, where, at, width, most in mi.NUMBERS[item.kind]:
-            box = spin(mi.number(item, where, at, width), 0, most)
-            box.valueChanged.connect(lambda v, w=where, a=at, n=width: self.set_item_number(w, a, n, v))
-            self.field_widgets[f"item_{label}"] = box
-            numbers.append((label, box))
-        rows_ = [pair(numbers[n], numbers[n + 1] if n + 1 < len(numbers) else None)
-                 for n in range(0, len(numbers), 2)]
-        card.field(ITEM_NUMBERS, *rows_)
-        if item.kind == mi.WEAPON:
-            self._attack_field(card, item)
-        # (Zodi, 4 November) Its battle sprite, each half with what changes it under it: Attack and Held or thrown.
-        self._battle_sprite_field(card, item)
-        _label, where, at, width, most = mi.PRICE
-        price = spin(mi.number(item, where, at, width), 0, most)
-        price.valueChanged.connect(lambda v, w=where, a=at, n=width: self.set_item_number(w, a, n, v))
-        card.field(PRICE_FIELD, row(price, QWidget(), stretch_first=False))
-        points = [(n, SOLD_FROM_POINTS.get(n, str(n))) for n in range(1, mi.MOST_SHOP_POINT + 1)]
-        sold_from = combo(points, mi.shop_point(item))
-        sold_from.currentIndexChanged.connect(lambda _i, b=sold_from: self.set_item_shop_point(b.currentData()))
-        if item.kind != mi.ITEM:
-            bonuses = []
-            for label, where, at, width, most in mi.BONUSES:
-                box = spin(mi.number(item, where, at, width), 0, most)
-                box.valueChanged.connect(lambda v, a=at: self.set_item_number("bonus", a, 1, v))
-                self.field_widgets[f"item_{label}"] = box
-                bonuses.append((label, box))
-            # (1.27.0) Its statuses and elements too, each set's names in words, ticked in a dialog.
-            ticked = []
-            for which, label in enumerate(BONUS_STATUS_LABELS):
-                ticked.append(self._ticked_row("status", which, label, mi.bonus_statuses(item, which)))
-            for which, label in enumerate(BONUS_ELEMENT_LABELS):
-                ticked.append(self._ticked_row("element", which, label, mi.bonus_elements(item, which)))
-            card.field(BONUSES_FIELD, *[pair(bonuses[n], bonuses[n + 1] if n + 1 < len(bonuses) else None)
-                                        for n in range(0, len(bonuses), 2)], *ticked)
-        # (1.27.0) Its UI values, set from what it does (Zodi's choice: automatically, shown); why, in their tooltip.
-        ui_words = muted("")
-        ui_words.setToolTip(UI_NOTE)
-        self.field_widgets["item_ui_words"] = ui_words
-        self._show_ui_words(item)
-        card.field(UI_FIELD, ui_words)
-        self._icon_field(card, edit)
-        towns = pe.towns_selling_item(self.places_store(), item.name)
-        # (1.27.0) The game's towns' Outfitters ticked (Zodi's choice: none ticked to start).
-        game_towns = QWidget()
-        towns_column = QVBoxLayout(game_towns)
-        towns_column.setContentsMargins(0, 0, 0, 0)
-        towns_column.setSpacing(2)
-        town_boxes = []
-        for town, town_name in enumerate(mi.GAME_TOWNS):
-            box = QCheckBox(town_name)
-            box.setChecked(town in item.shops)
-            box.toggled.connect(lambda on, t=town: self.set_item_town(t, on))
-            towns_column.addWidget(box)
-            town_boxes.append(box)
-        # (Zodi after test 62) The point of the story it is sold from, beside where it is sold; (4 November) the towns
-        # of yours, then the game's ticked, then the point, without the notes their names and choices say already.
-        card.field(SOLD_AT_FIELD, muted(_listed(towns) + "." if towns else SOLD_AT_NO_TOWN), game_towns,
-                   caption(SOLD_FROM), sold_from)
-        self.field_widgets.update(item_name=name, item_singular=singular, item_plural=plural,
-                                  item_description=description, item_price=price, item_sold_from=sold_from,
-                                  item_game_towns=town_boxes)
-        card.status(self._item_problems(edit))
+        """(His note of 14 November, 19:10: "can the Item's and the Abilities tab get touched up to remove the card so
+        users can make edits on the main window instead as we have done for the Jobs tab") The Items tab has no card:
+        an empty one stands in its place, which `_show_card` hides with this tab; the item's fields are boxes of the
+        middle (`_item_sheet`, `_item_boxes`)."""
+        card = CardPane(ITEM_BAND, "", ITEM_COLOR, "", "")
+        card.status([], "")
         return card
-
-    def _attack_field(self, card: CardPane, item: mi.ModItem) -> None:
-        """(1.27.0) A weapon's formula, its Inflict Status (or the spell it casts) and its elements."""
-        formulas = reference_names.formula_names()
-        formula = combo([(n, f"{formulas[n]} ({n})") for n in sorted(formulas) if 0 <= n <= 255], mi.formula(item))
-        formula.currentIndexChanged.connect(lambda _i, b=formula: self.set_item_formula(b.currentData()))
-        inflict_caption = caption("")
-        inflict = combo([])
-        self.field_widgets.update(item_formula=formula, item_inflict=inflict, item_inflict_caption=inflict_caption)
-        self._fill_inflict(item)
-        inflict.currentIndexChanged.connect(lambda _i, b=inflict: self.set_item_inflict(b.currentData()))
-        elements = QWidget()
-        grid = QGridLayout(elements)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(2)
-        boxes = []
-        ticked = mi.weapon_elements(item)
-        for n, element in enumerate(c.ELEMENT_FLAGS):
-            box = QCheckBox(element)
-            box.setChecked(element in ticked)
-            box.toggled.connect(lambda _on: self.set_item_elements([b.text() for b in boxes if b.isChecked()]))
-            grid.addWidget(box, n // 4, n % 4)
-            boxes.append(box)
-        self.field_widgets["item_elements"] = boxes
-        card.field(ATTACK_FIELD, caption(FORMULA_LABEL), formula, inflict_caption, inflict, caption(WEAPON_ELEMENTS),
-                   elements)
-
-    def _category_words(self, item: mi.ModItem) -> str:
-        """(Zodi after test 62) Its category as the Items page names it."""
-        from ..widgets.field_rows import split_words
-        category = item.record[mi.CATEGORY_AT]
-        return split_words(c.ITEM_CATEGORIES[category]) if 0 <= category < len(c.ITEM_CATEGORIES) else str(category)
-
-    def _item_looks(self, item: mi.ModItem):
-        """The looks a weapon may swing (`mod_items.looks_of`: the game's weapons whose swings share its frames), or
-        (5 November) a shield guard with (the game's shields'), or None and why not."""
-        game, why = self.game_items()
-        if game is None:
-            return None, why
-        try:
-            return mi.looks_of(game, item.record[mi.CATEGORY_AT]), ""
-        except mi.ItemsError as exc:
-            return None, str(exc)
-
-    @staticmethod
-    def _show_picture(label, picture, width: int, height: int, tip: str) -> None:
-        """A battle sprite drawn into `label` (a whole number of times its size, or a
-        whole number of times smaller), named by its tooltip; hidden when there is none."""
-        if label is None:
-            return
-        if picture is None:
-            label.clear()
-            label.setVisible(False)
-            return
-        image = QImage(picture.rgba, picture.width, picture.height, picture.width * 4, QImage.Format_RGBA8888).copy()
-        across, down = max(1, picture.width), max(1, picture.height)
-        if across <= width and down <= height:
-            times = min(width // across, height // down)
-            size = (across * times, down * times)
-        else:
-            parts = max(-(-across // width), -(-down // height))
-            size = (max(1, across // parts), max(1, down // parts))
-        label.setPixmap(QPixmap.fromImage(image.scaled(size[0], size[1], Qt.IgnoreAspectRatio,
-                                                       Qt.FastTransformation)))
-        label.setToolTip(tip)
-        label.setVisible(True)
-
-    def _refresh_item_pictures(self, item: mi.ModItem) -> None:
-        """(Zodi after test 62: "changing a new items palette ... does not update its appearance in the preview") Its
-        battle sprite's two halves drawn again as the item has them now, each named in its tooltip (the look's game
-        weapon and palette, the icon's sprite and palette), and the palettes beside them following."""
-        from ... import unit_sprites as us
-        sprites = self.battle_sprites()
-        category = item.record[mi.CATEGORY_AT]
-        flags = {mi.WEAPON: {"Weapon"}, mi.SHIELD: {"Shield"}}.get(item.kind, set())
-        kind = us.sprite_kind(flags, category)
-        look = None
-        if sprites is not None and kind in ("attack", "guard") and len(item.sprite_pair) == mi.PAIR_BYTES:
-            look = sprites.attack(us.frames_type(kind, category), bytes(item.sprite_pair))
-        palette, sprite = mi.held(item)
-        held = sprites.held(palette, sprite) if sprites is not None else None
-        name = BATTLE_ATTACK if kind == "attack" else BATTLE_GUARD
-        if item.kind in (mi.WEAPON, mi.SHIELD):
-            looks, _why = self._item_looks(item)
-            names = nxd_names(self.state, "item")
-            # (Zodi, 4 November: "many of them share the same design") Every one of the game's weapons that shares
-            # its look, by name.
-            name = look_words(mi.look_group(looks or [], bytes(item.sprite_pair)),
-                              lambda n: names.get(n) or ITEM_NUMBERED.format(n=n), mi.battle_palette(item))
-        self._show_picture(self.field_widgets.get("item_battle_look"), look, 144, 96, name)
-        self._show_picture(self.field_widgets.get("item_battle_held"), held, 64, 64,
-                           HELD_PICKED.format(sprite=sprite, palette=palette))
-        for key, value in (("item_palette", mi.battle_palette(item)), ("item_held_palette", palette)):
-            box = self.field_widgets.get(key)
-            if box is None or value < 0 or box.currentData() == value:
-                continue
-            box.blockSignals(True)
-            index = box.findData(value)
-            if index < 0:
-                box.addItem(PALETTE_CHOICE.format(n=value), value)
-                index = box.count() - 1
-            box.setCurrentIndex(index)
-            box.blockSignals(False)
-        choose = self.field_widgets.get("item_choose_held")
-        if choose is not None:
-            choose.setEnabled(sprites is not None and sprites.items_drawable)
-
-    def choose_item_look(self) -> None:
-        """(Zodi after test 62) Choose a look: the looks that swing the same way, drawn in the palette chosen
-        (`LookDialog`); the look and palette taken."""
-        from ... import unit_sprites as us
-        edit = self._picked_item()
-        if edit is None:
-            return
-        looks, _why = self._item_looks(edit.item)
-        if not looks:
-            return
-        names = nxd_names(self.state, "item")
-        category = edit.item.record[mi.CATEGORY_AT]
-        # (Zodi, 4 November) Each look once, under the weapon type it is drawn for.
-        game, _why = self.game_items()
-        categories = {n: game.item(n).record[mi.CATEGORY_AT] for n, _pair in looks} if game is not None else None
-        # (Zodi, 5 November: "Make sure you can also change the look in the New Items card") A shield's as it guards.
-        guard = edit.item.kind == mi.SHIELD
-        dialog = LookDialog(self, self.battle_sprites(), us.frames_type("guard" if guard else "attack", category),
-                            looks, names, mi.look_now(looks, edit.item.sprite_pair), mi.battle_palette(edit.item),
-                            edit.item.name, categories=categories, pair=bytes(edit.item.sprite_pair), guard=guard)
-        answer = self._ask("item_look", lambda: dialog.choice() if dialog.exec() == QDialog.Accepted else None)
-        if not answer:
-            return
-        number, palette = answer
-        self.set_item_look(number)
-        if palette is not None:
-            self.set_item_palette(palette)
-
-    def choose_item_held(self) -> None:
-        """(Zodi after test 62) Choose an icon: the enhanced item texture's icons in the palette chosen, as the Items
-        page's (`items.HeldSpriteDialog`)."""
-        from .items import HeldSpriteDialog
-        edit = self._picked_item()
-        if edit is None:
-            return
-        palette, sprite = mi.held(edit.item)
-        dialog = HeldSpriteDialog(self.battle_sprites(), palette, sprite, edit.item.name, self)
-        answer = self._ask("item_held", lambda: dialog.choice() if dialog.exec() else None)
-        if not answer:
-            return
-        self.set_item_held(*answer)
-
-    def set_item_held(self, palette, sprite) -> None:
-        """(Zodi after test 62) The icon a unit holds up or throws in battle: its palette and its sprite."""
-        edit = self._picked_item()
-        if edit is None or self._building or palette is None or sprite is None:
-            return
-        mi.set_held(edit.item, int(palette), int(sprite))
-        self._refresh_item_pictures(edit.item)
-        self.edits_changed.emit()
-
-    def set_item_held_palette(self, palette) -> None:
-        edit = self._picked_item()
-        if edit is None or self._building or palette is None:
-            return
-        self.set_item_held(palette, mi.held(edit.item)[1])
-
-    def _fill_inflict(self, item: mi.ModItem) -> None:
-        """The row under a weapon's formula: its Inflict Status, or with the formula that casts a spell, the spell (the
-        Items page's choices: the Inflict Status rows as that page names them, the abilities by their names)."""
-        box, label = self.field_widgets.get("item_inflict"), self.field_widgets.get("item_inflict_caption")
-        if box is None or label is None:
-            return
-        value = mi.inflict(item)
-        if mi.casts_spell(item):
-            from ..app import ability_choices
-            named = ability_choices(self.state)
-            choices = [(n, f"{named[n]} ({n})") for n in sorted(named) if 0 <= n <= 255]
-            label.setText(CAST_LABEL)
-        else:
-            from .table_editor import inflict_status_descriptor
-            records = (getattr(self.state, "item_table_records", None) or {}).get("item_options", [])
-            edits = (getattr(self.state, "item_table_edits", None) or {}).get("item_options", {})
-            choices = [(r.item_id, f"{inflict_status_descriptor({**r.values, **edits.get(r.item_id, {})})} "
-                                   f"({r.item_id})") for r in records if 0 <= r.item_id <= 255]
-            if not choices:
-                choices = [(n, str(n)) for n in range(256)]
-            label.setText(INFLICT_LABEL)
-        box.blockSignals(True)
-        box.clear()
-        for data, words in choices:
-            box.addItem(words, data)
-        index = box.findData(value)
-        if index < 0:
-            box.addItem(str(value), value)
-            index = box.count() - 1
-        box.setCurrentIndex(index)
-        box.blockSignals(False)
-
-    def _ticked_row(self, kind: str, which: int, label: str, names: list) -> QWidget:
-        """(1.27.0) One of its bonus row's sets in words (a status the game names Unused kept but not said), and
-        Change, which ticks them in a dialog."""
-        words = muted(TICKED_LINE.format(label=label, names=_listed(_said(names)) or TICKED_NONE))
-        change = QPushButton(CHANGE)
-        change.clicked.connect(lambda _c=False, k=kind, w=which: self.change_item_ticks(k, w))
-        self.field_widgets[f"item_{kind}_{which}"] = words
-        self.field_widgets[f"item_{kind}_{which}_change"] = change
-        return row(words, change)
-
-    def _show_ui_words(self, item: mi.ModItem) -> None:
-        """(1.27.0) Its UI values in words, as Export writes them (`mod_items.ui_values`)."""
-        label = self.field_widgets.get("item_ui_words")
-        if label is None:
-            return
-        ui_status, random_damage = mi.ui_values(item)
-        if item.ui_category >= 0 and item.sort >= 0:
-            listed = UI_LISTED_WORDS["copy"].format(category=item.ui_category, sort=item.sort)
-        else:
-            category = item.ui_category if item.ui_category >= 0 else UI_CATEGORY_OF_KIND[item.kind]
-            listed = UI_LISTED_WORDS["own"].format(category=category)
-        lines = [listed]
-        if item.kind == mi.WEAPON:
-            lines = [UI_STATUS_WORDS.get(ui_status, UI_STATUS_WORDS[0]), UI_RANDOM_WORDS[random_damage], listed]
-        label.setText("\n".join(lines))
-
-    def _icon_field(self, card: CardPane, edit: mi.ItemEdit) -> None:
-        """Its icon: (Zodi, 4 November: "we already have a better user interface for new users from the Items page where
-        you can simply right click the art or sprite texture and have a context menus with options and to place the
-        users image. You should still be able to cycle through the games items icons though that's a good feature")
-        the game's item whose icon it uses, picked in a list, and its two textures as the Items page shows them, each
-        with its menu on a right click (`texture_menu`): an image of your own in its place (its art fitted to 100 by
-        100, its small icon to 48 by 48, made from its art until one of its own is chosen), its small icon made from
-        its art again, the game's icon again, either saved as a PNG."""
-        own = bool(edit.icon_png)
-        choices = self._game_item_choices()
-        if own:
-            choices = [(-1, OWN_TEXTURES)] + choices
-        shown = combo(choices, -1 if own else self._game_icon_number(edit), enabled=not own)
-        shown.currentIndexChanged.connect(lambda _i, b=shown: self.set_game_icon(b.currentData()))
-        panels, problems = [], []
-        for which, title, size in (("art", ART_TEXTURE_TIP, 96), ("small", SPRITE_TEXTURE_TIP, 48)):
-            image, why = self._item_texture_image(edit, which)
-            if why:
-                problems.append(why)
-            box, view = self._texture_panel(title, image, size, which)
-            panels.append(box)
-            self.field_widgets[f"item_{which}_texture"] = view
-        icon_said = muted(GAME_ICON_MISSING.format(problem="; ".join(dict.fromkeys(problems)))
-                          if problems and not own else "")
-        icon_said.setVisible(bool(problems) and not own)
-        card.field(ICON_FIELD, shown, row(*panels, QWidget(), stretch_first=False), icon_said, muted(ICON_HINT))
-        self.field_widgets.update(item_icon=shown, item_icon_said=icon_said)
-
-    def _game_icon_number(self, edit: mi.ItemEdit) -> int:
-        """The game's item whose icon it uses (or would, once its own textures are put aside)."""
-        return edit.item.icon if edit.item.icon in mi.GAME_ITEMS else edit.copied_from or 1
-
-    def _item_texture_image(self, edit: mi.ItemEdit, which: str) -> tuple:
-        """(4 November) Its art (`which` "art") or its small icon ("small") as it has it now, a QImage: its own (the
-        small one made from its art until one of its own is chosen), else the game's item's texture; (None, why) when
-        the game's can't be read."""
-        from ... import texture_data as td
-        if edit.icon_png:
-            png = edit.icon_png if which == "art" else (edit.small_png or self._small_made(edit))
-            image = QImage.fromData(png)
-            return (image, "") if not image.isNull() else (None, "")
-        number = self._game_icon_number(edit)
-        relative = td.item_art_texture_path(number) if which == "art" else td.item_sprite_texture_path(number)
-        return self._game_texture(relative)
-
-    def _texture_panel(self, title: str, image, size: int, which: str) -> tuple:
-        """A texture as the Items page's slots show one: framed, its name over it, shrunk to `size` (never magnified),
-        its menu on a right click. (Zodi, 4 November: "the Art Texture and Sprite Texture are not centered ... also
-        right clicking anywhere in it's preview box should bring up the context menu not just directly on the image")
-        The texture in the middle of the room under its name, and the menu on a right click anywhere in its panel.
-        (The panel, its picture.)"""
-        box = QFrame()
-        box.setFrameShape(QFrame.StyledPanel)
-        inner = QVBoxLayout(box)
-        inner.setContentsMargins(6, 4, 6, 4)
-        inner.setSpacing(2)
-        inner.addWidget(caption(title))
-        view = QLabel()
-        view.setAlignment(Qt.AlignCenter)
-        view.setFixedSize(max(size, 64), size)
-        view.setToolTip(title)
-        if image is not None and not image.isNull():
-            shown = image if image.width() <= size and image.height() <= size else image.scaled(
-                size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            view.setPixmap(QPixmap.fromImage(shown))
-        else:
-            view.setText(NO_TEXTURE)
-        for source in (box, view):
-            source.setContextMenuPolicy(Qt.CustomContextMenu)
-            source.customContextMenuRequested.connect(
-                lambda point, s=source, w=which: self.texture_menu(w).exec(s.mapToGlobal(point)))
-        inner.addStretch(1)
-        inner.addWidget(view, 0, Qt.AlignHCenter)
-        inner.addStretch(1)
-        return box, view
-
-    def texture_menu(self, which: str) -> QMenu:
-        """(4 November) Its texture's menu (`which` "art" or "small"), as the Items page's: Replace..., Make from its
-        art (its own small icon only), Use the game's icon (its own textures only), Export as PNG... (what it shows)."""
-        edit = self._picked_item()
-        menu = QMenu(self)
-        replace = menu.addAction(REPLACE_TEXTURE)
-        replace.triggered.connect(lambda _c=False: self.choose_icon() if which == "art" else self.choose_small_icon())
-        if which == "small":
-            made = menu.addAction(MAKE_FROM_ART)
-            made.setEnabled(edit is not None and bool(edit.small_png))
-            made.triggered.connect(lambda _c=False: self.small_from_art())
-        back = menu.addAction(USE_GAME_ICON)
-        back.setEnabled(edit is not None and bool(edit.icon_png))
-        back.triggered.connect(lambda _c=False: self.use_game_icon())
-        menu.addSeparator()
-        export = menu.addAction(EXPORT_TEXTURE)
-        export.setEnabled(edit is not None and self._item_texture_image(edit, which)[0] is not None)
-        export.triggered.connect(lambda _c=False: self.export_item_texture(which))
-        return menu
-
-    def _game_texture(self, relative: str):
-        """One of the unpacked game's textures as a QImage, decoded once for each file's size and time (as the Items
-        page's texture slots decode theirs), or (None, why)."""
-        from ... import texture_data as td
-        root = getattr(self.state, "nxd_unpack_dir", None)
-        if not root or not Path(root).is_dir():
-            return None, "it isn't set"
-        path = Path(root) / relative
-        try:
-            stat = path.stat()
-        except OSError:
-            return None, f"{path.name} isn't there"
-        key = (str(path), stat.st_size, stat.st_mtime_ns)
-        cache = self.__dict__.setdefault("_game_textures", {})
-        if key not in cache:
-            try:
-                image = td.load_game_texture_preview(path, getattr(self.state, "ff16tools_cli_path", None),
-                                                     paths.local_data_dir() / "texture_preview_cache")
-                image = image.convert("RGBA")
-                cache[key] = (QImage(image.tobytes(), image.width, image.height, image.width * 4,
-                                     QImage.Format_RGBA8888).copy(), "")
-            except Exception as exc:                          # noqa: BLE001
-                cache[key] = (None, f"{path.name} couldn't be read ({exc})")
-        return cache[key]
-
-    def battle_sprites(self):
-        """The unpacked game's battle sprites (`unit_sprites.BattleSprites`, as the Items page's), read again when
-        its files change."""
-        from ... import unit_sprites as us
-        root = getattr(self.state, "nxd_unpack_dir", None)
-        game = Path(root) if root and Path(root).is_dir() else None
-        if game is None:
-            return None
-
-        def stamp(path):
-            try:
-                return path.stat().st_mtime_ns
-            except OSError:
-                return None
-        key = (str(game), stamp(game / us.WEAPON_SPR_FILE), stamp(game / us.ITEM_BIN_FILES[0]),
-               stamp(game / us.G2D_FILE))
-        if key != self.__dict__.get("_battle_sprites_key"):
-            self._battle_sprites, self._battle_sprites_key = us.BattleSprites(game), key
-        return self._battle_sprites
-
-    def _battle_sprite_field(self, card: CardPane, item: mi.ModItem) -> None:
-        """(after test 61) Its Battle Sprite: as it attacks or guards (its sprite pair, by its type's frames), and as
-        a unit holds it up or throws it (its record's palette and sprite: the enhanced item texture's icon). (Zodi, 4
-        November: "Together, named by half. Both side by side with the Battle Sprite, one named Attack and one Held or
-        thrown, each changing only its half. Also make sure the field options to change them appear next to each
-        other") Each half named under it, and under that what changes it: a weapon's palette (one the game's own
-        weapons swing in) and Choose a look; any item's palette and Choose an icon. (5 November) A shield's look as it
-        guards chosen the same way, from the game's shields'."""
-        from ... import unit_sprites as us
-        sprites = self.battle_sprites()
-        category = item.record[mi.CATEGORY_AT]
-        flags = {mi.WEAPON: {"Weapon"}, mi.SHIELD: {"Shield"}}.get(item.kind, set())
-        kind = us.sprite_kind(flags, category)
-        problems, undrawn = [], []
-        if sprites is None:
-            problems.append("it isn't set")
-        else:
-            if kind in ("attack", "guard") and len(item.sprite_pair) == mi.PAIR_BYTES:
-                if sprites.attack(us.frames_type(kind, category), bytes(item.sprite_pair)) is None:
-                    (undrawn if sprites.weapons_drawable else problems).append(sprites.problem)
-            if sprites.held(*mi.held(item)) is None:
-                (undrawn if sprites.items_drawable else problems).append(sprites.item_problem)
-        halves = QWidget()
-        grid = QGridLayout(halves)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(16)
-        grid.setVerticalSpacing(4)
-        column = 0
-        if kind in ("attack", "guard"):
-            look = QLabel()
-            look.setFixedSize(144, 96)
-            look.setAlignment(Qt.AlignCenter)
-            grid.addWidget(look, 0, column, Qt.AlignLeft | Qt.AlignBottom)
-            grid.addWidget(caption(BATTLE_ATTACK if kind == "attack" else BATTLE_GUARD), 1, column)
-            self.field_widgets["item_battle_look"] = look
-            # (Zodi, 5 November) A shield's look as it guards, chosen as a weapon's is.
-            if item.kind in (mi.WEAPON, mi.SHIELD):
-                looks, why = self._item_looks(item)
-                if looks is None:
-                    grid.addWidget(muted(NO_LOOKS.format(problem=why)), 2, column, 2, 1)
-                else:
-                    palette = swing_palette_box(max(0, mi.battle_palette(item)))
-                    palette.currentIndexChanged.connect(lambda _i, b=palette: self.set_item_palette(b.currentData()))
-                    choose = QPushButton(LOOK_CHOOSE)
-                    choose.clicked.connect(lambda _c=False: self.choose_item_look())
-                    grid.addWidget(palette, 2, column, Qt.AlignLeft)
-                    grid.addWidget(choose, 3, column, Qt.AlignLeft)
-                    self.field_widgets.update(item_palette=palette, item_choose_look=choose)
-            column += 1
-        held = QLabel()
-        held.setFixedSize(64, 64)
-        held.setAlignment(Qt.AlignCenter)
-        grid.addWidget(held, 0, column, Qt.AlignLeft | Qt.AlignBottom)
-        grid.addWidget(caption(BATTLE_HELD), 1, column)
-        self.field_widgets["item_battle_held"] = held
-        if item.kind != mi.ITEM:
-            palette_now, _sprite = mi.held(item)
-            palette = palette_combo(palette_now)
-            palette.currentIndexChanged.connect(lambda _i, b=palette: self.set_item_held_palette(b.currentData()))
-            choose = QPushButton(HELD_CHOOSE)
-            choose.clicked.connect(lambda _c=False: self.choose_item_held())
-            grid.addWidget(palette, 2, column, Qt.AlignLeft)
-            grid.addWidget(choose, 3, column, Qt.AlignLeft)
-            self.field_widgets.update(item_held_palette=palette, item_choose_held=choose)
-        grid.setColumnStretch(column + 1, 1)
-        said = muted(" ".join([BATTLE_SPRITE_MISSING.format(problem=p) for p in dict.fromkeys(q for q in problems if q)]
-                              + [BATTLE_SPRITE_UNDRAWN.format(problem=p) for p in dict.fromkeys(q for q in undrawn if q)]))
-        said.setVisible(bool(said.text()))
-        card.field(BATTLE_SPRITE_FIELD, halves, said)
-        self.field_widgets["item_battle_said"] = said
-        self._refresh_item_pictures(item)
-
-    @staticmethod
-    def _small_made(edit: mi.ItemEdit) -> bytes:
-        """The small icon Export makes from its art (`mod_items.small_of`), as a PNG, or nothing without its art."""
-        if not edit.icon_png:
-            return b""
-        import io
-
-        from PIL import Image
-        return mi.icon_png(mi.small_of(Image.open(io.BytesIO(edit.icon_png))), mi.SMALL_ICON_SIZE)
 
     def rename_item(self, name: str) -> None:
         edit = self._picked_item()
@@ -5649,11 +6381,16 @@ class SideQuestsPage(QWidget):
         said = self._item_name_problem(name, edit)
         if said:
             self._say(said)
-            self._show_card()
+            box = self.field_widgets.get("item_name")
+            if box is not None:
+                box.setText(edit.item.name)
             return
         old = edit.item.name
         mi.rename(edit, name)
         pe.item_renamed(self.places_store(), old, name)
+        # (2.0.0) The units and buried treasures that name it follow, the game's battles' and the quests' own.
+        mb.item_renamed(self.state.battle_units, self.state.battle_treasures, old, name)
+        qx.item_renamed(getattr(self.state, "quests", None) or {}, old, name)
         # Its folder is its name's.
         items = self.items_store()
         folder = mi.folder_for(name)
@@ -5662,241 +6399,60 @@ class SideQuestsPage(QWidget):
             edit.folder = folder
             self.item_pick = folder
         self._say("")
-        self._items_changed()
-
-    def set_item_word(self, key: str, text: str, show: bool = True) -> None:
-        """One of the item's words (its singular, plural or description); none given its name's."""
-        edit = self._picked_item()
-        if edit is None or self._building:
-            return
-        if key == "description":
-            edit.item.description = text
-        else:
-            setattr(edit.item, key, text or edit.item.name)
-        if show:
-            self._items_changed(refill=False)
-        else:
-            if self.card is not None:
-                self.card.status(self._item_problems(edit))
-            self.edits_changed.emit()
-
-    def set_item_number(self, where: str, at: int, width: int, value: int) -> None:
-        edit = self._picked_item()
-        if edit is None or self._building:
-            return
-        mi.set_number(edit.item, where, at, width, int(value))
-        if self.card is not None:
-            self.card.status(self._item_problems(edit))
-        self.edits_changed.emit()
-
-    def set_item_formula(self, value) -> None:
-        """(1.27.0) A weapon's formula: the row under it its Inflict Status or the spell it casts as the formula has
-        it, its UI values with it."""
-        edit = self._picked_item()
-        if edit is None or self._building or value is None:
-            return
-        mi.set_formula(edit.item, int(value))
-        self._fill_inflict(edit.item)
-        self._show_ui_words(edit.item)
-        if self.card is not None:
-            self.card.status(self._item_problems(edit))
-        self.edits_changed.emit()
-
-    def set_item_look(self, number) -> None:
-        """(1.27.0) A weapon's look in battle that of the game's weapon `number` (its picture and palettes), its
-        palette's choice following it; (5 November) a shield's that of the game's shield `number`."""
-        edit = self._picked_item()
-        if edit is None or self._building or not number:
-            return
-        game, _why = self.game_items()
-        if game is None:
-            return
-        looks = dict(mi.looks_of(game, edit.item.record[mi.CATEGORY_AT]))
-        if int(number) not in looks:
-            return
-        mi.set_battle_look(edit.item, looks[int(number)])
-        # (Zodi after test 62) Its battle sprite, its look and their words drawn again.
-        self._refresh_item_pictures(edit.item)
-        self.edits_changed.emit()
-
-    def set_item_palette(self, palette) -> None:
-        """(1.27.0) A weapon's (or, 5 November, a shield's) palette in battle (0 to 15), its picture as it was."""
-        edit = self._picked_item()
-        if edit is None or self._building or palette is None:
-            return
-        mi.set_battle_palette(edit.item, int(palette))
-        # (Zodi after test 62: "changing a new items palette ... does not update its appearance in the preview")
-        self._refresh_item_pictures(edit.item)
-        self.edits_changed.emit()
-
-    def set_item_inflict(self, value) -> None:
-        edit = self._picked_item()
-        if edit is None or self._building or value is None:
-            return
-        mi.set_inflict(edit.item, int(value))
-        self.edits_changed.emit()
-
-    def set_item_elements(self, names: list) -> None:
-        """(1.27.0) A weapon's elements."""
-        edit = self._picked_item()
-        if edit is None or self._building:
-            return
-        mi.set_weapon_elements(edit.item, names)
-        self.edits_changed.emit()
-
-    def change_item_ticks(self, kind: str, which: int) -> None:
-        """(1.27.0) One of its bonus row's sets ticked in a dialog (`kind` "status": the three sets of statuses,
-        "element": the five of elements); a status the game names Unused kept as it was."""
-        edit = self._picked_item()
-        if edit is None:
-            return
-        statuses = kind == "status"
-        label = (BONUS_STATUS_LABELS if statuses else BONUS_ELEMENT_LABELS)[which]
-        now = mi.bonus_statuses(edit.item, which) if statuses else mi.bonus_elements(edit.item, which)
-        names = [n for n in c.STATUS_FLAGS if not n.startswith("Unused")] if statuses else list(c.ELEMENT_FLAGS)
-        dialog = TicksDialog(self, TICKS_TITLE.format(item=edit.item.name, label=label),
-                             (STATUS_TICKS_INTRO if statuses else ELEMENT_TICKS_INTRO).format(item=edit.item.name),
-                             names, now, 5 if statuses else 4)
-        answer = self._ask("ticks", lambda: dialog.answer() if dialog.exec() == QDialog.Accepted else None)
-        if answer is None:
-            return
-        if statuses:
-            mi.set_bonus_statuses(edit.item, which, set(answer) | {n for n in now if n.startswith("Unused")})
-        else:
-            mi.set_bonus_elements(edit.item, which, answer)
-        words = self.field_widgets.get(f"item_{kind}_{which}")
-        if words is not None:
-            ticked = mi.bonus_statuses(edit.item, which) if statuses else mi.bonus_elements(edit.item, which)
-            words.setText(TICKED_LINE.format(label=label, names=_listed(_said(ticked)) or TICKED_NONE))
-        if self.card is not None:
-            self.card.status(self._item_problems(edit))
-        self.edits_changed.emit()
-
-    def set_item_town(self, town: int, sold: bool) -> None:
-        """(1.27.0) One of the game's towns' Outfitters selling the item, or not."""
-        edit = self._picked_item()
-        if edit is None or self._building:
-            return
-        towns = set(edit.item.shops)
-        (towns.add if sold else towns.discard)(int(town))
-        mi.set_shops(edit.item, towns)
+        # (His notes of 14 November: renaming made the whole window jitter) The list and the middle's words follow;
+        # nothing is made again.
         self._fill_items()
+        self._item_sheet_words(edit.item)
+        self._item_status()
         self.edits_changed.emit()
 
-    def set_item_shop_point(self, point) -> None:
-        edit = self._picked_item()
-        if edit is None or self._building or point is None:
-            return
-        mi.set_shop_point(edit.item, int(point))
-        self.edits_changed.emit()
+    # -- the middle with the Items tab (14 November, the twenty first session) ------------------------------------
+    # Zodi's "Yes, after the Jobs tab (Recommended)" to the design's `Items_tab_middle_idea.png`, and his note of that
+    # morning: the Items tab "does not really need the world map in the center of the screen". The New Content page's
+    # one rule (`job_tabs`' notes): the list on the left, what it looks like in the middle, its fields in the card on
+    # the right. So the middle shows the item as the game shows it, its textures and battle sprite large, and where it
+    # is sold under them; the card keeps every field it had.
 
-    def set_game_icon(self, number) -> None:
-        """Its icon one of the game's items' (its own, if it had one, put aside)."""
+    def _show_item_middle(self) -> None:
+        """The middle with the Items tab: the item picked as the game shows it, with its fields (`_item_sheet`; his note
+        of 14 November, 19:10: no card), or nothing while none is. Made with the window's painting held, laid out
+        before it is let go (`job_tabs`' `_show_job_middle`)."""
+        old = self.item_sheet
         edit = self._picked_item()
-        if edit is None or self._building or number not in mi.GAME_ITEMS:
-            return
-        edit.item.icon = int(number)
-        edit.icon_png, edit.icon_from = b"", ""
-        edit.small_png, edit.small_from = b"", ""
-        self._items_changed(refill=False)
-
-    def use_game_icon(self) -> None:
-        """(4 November) Use the game's icon: the game's item's icon picked in its list again, its own textures put
-        aside."""
-        edit = self._picked_item()
-        if edit is None or self._building or not edit.icon_png:
-            return
-        self.set_game_icon(self._game_icon_number(edit))
-
-    def export_item_texture(self, which: str) -> None:
-        """(4 November) Export as PNG...: its art or its small icon as it shows it, saved where asked."""
-        from PySide6.QtWidgets import QFileDialog
-        edit = self._picked_item()
-        if edit is None:
-            return
-        image, _why = self._item_texture_image(edit, which)
-        if image is None:
-            return
-        title = ART_TEXTURE_TIP if which == "art" else SPRITE_TEXTURE_TIP
-        path = self._ask("export_texture", lambda: QFileDialog.getSaveFileName(
-            self, EXPORT_TEXTURE_TITLE.format(texture=title, item=edit.item.name),
-            f"{edit.item.name} {title}.png", "PNG image (*.png)")[0])
-        if path:
-            image.save(str(path), "PNG")
-
-    def choose_icon(self) -> None:
-        """Choose: an item's own icon made from any image file, fitted to the game's icon sizes."""
-        from PySide6.QtWidgets import QFileDialog
-        from PIL import Image
-        edit = self._picked_item()
-        if edit is None:
-            return
-        path = self._ask("icon", lambda: QFileDialog.getOpenFileName(
-            self, CHOOSE_ICON_TITLE.format(item=edit.item.name), "", IMAGE_FILES)[0])
-        if not path:
-            return
+        place = 0
+        if old is not None and self._item_sheet_was == self.item_pick:
+            scroll = old.findChild(QScrollArea)
+            place = scroll.verticalScrollBar().value() if scroll is not None else 0
+        self._item_sheet_was = self.item_pick
+        window = self.window()
+        window.setUpdatesEnabled(False)
+        was = self._building
         try:
-            with Image.open(path) as image:
-                edit.icon_png = mi.icon_png(image)
-        except Exception as exc:                                      # noqa: BLE001
-            self._say(CANT_READ_IMAGE.format(problem=exc))
-            return
-        edit.icon_from = Path(path).name
-        self._say("")
-        self._items_changed(refill=False)
-
-    def choose_small_icon(self) -> None:
-        """(1.27.0) Choose: its own small icon (the lists' 48 by 48) made from any image file, apart from its art.
-        (4 November) While it uses the game's icon, the image is its art too (an item's own icon is its art and its
-        small icon together), each fitted to its size."""
-        from PySide6.QtWidgets import QFileDialog
-        from PIL import Image
-        edit = self._picked_item()
-        if edit is None:
-            return
-        path = self._ask("small_icon", lambda: QFileDialog.getOpenFileName(
-            self, CHOOSE_SMALL_TITLE.format(item=edit.item.name), "", IMAGE_FILES)[0])
-        if not path:
-            return
-        try:
-            with Image.open(path) as image:
-                small = mi.icon_png(image, mi.SMALL_ICON_SIZE)
-                art = mi.icon_png(image) if not edit.icon_png else edit.icon_png
-        except Exception as exc:                                      # noqa: BLE001
-            self._say(CANT_READ_IMAGE.format(problem=exc))
-            return
-        if not edit.icon_png:
-            edit.icon_from = Path(path).name
-        edit.icon_png, edit.small_png = art, small
-        edit.small_from = Path(path).name
-        self._say("")
-        self._items_changed(refill=False)
-
-    def small_from_art(self) -> None:
-        """(1.27.0) Use its art: its small icon made from its art again."""
-        edit = self._picked_item()
-        if edit is None or not edit.small_png:
-            return
-        edit.small_png, edit.small_from = b"", ""
-        self._items_changed(refill=False)
-
-    def _show_items_world(self) -> None:
-        """The world map with the Items tab: the towns of the mod's that sell the item picked outlined."""
-        self._want_world()
-        self._show_mod_world()
-        self.world.places = self.place_where()
-        self.world.markers = []
-        self.world.edit_place = self.world.edit_road = self.world.picked = None
-        edit = self._picked_item()
-        towns = pe.towns_selling_item(self.places_store(), edit.item.name) if edit is not None else []
-        self.world.outlined = set(towns)
-        if edit is None:
-            self.world_title.setText(ITEMS_WORLD_TITLE["none"])
-            self.world_hint.setText(PICK_AN_ITEM if self.items_store() else "")
-        else:
-            self.world_title.setText(ITEMS_WORLD_TITLE["item"].format(item=edit.item.name))
-            self.world_hint.setText(ITEMS_WORLD_HINT["towns" if towns else "none"])
-        self.world.update()
+            self._building = True
+            try:
+                # The tab has no card: the fields shown are the middle's.
+                self.field_widgets = {}
+                self.item_sheet_widgets = {}
+                self.item_foot = None
+                self.item_sheet = self._item_sheet(edit) if edit is not None else QWidget()
+            finally:
+                self._building = was
+            self._item_sheet_column.addWidget(self.item_sheet)
+            if old is not None:
+                # Out of the middle at once (not only once Qt deletes it): one sheet shown, never two over each
+                # other, hidden before it loses its parent.
+                self._item_sheet_column.removeWidget(old)
+                retire(old)
+            self.middle.setCurrentWidget(self.item_sheet_holder)
+            jt.settle_sheet(self.item_sheet)
+            scroll = self.item_sheet.findChild(QScrollArea)
+            if place and scroll is not None:
+                bar = scroll.verticalScrollBar()
+                bar.setValue(min(place, bar.maximum()))
+                if bar.value() != place:
+                    QTimer.singleShot(0, lambda b=bar, v=place: b.setValue(v))
+        finally:
+            window.setUpdatesEnabled(True)
 
     # =========================================================================
     # Places and roads (the Places tab: the page's second part)
@@ -5914,6 +6470,8 @@ class SideQuestsPage(QWidget):
         self._centred_on = None
         self._fill_places()
         self._fill_items()
+        self._fill_jobs()
+        self._fill_abilities()
         self._show_card()
         self._show_middle()
 
@@ -6428,12 +6986,12 @@ class SideQuestsPage(QWidget):
 
     def choose_dungeon_art(self) -> None:
         """Choose: a dungeon's own art made from any image file, fitted into 680 x 452."""
-        from PySide6.QtWidgets import QFileDialog
+        from .. import export_dialogs
         place = self._dungeon()
         if place is None:
             return
-        path = self._ask("art", lambda: QFileDialog.getOpenFileName(
-            self, CHOOSE_ART_TITLE.format(place=place.name), "", IMAGE_FILES)[0])
+        path = self._ask("art", lambda: export_dialogs.open_file(
+            self, CHOOSE_ART_TITLE.format(place=place.name), IMAGE_FILES))
         if not path:
             return
         try:
@@ -6762,12 +7320,12 @@ class SideQuestsPage(QWidget):
 
     def choose_art(self) -> None:
         """Choose: a town's menu's own art made from any image file, fitted into 680 x 452."""
-        from PySide6.QtWidgets import QFileDialog
+        from .. import export_dialogs
         place = self._town()
         if place is None or place.menu is None:
             return
-        path = self._ask("art", lambda: QFileDialog.getOpenFileName(
-            self, CHOOSE_ART_TITLE.format(place=place.name), "", IMAGE_FILES)[0])
+        path = self._ask("art", lambda: export_dialogs.open_file(
+            self, CHOOSE_ART_TITLE.format(place=place.name), IMAGE_FILES))
         if not path:
             return
         try:
@@ -7226,12 +7784,12 @@ class SideQuestsPage(QWidget):
 
     def choose_texture(self) -> None:
         """Choose: a town's own texture made from any image file, fitted into the game's town textures' size."""
-        from PySide6.QtWidgets import QFileDialog
+        from .. import export_dialogs
         place = self._picked_place()
         if place is None:
             return
-        path = self._ask("texture", lambda: QFileDialog.getOpenFileName(
-            self, CHOOSE_TITLE.format(place=place.name), "", IMAGE_FILES)[0])
+        path = self._ask("texture", lambda: export_dialogs.open_file(
+            self, CHOOSE_TITLE.format(place=place.name), IMAGE_FILES))
         if not path:
             return
         try:
@@ -7522,4 +8080,7 @@ class SideQuestsPage(QWidget):
         self.place_message.setVisible(bool(text))
         self.item_message.setText(text)
         self.item_message.setVisible(bool(text))
+        for message in (self.job_message, self.ability_message):
+            message.setText(text)
+            message.setVisible(bool(text))
 

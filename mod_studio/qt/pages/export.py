@@ -44,6 +44,7 @@ from ..widgets.field_rows import CollapsibleSection
 from ..nxd_export import NxdExportWorker
 from ..widgets.flow_layout import FlowLayout
 from ..widgets.mod_contents import ModContentsPane
+from .. import export_dialogs
 from ..workers import Worker, run_in_thread
 from ..widgets.actions import reveal_in_file_manager, zip_folder
 
@@ -61,6 +62,10 @@ CATEGORY_SUGGESTIONS = ["gameplay", "graphics", "audio", "characters",
 SETUP_REMOVED = "Removed {file}: no event's setup is changed in this mod now."
 #: (1.28.0) Said when the game's weapons' looks file is taken out of the mod.
 LOOKS_REMOVED = "Removed {file}: the mod changes no game weapon's look now."
+#: (16 November 2026) Said when the mod's units' and treasures' file, and its asking for War of the Lions' items, are
+#: taken out of the mod.
+BATTLES_REMOVED = "Removed {file}: the mod has no unit or buried treasure of its own now."
+LIONS_REMOVED = "Removed {file}: the mod names none of War of the Lions' items now."
 HELPER_PUT = ("Put {name} beside your mod, in {folder}: as the game starts it applies your mod's event setup "
               "and gives its side quests, quest maps and places numbers of their own, and Reloaded-II loads it "
               "with your mod.")
@@ -82,8 +87,53 @@ PLACES_LINE = ("Places ({places}) and roads ({roads}) on the world map, their te
 #: (1.26.0) The mod's own items (`state.items`), in the summary of what the mod holds.
 ITEMS_LINE = ("Items ({folder}), their own icons' textures beside the game's item icons, which Mod Studio Framework "
               "gives numbers of their own")
+#: (14 November) The mod's own jobs and abilities (`state.mod_jobs`, `state.mod_abilities`), in the summary of what the
+#: mod holds.
+JOBS_LINE = "Jobs ({jobs}) and abilities ({abilities}), which Mod Studio Framework gives numbers of their own"
 #: (1.28.0) The game's own weapons' looks in battle (`state.item_looks`), in the summary of what the mod holds.
 LOOKS_LINE = "The game's weapons' looks in battle ({file}), which Mod Studio Framework gives the game as it starts"
+#: (16 November 2026) The mod's units of the game's battles and its buried treasures (`state.battle_units`,
+#: `state.battle_treasures`), and War of the Lions' items where the mod names or changes one (`wotl_items.asked_by`),
+#: in the summary of what the mod holds.
+BATTLES_LINE = "Units and buried treasures ({file}), which Mod Studio Framework gives the game as a battle loads"
+LIONS_LINE = "War of the Lions' items ({file}), which Mod Studio Framework gives the game"
+#: (17 November 2026) The mod's own pictures of the game's unit sprites (`state.sprite_art`: the Textures page).
+SPRITES_LINE = "Unit sprites ({folder}/)"
+BIG_SPRITES_LINE = "Unit sprites' bigger pictures ({file}), which Mod Studio Framework shows in the game's place"
+#: (17 November 2026) The mod's jobs' figures given bigger on the New Content page's Jobs tab (`mod_jobs.JobArt.big`),
+#: named in the same file.
+BIG_FIGURES_LINE = "Jobs' bigger figures ({file}), which Mod Studio Framework shows in the game's place"
+#: (17 November 2026) The mod's own pictures of the game's effects (`state.effect_art`: the Textures page), each the
+#: effect's own file written again.
+EFFECTS_LINE = "Effects ({folder}/)"
+#: (The twenty ninth session) Their bigger pictures, in the unit sprites' words.
+BIG_EFFECTS_LINE = "Effects' bigger pictures ({file}), which Mod Studio Framework shows in the game's place"
+#: (The thirtieth session) The same three where any of them is of more colors (`more_line`): what they are, and where
+#: the game draws them in the palette each was given in.
+OWN_SPRITES_LINE = ("Unit sprites' {kinds} ({file}), which Mod Studio Framework shows in the game's place, in their own "
+                    "colors where the game draws them in the palette each was given in")
+OWN_FIGURES_LINE = ("Jobs' {kinds} ({file}), which Mod Studio Framework shows in the game's place, in their own colors "
+                    "where the game draws them in palette 0")
+OWN_EFFECTS_LINE = ("Effects' {kinds} ({file}), which Mod Studio Framework shows in the game's place, in their "
+                    "own colors where the game draws them in the palette each was given in")
+#: (The thirty fourth session) The summons' own sheets (`effect_pictures.summon_file`), which the enhanced look draws.
+SUMMONS_LINE = "Summons' sheets ({folder}/), which the enhanced look draws in the place of their effects' pictures"
+SUMMONS_LOG = "Writing {n} effect picture(s), {m} of them a summon's with the sheet the enhanced look draws..."
+SUMMONS_BIG_LOG = "Writing {n} summon sheet(s) for Mod Studio Framework, bigger or in more colors..."
+
+
+def more_kinds(bigger: bool, figures: bool = False) -> str:
+    """(The thirtieth session) What a page's pictures for Mod Studio Framework are where any is of more colors."""
+    if figures:
+        return "bigger figures and figures of more colors" if bigger else "figures of more colors"
+    return "bigger pictures and pictures of more colors" if bigger else "pictures of more colors"
+
+
+def wotl_asked(state) -> bool:
+    """(16 November 2026) Whether the mod asks Mod Studio Framework for War of the Lions' items
+    (`wotl_items.asked_by`): it names one on a unit or a treasure, or has its own version of one."""
+    from ... import wotl_items as wl
+    return wl.asked_by(state)
 
 
 def copy_into(source, destination) -> None:
@@ -150,8 +200,28 @@ class AssetExportWorker(Worker):
                  uib_edits=None, utexpt_edits=None, map_edits=None,
                  own_files=None, script_edits=None, map_terrains=None, map_copies=None,
                  map_animations=None, quest_maps=None, sqlite_path=None, mod_id="", quests=None, places=None,
-                 roads=None, items=None, item_looks=None):
+                 roads=None, items=None, item_looks=None, jobs=None, abilities=None, battle_units=None,
+                 battle_treasures=None, wotl_items=None, wotl_asked=False, wotl_art=None, sprite_art=None,
+                 effect_art=None):
         super().__init__()
+        # (17 November 2026) The mod's own pictures of the game's effects (`state.effect_art`: the Textures page):
+        # each the effect's whole file, written as the mod's own file of that effect.
+        self.effect_art = dict(effect_art or {})
+        # (17 November 2026) The mod's own pictures of the game's unit sprites (`state.sprite_art`: the Textures
+        # page): each one's two entries as the mod loader takes them, a bigger picture's sheets besides.
+        self.sprite_art = dict(sprite_art or {})
+        # (16 November 2026) The mod's units of the game's battles and its buried treasures (`state.battle_units`,
+        # `state.battle_treasures`: the Encounters and Treasure Hunter pages), written as the mod's
+        # `ModStudioBattles.json` (`mod_battles.write`); and its asking for War of the Lions' items with its own
+        # versions of any (`state.wotl_items`, `wotl_items.asked_by`), its `ModStudioWotLItems.json`.
+        import copy as _copy
+        self.battle_units = dict(battle_units or {})
+        self.battle_treasures = {key: dict(value) for key, value in (battle_treasures or {}).items()}
+        self.wotl_items = _copy.deepcopy(dict(wotl_items or {}))
+        self.wotl_asked = bool(wotl_asked) or bool(self.wotl_items)
+        # (The twenty fifth session) A picture of the mod's own for any of them (`state.wotl_art`: the Items page),
+        # its four texture files written beside the asking file, named of the mod and the item.
+        self.wotl_art = _copy.deepcopy(dict(wotl_art or {}))
         # The mod's own places and roads (`state.places`, `state.roads`: the Side Quests page's Places), each
         # written into the mod's `ModStudioPlaces/` and `ModStudioRoads/` with its textures (`place_edits`).
         from ... import mod_items as mi
@@ -160,6 +230,12 @@ class AssetExportWorker(Worker):
         # (1.26.0) The mod's own items (`state.items`: the Side Quests page's Items), each written into the mod's
         # `ModStudioItems/` with its own icon's textures (`mod_items.write_item`).
         self.items = mi.copied(items or {})
+        # (14 November) The mod's own jobs and abilities (`state.mod_jobs`, `state.mod_abilities`: the New Content
+        # page's Jobs and Abilities), each written into the mod's `ModStudioJobs/` and `ModStudioAbilities/`
+        # (`mod_jobs.write_job`, `write_ability`).
+        from ... import mod_jobs as mj
+        self.jobs = mj.copied(jobs or {})
+        self.abilities = mj.copied(abilities or {})
         # (1.28.0) The game's own weapons' looks in battle (`state.item_looks`: the Items page's In battle), written
         # as the mod's `ModStudioItemLooks.json` (`mod_items.write_looks`).
         self.item_looks = {int(n): bytes(pair) for n, pair in (item_looks or {}).items()}
@@ -235,7 +311,11 @@ class AssetExportWorker(Worker):
                   "quests": 0, "quest_total": len(self.quests),
                   "places": 0, "place_total": len(self.places) + len(self.roads),
                   "items": 0, "item_total": len(self.items),
+                  "jobs": 0, "job_total": len(self.jobs),
+                  "abilities": 0, "ability_total": len(self.abilities),
                   "looks": 0, "look_total": len(self.item_looks),
+                  "units": 0, "unit_total": sum(1 for e in self.battle_units.values() if e is not None and e.changes())
+                  + sum(1 for t in self.battle_treasures.values() if t),
                   "scripts": 0, "script_total": len(self.script_edits),
                   "carried": 0,
                   "carried_total": len(self.other_file_replacements),
@@ -487,8 +567,18 @@ class AssetExportWorker(Worker):
         self._write_places(result)
         # (1.26.0) Items: each a folder of the mod's own (`ModStudioItems/<folder>/`) and its own icon's textures.
         self._write_items(result)
+        # (14 November) Jobs and abilities: each a folder of the mod's own (`ModStudioJobs/<folder>/`,
+        # `ModStudioAbilities/<folder>/`).
+        self._write_jobs(result)
         # (1.28.0) The game's weapons' looks in battle: the mod's ModStudioItemLooks.json.
         self._write_looks(result)
+        # (16 November 2026) Its units of the game's battles and its buried treasures: the mod's
+        # ModStudioBattles.json; its asking for War of the Lions' items: its ModStudioWotLItems.json.
+        self._write_battles(result)
+        # (17 November 2026) Its own pictures of the game's unit sprites.
+        self._write_sprites(result)
+        # (17 November 2026) Its own pictures of the game's effects, after the files carried through.
+        self._write_effects(result)
 
         # Side quests: each a folder of the mod's own (`ModStudioQuests/<folder>/`) and its words files,
         # after the files carried through so nothing carried writes over them; one taken out of the mod since
@@ -714,6 +804,91 @@ class AssetExportWorker(Worker):
             except Exception as exc:                          # noqa: BLE001
                 result["errors"].append(f"the item {edit.item.name}: {exc}")
 
+    def _write_jobs(self, result: dict) -> None:
+        """
+        (14 November) The mod's own jobs and abilities (`mod_jobs.write_job`,
+        `write_ability`): each one's file written afresh in its folder,
+        `ModStudioJobs/<folder>/job.json` and
+        `ModStudioAbilities/<folder>/ability.json`. A file an earlier export
+        wrote for one that isn't the mod's now (taken out on the New Content
+        page) goes first, with whatever else of its folder the mod doesn't
+        carry (its look's textures, an earlier export's) and the folder
+        itself once empty, unless the mod carries that file as one of its own
+        (one Mod Studio couldn't read, kept as it is). (The Jobs page's second
+        part) A job's own art is the job's, as an item's own icon is: the art
+        files an earlier export's job file names (its look's textures in its
+        folder, its part lists and their textures) go first, then each job is
+        written with its own art, named of the mod and the job
+        (`job_looks.written_job`, `art_files`).
+        """
+        from ... import helper_json as hj
+        from ... import job_looks as jl
+        from ... import mod_jobs as mj
+        from ... import unit_sprites as us
+
+        # (His answer of 16 November to test 124) A job's own textures written with the lines the game would draw
+        # past a frame's pieces cleared, for the frames they are drawn with, read from the unpacked game.
+        frames_of = jl.frames_reader(us.UnitSprites(self.game_dir)) if self.game_dir is not None else None
+        # (17 November 2026) Kept for the jobs' bigger figures, written with the unit sprites' (`_write_sprites`).
+        self._frames_of = frames_of
+
+        def write_job(root, edit):
+            written = mj.write_job(root, edit, self.mod_id, frames_of)
+            for who in jl.WHO:
+                if who in edit.art.textures:
+                    edges = jl.cleared(edit, who, frames_of)[2]
+                    if edges is not None and edges.cleared:
+                        self.log.emit(jl.EDGES_LOG.format(
+                            job=edit.job.name, who=("man's", "woman's")[jl.WHO.index(who)], n=f"{edges.cleared:,}",
+                            trimmed=jl.EDGES_LOG_TRIMMED.format(m=f"{edges.trimmed:,}") if edges.trimmed else ""))
+            return written
+
+        for folder_name, file_name, edits, write, what, named, counted in (
+                (mj.FOLDER, mj.FILE_NAME, self.jobs, write_job, "job", lambda e: e.job.name, "jobs"),
+                (mj.ABILITY_FOLDER, mj.ABILITY_FILE, self.abilities, mj.write_ability, "ability",
+                 lambda e: e.ability.name, "abilities")):
+            root = self.mod_root / folder_name
+            carried = {rel.split("/")[1].lower() for rel in self.own_files
+                       if rel.lower().startswith(folder_name.lower() + "/") and rel.count("/") == 2
+                       and rel.lower().endswith("/" + file_name)}
+            kept = {rel.lower() for rel in self.own_files}
+            if root.is_dir():
+                for folder in sorted(root.iterdir()):
+                    file = folder / file_name
+                    if not folder.is_dir() or not file.is_file() or folder.name.lower() in carried:
+                        continue
+                    try:
+                        if what == "job":
+                            try:
+                                old, _problems = mj.read_job_text(hj.read_text(file), folder.name)
+                            except (OSError, ValueError):
+                                old = None
+                            for rel in (jl.files_named(self.mod_root, old, folder.name) if old is not None else []):
+                                if rel.lower() not in kept and (self.mod_root / rel).is_file():
+                                    (self.mod_root / rel).unlink()
+                        if folder.name in edits:
+                            for left in sorted(folder.iterdir()):
+                                if left.is_file() and f"{folder_name}/{folder.name}/{left.name}".lower() not in kept:
+                                    left.unlink()
+                            continue
+                        file.unlink()
+                        for left in sorted(folder.iterdir()):
+                            if left.is_file() and f"{folder_name}/{folder.name}/{left.name}".lower() not in kept:
+                                left.unlink()
+                        if not any(folder.iterdir()):
+                            folder.rmdir()
+                        self.log.emit(f"Removed {folder_name}/{folder.name}: it isn't one of the mod's "
+                                      f"{'jobs' if what == 'job' else 'abilities'} now.")
+                    except OSError as exc:
+                        result["errors"].append(f"{folder_name}/{folder.name}: {exc}")
+            for folder, edit in edits.items():
+                self.log.emit(f"Writing the {what} {named(edit)}...")
+                try:
+                    write(self.mod_root, edit)
+                    result[counted] += 1
+                except Exception as exc:                          # noqa: BLE001
+                    result["errors"].append(f"the {what} {named(edit)}: {exc}")
+
     def _write_looks(self, result: dict) -> None:
         """
         (1.28.0) The game's own weapons' looks in battle (`mod_items.write_looks`): the mod's
@@ -733,6 +908,105 @@ class AssetExportWorker(Worker):
                 self.log.emit(LOOKS_REMOVED.format(file=mi.LOOKS_FILE))
         except OSError as exc:
             result["errors"].append(f"{mi.LOOKS_FILE}: {exc}")
+
+    def _write_battles(self, result: dict) -> None:
+        """
+        (16 November 2026) The mod's units of the game's battles and its buried treasures (`mod_battles.write`): the
+        mod's `ModStudioBattles.json` written afresh, or taken away when the mod has none now; and its asking for War
+        of the Lions' items (`wotl_items.write`), its `ModStudioWotLItems.json`, with its own versions of any. Each
+        left alone where the mod carries it as a file of its own (one Mod Studio couldn't read, kept as it is).
+        """
+        from ... import mod_battles as mb
+        from ... import wotl_items as wl
+        carried = {rel.lower() for rel in self.own_files}
+        if mb.has_any(self.battle_units, self.battle_treasures) or mb.FILE.lower() not in carried:
+            try:
+                had = (self.mod_root / mb.FILE).is_file()
+                written = mb.write(self.mod_root, self.battle_units, self.battle_treasures)
+                if written:
+                    units = sum(1 for e in self.battle_units.values() if e is not None and e.changes())
+                    buried = sum(1 for t in self.battle_treasures.values() if t)
+                    self.log.emit(f"Writing {units} unit(s) of the game's battles and {buried} buried treasure(s)...")
+                    result["units"] = units + buried
+                elif had:
+                    self.log.emit(BATTLES_REMOVED.format(file=mb.FILE))
+            except OSError as exc:
+                result["errors"].append(f"{mb.FILE}: {exc}")
+        if self.wotl_asked or wl.FILE.lower() not in carried:
+            try:
+                had = (self.mod_root / wl.FILE).is_file()
+                written = wl.write(self.mod_root, self.wotl_asked, self.wotl_items, self.wotl_art, self.mod_id)
+                if written:
+                    self.log.emit("Asking Mod Studio Framework for War of the Lions' items"
+                                  + (f", {len(self.wotl_items)} of them as the mod has them..." if self.wotl_items
+                                     else "..."))
+                elif had:
+                    self.log.emit(LIONS_REMOVED.format(file=wl.FILE))
+            except OSError as exc:
+                result["errors"].append(f"{wl.FILE}: {exc}")
+
+    def _write_sprites(self, result: dict) -> None:
+        """
+        (17 November 2026) The mod's own pictures of the game's unit sprites (`sprite_textures.write`): each one's
+        two entries of g2d.dat as the mod loader takes them, and for a bigger picture its sheets and the mod's
+        `ModStudioTextures.json`; what an earlier export wrote of them and this one doesn't is taken away. A file
+        the mod carries as its own is left alone. The mod's jobs' figures given bigger (the New Content page's Jobs
+        tab: `job_looks.big_sheets`) are named in the same file, each written with the lines cleared that its
+        textures of the game's size are written with (`_write_jobs`).
+        """
+        from ... import effect_pictures as ep
+        from ... import job_looks as jl
+        from ... import sprite_textures as st
+        from ... import unit_sprites as us
+        try:
+            figures = jl.big_sheets(self.jobs, getattr(self, "_frames_of", None))
+            # (The twenty ninth session) The effects' bigger pictures are named in the same file; (the thirty fourth
+            # session) and the summons' own sheets bigger or of more colors, by their entries of g2d.dat.
+            effects = ep.big_sheets(self.effect_art)
+            summons = ep.summon_sheets(self.effect_art)
+            st.write(self.mod_root, self.sprite_art, us.read_table(), carried=self.own_files, jobs=figures,
+                     effects=effects, summons=summons)
+        except OSError as exc:
+            result["errors"].append(f"{st.FILE}: {exc}")
+            return
+        if summons:
+            self.log.emit(SUMMONS_BIG_LOG.format(n=len(summons)))
+        if figures:
+            self.log.emit(f"Writing {len(figures) // 2} bigger figure(s) or figure(s) of more colors of the mod's jobs..."
+                          if any(jl.has_own(edit.art, who) for edit in (self.jobs or {}).values() for who in jl.WHO)
+                          else f"Writing {len(figures) // 2} bigger figure(s) of the mod's jobs...")
+        if effects:
+            more = sum(1 for own in (self.effect_art or {}).values() if own is not None and own.has_own)
+            self.log.emit(f"Writing {len(effects)} effect picture(s) for Mod Studio Framework, {more} of them in more "
+                          f"colors..." if more else f"Writing {len(effects)} bigger effect picture(s)...")
+        if self.sprite_art:
+            bigger = sum(1 for own in self.sprite_art.values() if own is not None and own.is_big)
+            more = sum(1 for own in self.sprite_art.values() if own is not None and own.has_own)
+            self.log.emit(f"Writing {len(self.sprite_art)} unit sprite(s)"
+                          + (f", {bigger} of them with a bigger picture" if bigger else "")
+                          + (f", {more} of them in more colors" if more else "") + "...")
+            result["sprites"] = len(self.sprite_art)
+
+    def _write_effects(self, result: dict) -> None:
+        """
+        (17 November 2026) The mod's own pictures of the game's effects (`effect_pictures.write`): each one the
+        effect's own file written again under the mod's `fftpack/effect/`, the game's but for its texture section's
+        colors and pixels. An effect file an earlier export wrote and this one doesn't is taken away; one the mod
+        carries as its own (a file of its effect folder that is no picture's) is left alone.
+        """
+        from ... import effect_pictures as ep
+        carried = [f"FFTIVC/data/{self.mode}/{str(rel)}" for rel in self.other_file_replacements] + list(self.own_files)
+        try:
+            ep.write(self.mod_root, self.effect_art, carried=carried)
+        except OSError as exc:
+            result["errors"].append(f"{ep.FOLDER}: {exc}")
+            return
+        if self.effect_art:
+            summons = sum(1 for number, own in self.effect_art.items()
+                          if own is not None and own.is_summon and ep.is_summon(number))
+            self.log.emit(f"Writing {len(self.effect_art)} effect picture(s)..." if not summons
+                          else SUMMONS_LOG.format(n=len(self.effect_art), m=summons))
+            result["effects"] = len(self.effect_art)
 
     def _write_quests(self, result: dict) -> None:
         """
@@ -1741,7 +2015,9 @@ class ExportPage(QWidget):
         counts = [(len(getattr(self.state, "quests", None) or {}), "quest", "quests"),
                   (len(getattr(self.state, "places", None) or {}), "place", "places"),
                   (len(getattr(self.state, "roads", None) or {}), "road", "roads"),
-                  (len(getattr(self.state, "items", None) or {}), "item", "items")]
+                  (len(getattr(self.state, "items", None) or {}), "item", "items"),
+                  (len(getattr(self.state, "mod_jobs", None) or {}), "job", "jobs"),
+                  (len(getattr(self.state, "mod_abilities", None) or {}), "ability", "abilities")]
         present = [(n, one, many) for n, one, many in counts if n]
         total = sum(n for n, _one, _many in present)
         if len(present) <= 1:
@@ -1825,7 +2101,12 @@ class ExportPage(QWidget):
                              or getattr(self.state, "quests", None)
                              or self.state.has_places()
                              or self.state.has_items()
+                             or self.state.has_mod_jobs()
                              or self.state.has_item_looks()
+                             or self.state.has_battles()
+                             or self.state.has_sprite_art()
+                             or self.state.has_effect_art()
+                             or self._asks_lions()
                              or self.state.has_any_script_edits()
                              or self.state.has_any_setup_edits()
                              or self.state.sound_edits
@@ -1920,9 +2201,48 @@ class ExportPage(QWidget):
         if self.state.has_items():
             from ... import mod_items as mi
             names.append(ITEMS_LINE.format(folder=mi.FOLDER))
+        if self.state.has_mod_jobs():
+            from ... import mod_jobs as mj
+            names.append(JOBS_LINE.format(jobs=mj.FOLDER, abilities=mj.ABILITY_FOLDER))
         if self.state.has_item_looks():
             from ... import mod_items as mi
             names.append(LOOKS_LINE.format(file=mi.LOOKS_FILE))
+        if self.state.has_battles():
+            from ... import mod_battles as mb
+            names.append(BATTLES_LINE.format(file=mb.FILE))
+        if self._asks_lions():
+            from ... import wotl_items as wl
+            names.append(LIONS_LINE.format(file=wl.FILE))
+        if self.state.has_sprite_art():
+            from ... import sprite_textures as st
+            names.append(SPRITES_LINE.format(folder=st.G2D_FOLDER.split("/", 3)[-1]))
+            art = [own for own in (self.state.sprite_art or {}).values() if own is not None]
+            if any(own.has_own for own in art):
+                names.append(OWN_SPRITES_LINE.format(kinds=more_kinds(any(own.is_big for own in art)), file=st.FILE))
+            elif self.state.has_big_sprites():
+                names.append(BIG_SPRITES_LINE.format(file=st.FILE))
+        if self.state.has_big_figures():
+            from ... import job_looks as jl
+            from ... import sprite_textures as st
+            jobs = list((getattr(self.state, "mod_jobs", None) or {}).values())
+            if any(jl.has_own(edit.art, who) for edit in jobs for who in jl.WHO):
+                bigger = any(who in edit.art.big and who in edit.art.textures for edit in jobs for who in jl.WHO)
+                names.append(OWN_FIGURES_LINE.format(kinds=more_kinds(bigger, figures=True), file=st.FILE))
+            else:
+                names.append(BIG_FIGURES_LINE.format(file=st.FILE))
+        if self.state.has_effect_art():
+            from ... import effect_pictures as ep
+            names.append(EFFECTS_LINE.format(folder=ep.FOLDER.split("/", 3)[-1]))
+            art = [own for own in (self.state.effect_art or {}).values() if own is not None]
+            if any(own.has_own for own in art):
+                from ... import sprite_textures as st
+                names.append(OWN_EFFECTS_LINE.format(kinds=more_kinds(any(own.times > 1 for own in art)), file=st.FILE))
+            elif self.state.has_big_effects():
+                from ... import sprite_textures as st
+                names.append(BIG_EFFECTS_LINE.format(file=st.FILE))
+            if any(own.is_summon for number, own in (self.state.effect_art or {}).items()
+                   if own is not None and ep.is_summon(number)):
+                names.append(SUMMONS_LINE.format(folder=ep.G2D_FOLDER.split("/", 3)[-1]))
         if self.state.has_any_script_edits():
             names.append("Event scripts (script/)")
         if self.state.has_any_setup_edits():
@@ -1980,12 +2300,28 @@ class ExportPage(QWidget):
                 self._setup_said.append(LOOKS_REMOVED.format(file=mi.LOOKS_FILE))
             except OSError as exc:
                 self._setup_said.append(f"{mi.LOOKS_FILE} couldn't be removed: {exc}")
+        # (16 November 2026) The same for the mod's units' and treasures' file and its asking for War of the Lions'
+        # items, each taken out once the mod has none.
+        from ... import mod_battles as mb
+        from ... import wotl_items as wl
+        for gone, name, said in ((not self.state.has_battles(), mb.FILE, BATTLES_REMOVED),
+                                 (not self._asks_lions(), wl.FILE, LIONS_REMOVED)):
+            left = root / name
+            if (gone and left.is_file()
+                    and not any(rel.lower() == name.lower() for rel in (self.state.mod_own_files or {}))):
+                try:
+                    left.unlink()
+                    self._setup_said.append(said.format(file=name))
+                except OSError as exc:
+                    self._setup_said.append(f"{name} couldn't be removed: {exc}")
         path = root / su.FILE_NAME
         edits = {number: changes for number, changes in (self.state.setup_edits or {}).items() if changes}
         # Quest maps and side quests need the helper too (it gives them their numbers), with or without setup
         # changes.
         quests = (bool(getattr(self.state, "quest_maps", None)) or bool(getattr(self.state, "quests", None))
-                  or self.state.has_places() or self.state.has_items() or self.state.has_item_looks())
+                  or self.state.has_places() or self.state.has_items() or self.state.has_item_looks()
+                  or self.state.has_mod_jobs() or self.state.has_battles() or self._asks_lions()
+                  or self.state.has_big_sprites() or self.state.has_big_effects())
         if not edits:
             if path.is_file():
                 try:
@@ -2249,8 +2585,17 @@ class ExportPage(QWidget):
                     or bool(getattr(state, "quests", None))
                     or state.has_places()
                     or state.has_items()
+                    or state.has_mod_jobs()
                     or state.has_item_looks()
+                    or state.has_battles()
+                    or state.has_sprite_art()
+                    or state.has_effect_art()
+                    or wotl_asked(state)
                     or state.has_any_script_edits())
+
+    def _asks_lions(self) -> bool:
+        """(16 November 2026) Whether the mod asks Mod Studio Framework for War of the Lions' items (`wotl_asked`)."""
+        return wotl_asked(self.state)
 
     def _nxd_backed_edit_count(self) -> int:
         """
@@ -2408,7 +2753,7 @@ class ExportPage(QWidget):
     def browse_output(self, _checked=False, path: str | None = None) -> None:
         if path is None:
             path = QFileDialog.getExistingDirectory(
-                self, "Where should the mod folder go?")
+                self, "Where should the mod folder go?", str(export_dialogs.near(self.output_field.text())))
         if path:
             self.output_field.setText(path)
             self.output_hint.setText("")
@@ -2564,7 +2909,9 @@ class ExportPage(QWidget):
             # among the dependencies, with where Reloaded-II fetches it.
             event_setup=(self.state.has_any_setup_edits() or bool(getattr(self.state, "quest_maps", None))
                          or bool(getattr(self.state, "quests", None)) or self.state.has_places()
-                         or self.state.has_items() or self.state.has_item_looks()),
+                         or self.state.has_items() or self.state.has_item_looks()
+                         or self.state.has_mod_jobs() or self.state.has_battles() or self._asks_lions()
+                         or self.state.has_big_sprites() or self.state.has_big_effects()),
         )
 
     def _extra_table_files(self) -> dict:
@@ -2777,7 +3124,16 @@ class ExportPage(QWidget):
                 places=getattr(self.state, "places", None),
                 roads=getattr(self.state, "roads", None),
                 items=getattr(self.state, "items", None),
-                item_looks=getattr(self.state, "item_looks", None))
+                item_looks=getattr(self.state, "item_looks", None),
+                jobs=getattr(self.state, "mod_jobs", None),
+                abilities=getattr(self.state, "mod_abilities", None),
+                battle_units=getattr(self.state, "battle_units", None),
+                battle_treasures=getattr(self.state, "battle_treasures", None),
+                wotl_items=getattr(self.state, "wotl_items", None),
+                wotl_art=getattr(self.state, "wotl_art", None),
+                sprite_art=getattr(self.state, "sprite_art", None),
+                effect_art=getattr(self.state, "effect_art", None),
+                wotl_asked=self._asks_lions())
             self._thread = run_in_thread(
                 worker, on_finished=self._assets_done,
                 on_failed=self._assets_failed, on_log=self._log)
@@ -2886,9 +3242,17 @@ class ExportPage(QWidget):
         if result.get("item_total"):
             parts.append(f"{result.get('items', 0)} of "
                          f"{result['item_total']} item(s)")
+        if result.get("job_total"):
+            parts.append(f"{result.get('jobs', 0)} of "
+                         f"{result['job_total']} job(s)")
+        if result.get("ability_total"):
+            parts.append(f"{result.get('abilities', 0)} of {result['ability_total']} "
+                         f"{'ability' if result['ability_total'] == 1 else 'abilities'}")
         if result.get("look_total"):
             parts.append(f"the looks of {result.get('looks', 0)} of "
                          f"{result['look_total']} game weapon(s)")
+        if result.get("unit_total"):
+            parts.append(f"{result.get('units', 0)} of {result['unit_total']} unit(s) and buried treasure(s)")
         if result.get("script_total"):
             parts.append(f"{result.get('scripts', 0)} of "
                          f"{result['script_total']} event script(s)")
@@ -2915,7 +3279,10 @@ class ExportPage(QWidget):
                  and result.get("quests", 0) == result.get("quest_total", 0)
                  and result.get("places", 0) == result.get("place_total", 0)
                  and result.get("items", 0) == result.get("item_total", 0)
+                 and result.get("jobs", 0) == result.get("job_total", 0)
+                 and result.get("abilities", 0) == result.get("ability_total", 0)
                  and result.get("looks", 0) == result.get("look_total", 0)
+                 and result.get("units", 0) == result.get("unit_total", 0)
                  and result.get("scripts", 0) == result.get("script_total", 0)
                  and result.get("carried", 0) == result.get("carried_total", 0)
                  and result.get("own", 0) == result.get("own_total", 0))
@@ -2989,8 +3356,8 @@ class ExportPage(QWidget):
         it.
         """
         if path is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self, "Choose a mod icon", "",
+            path = export_dialogs.open_file(
+                self, "Choose a mod icon",
                 "Images (*.png *.jpg *.jpeg *.bmp)")
         if path:
             self.icon_field.setText(path)

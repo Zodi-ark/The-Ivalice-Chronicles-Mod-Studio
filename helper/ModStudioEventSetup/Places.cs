@@ -333,6 +333,27 @@ namespace ModStudioEventSetup
         /// text, + 0x14C, cleared), which the helper's own text follows. Else said (MissingForNames).</summary>
         public int UnitMade { get; private set; } = -1;
         public List<string> MissingForNames { get; } = new List<string>();
+        /// <summary>(2.0.0, Zodi's third point of 16 November 2026: "override every single 16 unit slot for every
+        /// battle"; dev/research/sidequests/battle_units.py) What a mod's units of any battle need: the game's own
+        /// changes to a battle's units as it loads (0x1EA574: the battle, its block of 16 entries, 16 flags, 16 rows;
+        /// called once, by the battle's load, which sets r9, rcx and r8 again after it). Else said (MissingForUnits).
+        /// </summary>
+        public int UnitOverrides { get; private set; } = -1;
+        public List<string> MissingForUnits { get; } = new List<string>();
+        /// <summary>(2.0.0, his first point: an item past 255 on a unit) What an item past the 255 a byte holds needs on
+        /// a unit: the game's putting of an entry's equipment on its unit (0x277564: the unit, the entry), called once,
+        /// by the unit's making (UnitMade + 0x19D), which sets rdx and rcx again right after it and then works the
+        /// unit's stats out. Else said (MissingForWideItems).</summary>
+        public int UnitEquipment { get; private set; } = -1;
+        public List<string> MissingForWideItems { get; } = new List<string>();
+        /// <summary>(2.0.0, his first point: "for Treasure Hunter") What an item past 255 needs as a map's buried
+        /// treasure: the map's load (0x251584: the map), which copies the map's four treasures (6 bytes each, its items
+        /// words) from the program's table (TreasureTable, 0x783840) to where the battle reads them (TreasuresNow,
+        /// 0xD8DC90). Else said (MissingForTreasures).</summary>
+        public int MapTreasures { get; private set; } = -1;
+        public int TreasureTable { get; private set; } = -1;
+        public int TreasuresNow { get; private set; } = -1;
+        public List<string> MissingForTreasures { get; } = new List<string>();
         /// <summary>(1.34.0) What a mod's road shown and grayed with its places needs (Zodi's choices of 5 November: "Once
         /// both its places show", "Gray with its places"; dev/research/sidequests/road_looks.py): the game's test of a
         /// place shown (0x1DF4F0: variable 512 + the place for places 0 to 42, the remaster's for 44 to 46; found here by
@@ -512,6 +533,9 @@ namespace ModStudioEventSetup
         public bool Rumors => MissingForRumors.Count == 0;
         public bool Rewards => MissingForRewards.Count == 0;
         public bool Names => MissingForNames.Count == 0;
+        public bool Units => MissingForUnits.Count == 0;
+        public bool WideItems => MissingForWideItems.Count == 0;
+        public bool Treasures => MissingForTreasures.Count == 0;
         public bool RoadLooks => MissingForRoadLooks.Count == 0;
         public bool TownMenus => MissingForTownMenus.Count == 0;
         public bool MenuArt => MissingForMenuArt.Count == 0;
@@ -1639,6 +1663,72 @@ namespace ModStudioEventSetup
             places.UnitMade = made;
         }
 
+        /// <summary>(2.0.0) The game's own changes to a battle's units, whole to its second call but its first eight
+        /// instructions (15 bytes, which another mod's hook of 14 bytes would cover): r9 the rows, r8 the flags, rdx the
+        /// block, ecx the battle; its OverrideEntryData sheet (0x60) loaded and a row looked up by the battle and the
+        /// place.</summary>
+        const string UnitOverridesBytes =
+            "40 53 55 56 57 41 56 41 57 48 83 EC 28 33 DB 4D 8B F1 33 FF 49 8B E8 48 8B F2 44 8B F9 48 83 3D ?? ?? ?? ?? "
+            + "00 75 22 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 2B BA 60 00 00 00 E8 ?? ?? ?? ?? 48 89 05 ?? ?? ?? ?? 48 85 C0 "
+            + "74 15 48 8B 0D ?? ?? ?? ?? 44 8B C7 41 8B D7 E8";
+        const int UnitOverridesPrologue = 15;
+        /// <summary>(2.0.0) The putting of an entry's equipment on its unit, whole to its test of the unit's + 6 but its
+        /// first four instructions (16 bytes): rcx the unit, rdx the entry, the right hand's byte (+ 0x15) read.</summary>
+        const string UnitEquipmentBytes =
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 20 48 8B D9 48 8B EA 0F B6 4A 15 BF FF "
+            + "00 00 00 F6 43 06 20";
+        const int UnitEquipmentPrologue = 16;
+        /// <summary>(2.0.0) Where the unit's making calls it (UnitMade + 0x19D), and what follows the call: mov rdx,
+        /// rbp; mov rcx, rbx; call (the unit's stats).</summary>
+        const int UnitEquipmentCall = 0x19D;
+        const string AfterEquipmentBytes = "48 8B D5 48 8B CB E8";
+        /// <summary>(2.0.0) The map's load, whole to its first call but its first five instructions (15 bytes): cx the
+        /// map; the map's treasures (24 bytes at the table + 24 x the map) copied to the battle's.</summary>
+        const string MapTreasuresBytes =
+            "48 89 5C 24 08 57 48 83 EC 20 0F B7 D9 33 D2 48 8D 0D ?? ?? ?? ?? 41 B8 B8 0B 00 00 48 8D 04 5B 0F 10 04 C1 "
+            + "F2 0F 10 4C C1 10 48 8D 0D ?? ?? ?? ?? 0F 29 05 ?? ?? ?? ?? F2 0F 11 0D ?? ?? ?? ?? E8";
+        const int MapTreasuresPrologue = 15, TreasureTableLea = 0x0F, TreasuresNowStore = 0x31, TreasuresNowSecond = 0x38;
+
+        /// <summary>(2.0.0) What a mod's units of any battle, an item past 255 on a unit and one as a buried treasure
+        /// need, each found once as measured; else said, each apart (MissingForUnits, MissingForWideItems,
+        /// MissingForTreasures).</summary>
+        static void FindBattleUnits(ReadOnlySpan<byte> image, List<Section> sections, Places places)
+        {
+            places.UnitOverrides = One(image, sections, UnitOverridesBytes, "the game's own changes to a battle's units",
+                                       places.MissingForUnits, UnitOverridesPrologue);
+            int equipment = One(image, sections, UnitEquipmentBytes, "the putting of an entry's equipment on its unit",
+                                places.MissingForWideItems, UnitEquipmentPrologue);
+            if (equipment >= 0)
+            {
+                int call = places.UnitMade + UnitEquipmentCall;
+                if (places.UnitMade < 0)
+                    places.MissingForWideItems.Add("the game's making of a battle's unit");
+                else if (call + 5 > image.Length || image[call] != 0xE8 || Target(image, call, 5) != equipment
+                         || !At(image, call + 5, Pattern(AfterEquipmentBytes)))
+                    places.MissingForWideItems.Add("the unit's making's call of it (not where measured, or not followed "
+                                                   + "by the unit's stats as measured)");
+                else
+                    places.UnitEquipment = equipment;
+            }
+            int load = One(image, sections, MapTreasuresBytes, "the map's load", places.MissingForTreasures,
+                           MapTreasuresPrologue);
+            if (load >= 0)
+            {
+                int table = Target(image, load + TreasureTableLea, 7);
+                int now = Target(image, load + TreasuresNowStore, 7);
+                int second = Target(image, load + TreasuresNowSecond, 8);
+                if (table < 0 || now < 0 || table + BattleFile.Maps * BattleFile.Tiles * BattleFile.TreasureBytes > image.Length
+                    || second != now + 16)
+                    places.MissingForTreasures.Add("the maps' buried treasures (not copied as measured)");
+                else
+                {
+                    places.MapTreasures = load;
+                    places.TreasureTable = table;
+                    places.TreasuresNow = now;
+                }
+            }
+        }
+
         /// <summary>(1.34.0) The screen's graying of a place as it shows it: its Town row (sheet 0x34, by the place:
         /// mov edx, ebx; mov ecx, 0x34; call x), the row's situation (+ 0x28) tested (call x) when it has one, gray (1)
         /// while it holds.</summary>
@@ -2140,6 +2230,7 @@ namespace ModStudioEventSetup
             FindDungeonLooks(image, sections, places);
             FindRewards(image, sections, places);
             FindNames(image, sections, places);
+            FindBattleUnits(image, sections, places);
             FindRoadLooks(image, sections, places);
             var encounter = Search(image, sections, Pattern(EncounterBytes, EncounterPrologue));
             if (encounter.Count == 1)

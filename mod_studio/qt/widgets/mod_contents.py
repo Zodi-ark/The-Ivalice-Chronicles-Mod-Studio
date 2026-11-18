@@ -291,6 +291,28 @@ class ModContentsPane(QWidget):
                  ".tga is copied as-is; .tex is converted with FF16Tools.",
                  True, self._texture_summary,
                  lambda: bool(state.texture_edits)),
+                # (17 November 2026) His second point of 16 November: the units' sprites replaced on the Textures
+                # page, at the game's size or bigger (under the page that edits them since the twenty eighth
+                # session: his rule, the page first and then its files).
+                ("Unit sprites",
+                 "The mod's own pictures of the game's unit sprites, given on "
+                 "the Textures page: each sprite's two textures as the mod "
+                 "loader takes them (system/ffto/g2d/), and for a bigger "
+                 "picture its sheets in the mod's ModStudioTextures.json, "
+                 "which Mod Studio Framework shows in the game's place at the "
+                 "same size on the screen.",
+                 True, self._sprites_summary,
+                 lambda: state.has_sprite_art()),
+                # (17 November 2026) The same point: the effects' pictures replaced on the Textures page, at the
+                # game's size.
+                ("Effects",
+                 "The mod's own pictures of the game's effects, given on the "
+                 "Textures page: each effect's own file (fftpack/effect/) "
+                 "written again with the mod's picture, every other part of "
+                 "the file the game's; a bigger picture's sheet is named in "
+                 "ModStudioTextures.json, which Mod Studio Framework shows.",
+                 True, self._effects_summary,
+                 lambda: state.has_effect_art()),
             ]),
             ("Sounds", [
                 # Subtitles ship under Sounds because Sounds is where they
@@ -387,6 +409,17 @@ class ModContentsPane(QWidget):
                  "number of its own as the game starts.",
                  True, self._item_summary,
                  lambda: state.has_items()),
+                # (14 November) Zodi's order of 13 November: "the Jobs page".
+                ("Jobs and abilities",
+                 "Each job is a folder of the mod's under ModStudioJobs and each "
+                 "ability one under ModStudioAbilities: a job of its own with a "
+                 "skillset of its own, an action ability of its own. Mod Studio "
+                 "Framework gives each a number of its own as the game starts. A "
+                 "figure given bigger on the Jobs tab is named in the mod's "
+                 "ModStudioTextures.json, and Mod Studio Framework shows it in "
+                 "the game's place at the same size on the screen.",
+                 True, self._job_summary,
+                 lambda: state.has_mod_jobs()),
                 # (1.28.0) Zodi, 3 November, after test 60: "users can also change the vanilla items look and palette".
                 # (5 November) A shield's look as it guards too.
                 ("Weapons' and shields' looks in battle",
@@ -395,6 +428,23 @@ class ModContentsPane(QWidget):
                  "Framework gives each to the game as it starts.",
                  True, self._looks_summary,
                  lambda: state.has_item_looks()),
+                # (16 November 2026) Zodi's third point of that day: "override every single 16 unit slot for every
+                # battle"; and of his first, items past 255 on units and for Treasure Hunter.
+                ("Units and buried treasures",
+                 "The units of the game's battles that the game's table has no "
+                 "row for, the units made in empty places, and the items past "
+                 "255 on units and buried treasures, in the mod's "
+                 "ModStudioBattles.json: Mod Studio Framework gives each to the "
+                 "game as a battle loads.",
+                 True, self._battles_summary,
+                 lambda: state.has_battles()),
+                # (16 November 2026) His first point: War of the Lions' items.
+                ("War of the Lions' items",
+                 "The mod's ModStudioWotLItems.json asks Mod Studio Framework for "
+                 "War of the Lions' 40 items, and holds the mod's own version of "
+                 "each one it changed on the Items page.",
+                 True, self._lions_summary,
+                 lambda: self._asks_lions()),
             ]),
         ])
 
@@ -1087,6 +1137,176 @@ class ModContentsPane(QWidget):
             towns = pe.towns_selling_item(places, item.name) + [mi.GAME_TOWNS[t] for t in sorted(item.shops)]
             sold = f", sold at {', '.join(towns)}" if towns else ", sold at no town yet"
             lines.append(f"{item.name}: {mi.KIND_WORDS[item.kind]}{copied}, {price} gil, {icon}{sold}")
+        return "\n".join(lines)
+
+    def _job_summary(self) -> str:
+        """(14 November) Each job: the game's job it is based on, what unlocks it, its skillset and how many abilities
+        it holds; each ability: the game's ability it is based on, its JP cost and the skillsets that hold it."""
+        from ... import job_looks as jl
+        from ... import mod_jobs as mj
+        from ... import nxd_data
+        jobs = getattr(self.state, "mod_jobs", None) or {}
+        abilities = getattr(self.state, "mod_abilities", None) or {}
+        if not jobs and not abilities:
+            return "No jobs or abilities."
+
+        def names(key: str) -> dict:
+            try:
+                return nxd_data.effective_names(self.state, key, "en")
+            except Exception:                                 # noqa: BLE001
+                return {}
+        job_names, ability_names = names("job"), names("ability")
+        def counted(n: int, one: str, many: str) -> str:
+            return f"{n} {one if n == 1 else many}"
+        lines = [f"{len(jobs)} job(s), each a folder of ModStudioJobs, and "
+                 f"{counted(len(abilities), 'ability', 'abilities')}, each a folder of ModStudioAbilities.", ""]
+        for edit in jobs.values():
+            job = edit.job
+            needs = ", ".join(f"{n.own or job_names.get(n.job) or n.job} at level {n.level}" for n in job.needs)
+            lines.append(f"{job.name}: based on {job_names.get(job.like) or job.like}, "
+                         f"{'unlocked by ' + needs if needs else 'unlocked for every unit'}; its skillset "
+                         f"{job.skillset_name}, {counted(len(job.actions), 'action ability', 'action abilities')} "
+                         f"({len(job.own_actions())} of the mod's own) and "
+                         f"{counted(len(job.others), 'other', 'others')}"
+                         # (17 November 2026) A figure given bigger on the Jobs tab, which the mod's
+                         # ModStudioTextures.json names.
+                         + "".join(f"; its {whose} figure given at {edit.art.big[who][0]} times the game's size"
+                                   for who, whose in (("Man", "male"), ("Woman", "female"))
+                                   if who in edit.art.big and who in edit.art.textures)
+                         # (The thirtieth session) A figure of more colors, its own colors kept for palette 0.
+                         + "".join(f"; its {whose} figure in more colors" for who, whose in (("Man", "male"),
+                                                                                          ("Woman", "female"))
+                                   if jl.has_own(edit.art, who)))
+        for edit in abilities.values():
+            ability = edit.ability
+            held = [e.job.name for e in mj.skillsets_with(jobs, ability.name)]
+            lines.append(f"{ability.name}: an ability based on {ability_names.get(ability.like) or ability.like}, "
+                         f"{mj.jp_cost(ability)} JP, "
+                         f"{'in the skillsets of ' + ', '.join(held) if held else 'in no skillset yet'}")
+        return "\n".join(lines)
+
+    def _asks_lions(self) -> bool:
+        from ... import wotl_items as wl
+        return wl.asked_by(self.state)
+
+    def _battles_summary(self) -> str:
+        """(16 November 2026) Each unit of the game's battles the mod has as its own: its battle and its place, the
+        fields it changes (or that it is a whole unit, made in an empty place), its job of the mod's own and its
+        items past 255; each buried treasure: its map, its tile and its items."""
+        from ... import encounter_names
+        from ... import entd
+        from ... import mod_battles as mb
+        units = {key: edit for key, edit in (getattr(self.state, "battle_units", None) or {}).items()
+                 if edit is not None and edit.changes()}
+        treasures = {key: found for key, found in (getattr(self.state, "battle_treasures", None) or {}).items()
+                     if found}
+        if not units and not treasures:
+            return "No unit or buried treasure of the mod's own."
+        try:
+            names = encounter_names.EncounterNames.load()
+        except Exception:                                     # noqa: BLE001
+            names = None
+        tables = None
+        try:
+            tables = entd.EntdTables.from_folder(getattr(self.state, "nxd_unpack_dir", None))
+        except Exception:                                     # noqa: BLE001
+            tables = None
+        lines = [f"{len(units)} unit(s) and {len(treasures)} buried treasure(s), in {mb.FILE}.", ""]
+        for (battle, slot) in sorted(units):
+            edit = units[(battle, slot)]
+            where = names.label_for(battle) if names is not None else str(battle)
+            if where == str(battle):
+                where = f"Battle {battle}"
+            said = []
+            base = tables.entry(battle, slot) if tables is not None else None
+            if edit.mask == mb.WHOLE:
+                said.append("a whole unit")
+            elif base is not None:
+                fields = mb.changed_fields(base, edit)
+                if fields:
+                    said.append(", ".join(name.replace("_", " ") for name in fields))
+            elif any(edit.mask):
+                said.append("its fields")
+            if edit.job:
+                said.append(f"in {edit.job}")
+            for place, ref in edit.items:
+                said.append(f"{mb.PLACE_WORDS[mb.PLACES.index(place)]}: {self._wide_name(ref)}")
+            lines.append(f"{where}, unit {slot + 1}: {'; '.join(said)}")
+        for (map_number, tile) in sorted(treasures):
+            found = treasures[(map_number, tile)]
+            said = [f"{key.lower()} {self._wide_name(found[key])}" for key in mb.TREASURE_KEYS if key in found]
+            lines.append(f"Map {map_number}, buried treasure {tile + 1}: {', '.join(said)}")
+        return "\n".join(lines)
+
+    def _wide_name(self, ref) -> str:
+        """An item past 255 in words: War of the Lions' by its name, the game's own by its number, the mod's own by
+        its Name."""
+        from ... import wotl_items as wl
+        if isinstance(ref, int):
+            found = wl.fact(ref)
+            return f"{found.name} ({ref})" if found is not None else f"item {ref}"
+        return str(ref)
+
+    def _sprites_summary(self) -> str:
+        """(17 November 2026) Each unit sprite the mod has a picture of: its name, and how many times the game's
+        size a bigger one is."""
+        from ... import reference_names
+        from ... import sprite_textures as st
+        from ... import unit_sprites as us
+        art = getattr(self.state, "sprite_art", None) or {}
+        if not art:
+            return "No unit sprite of the mod's own."
+        names = dict(st.sprite_names(us.read_table(), reference_names.sprite_set_names()))
+        lines = []
+        for number in sorted(art):
+            own = art[number]
+            lines.append(f"{names.get(number, number)}"
+                         + (f": a bigger picture, {own.scale} times the game's size" if own.is_big else "")
+                         # (The thirtieth session) A picture of more colors.
+                         + ((", in more colors" if own.is_big else ": a picture of more colors") if own.has_own else ""))
+        return "\n".join(lines)
+
+    def _effects_summary(self) -> str:
+        """(17 November 2026) Each effect the mod has a picture of: its number and the name of the ability that plays
+        it, as the Textures page lists it, with its file; (the twenty ninth session) and how many times the game's
+        size a bigger one is, as the unit sprites say it."""
+        from ... import effect_files as ef
+        from ... import effect_pictures as ep
+        from ... import reference_names
+        art = getattr(self.state, "effect_art", None) or {}
+        if not art:
+            return "No effect picture of the mod's own."
+        names = dict(ep.effect_names(art, reference_names.effect_names()))
+        return "\n".join(f"{names[number]}: {ef.effect_file_name(number)}"
+                         # (The thirty fourth session) A summon's own sheet, which the enhanced look draws.
+                         + (f" and tex_{ep.summon_entry(number)}.bin" if art[number].is_summon else "")
+                         + (f", a bigger picture, {art[number].times} times the game's size" if art[number].times > 1
+                            else "")
+                         # (The thirtieth session) A picture of more colors.
+                         + ((", in more colors" if art[number].times > 1 else ", a picture of more colors")
+                            if art[number].has_own else "")
+                         for number in sorted(art))
+
+    def _lions_summary(self) -> str:
+        """(16 November 2026) Which of War of the Lions' items the mod names, and which it has its own version of."""
+        from ... import wotl_items as wl
+        named = wl.named_by(self.state)
+        changed = sorted(getattr(self.state, "wotl_items", None) or {})
+        if not named and not changed:
+            return "None of War of the Lions' items named or changed."
+        lines = [f"{wl.FILE} asks Mod Studio Framework for War of the Lions' items.", ""]
+        if named:
+            lines.append("Named on units and buried treasures: "
+                         + ", ".join(f"{wl.fact(n).name} ({n})" for n in named))
+        if changed:
+            lines.append("As the mod has them: " + ", ".join(f"{wl.fact(n).name} ({n})" if wl.fact(n) else str(n)
+                                                             for n in changed))
+        # (The twenty fifth session) Those given a picture of the mod's own on the Items page.
+        pictured = sorted(n for n, own in (getattr(self.state, "wotl_art", None) or {}).items()
+                          if n in changed and own.icon_png)
+        if pictured:
+            lines.append("With a picture of the mod's own: "
+                         + ", ".join(f"{wl.fact(n).name} ({n})" if wl.fact(n) else str(n) for n in pictured))
         return "\n".join(lines)
 
     def _looks_summary(self) -> str:

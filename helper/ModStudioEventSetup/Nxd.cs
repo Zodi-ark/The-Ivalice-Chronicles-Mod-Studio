@@ -147,8 +147,9 @@ namespace ModStudioEventSetup
         /// <summary>A copy of the table with `added` rows, laid out as the game's tables are: every
         /// row it had kept (its bytes where they were, in a copy of the whole file), the new ones
         /// after, each list the game reads made again in key order. Null and why when the table
-        /// can't be read or a new row's keys are taken.</summary>
-        public static byte[]? WithRows(ReadOnlySpan<byte> table, IList<NewRow> added, out string why)
+        /// can't be read or a new row's keys are taken; (1.36.0) with `replace`, a row at keys taken is
+        /// put in place of the one there, whose bytes stay unread in the copy of the file.</summary>
+        public static byte[]? WithRows(ReadOnlySpan<byte> table, IList<NewRow> added, out string why, bool replace = false)
         {
             var rows = Rows(table, out why);
             if (rows == null)
@@ -170,10 +171,14 @@ namespace ModStudioEventSetup
                     why = $"a new row has {added[n].Keys.Length} keys, the table {keys}";
                     return null;
                 }
-                if (!taken.Add(string.Join(",", added[n].Keys)))
+                string key = string.Join(",", added[n].Keys);
+                if (!taken.Add(key))
                 {
-                    why = $"the table already has a row {string.Join(", ", added[n].Keys)}";
-                    return null;
+                    if (!replace || all.RemoveAll(r => r.New < 0 && string.Join(",", r.Keys) == key) != 1)
+                    {
+                        why = $"the table already has a row {string.Join(", ", added[n].Keys)}";
+                        return null;
+                    }
                 }
                 all.Add((added[n].Keys, 0, -1, n));
             }

@@ -251,10 +251,16 @@ def _word(words: dict, name: str, most: int, required: bool):
     return good, value if good else ""
 
 
-def read_item_text(text: str, has_file: Callable[[str], bool]) -> tuple:
+#: (Mod Studio Framework 2.0.0) The story point of an item no shop sells: War of the Lions' own for all 40 of its
+#: items (`WotLItems.NeverSold`: past the game's 16), taken for those items alone (`read_item_text`'s `never_sold`).
+NEVER_SOLD = 20
+
+
+def read_item_text(text: str, has_file: Callable[[str], bool], never_sold: bool = False) -> tuple:
     """(the item, problems) from an `item.json`'s text, checked as the helper checks it (`ItemFile.Read`); the
     item is None when anything is wrong. `has_file` says whether the mod has a file (its path from the mod's
-    folder)."""
+    folder). `never_sold` (2.0.0: one of War of the Lions' items, `wotl_items`): its story point may be
+    `NEVER_SOLD` too."""
     try:
         top = hj.loads(text)
     except ValueError as exc:
@@ -283,9 +289,11 @@ def read_item_text(text: str, has_file: Callable[[str], bool]) -> tuple:
     if (record[FLAGS_AT] & KIND_MASK) != KIND_FLAGS[kind]:
         return None, [f"its Record's type flags (byte 3: {record[FLAGS_AT]}) aren't those of {KIND_WORDS[kind]} "
                       f"({KIND_FLAGS[kind]}, with Rare 2 if it is rare)"]
-    if not 1 <= record[SHOP_AT] <= MOST_SHOP_POINT:
-        return None, [f"its Record's story point the shops sell it from (byte 10) is 1 to {MOST_SHOP_POINT}, not "
-                      f"{record[SHOP_AT]}"]
+    if record[SHOP_AT] < 1 or (record[SHOP_AT] > MOST_SHOP_POINT
+                               and not (never_sold and record[SHOP_AT] == NEVER_SOLD)):
+        return None, [f"its Record's story point the shops sell it from (byte 10) is 1 to {MOST_SHOP_POINT}"
+                      + (f", or {NEVER_SOLD} for an item no shop sells" if never_sold else "")
+                      + f", not {record[SHOP_AT]}"]
     kind_record = _bytes(top, "KindRecord", KIND_BYTES[kind])
     if kind_record is None:
         return None, [f"its KindRecord is the record of {KIND_WORDS[kind]}, {KIND_BYTES[kind]} bytes (each 0 to 255), "
@@ -831,10 +839,12 @@ def shop_point(item: ModItem) -> int:
     return item.record[SHOP_AT]
 
 
-def set_shop_point(item: ModItem, point: int) -> None:
-    """The story point (1 to 16) the shops sell the item from."""
+def set_shop_point(item: ModItem, point: int, never_sold: bool = False) -> None:
+    """The story point (1 to 16) the shops sell the item from; (2.0.0) `never_sold`: or `NEVER_SOLD`, for one of War
+    of the Lions' items (`read_item_text`'s rule of the same name)."""
     raw = bytearray(item.record)
-    raw[SHOP_AT] = max(1, min(int(point), MOST_SHOP_POINT))
+    raw[SHOP_AT] = (NEVER_SOLD if never_sold and int(point) == NEVER_SOLD
+                    else max(1, min(int(point), MOST_SHOP_POINT)))
     item.record = bytes(raw)
 
 
@@ -973,7 +983,12 @@ SWING_PALETTES = (0,) + tuple(range(3, PALETTES))
 
 
 def battle_family(category: int) -> tuple:
-    """The weapon types (their categories, the record's + 5) whose swings look as `category`'s may."""
+    """The weapon types (their categories, the record's + 5) whose swings look as `category`'s may; (the thirty third
+    session) a fell sword's (War of the Lions' type 0x23) the swords', whose frames the game draws it with
+    (`unit_sprites.FELL_SWORD`)."""
+    from .unit_sprites import FELL_SWORD, FELL_SWORD_FRAMES
+    if category == FELL_SWORD:
+        category = FELL_SWORD_FRAMES
     return next((f for f in BATTLE_FAMILIES if category in f), (category,))
 
 

@@ -108,6 +108,10 @@ class JobsPage(RefreshesWhenVisible, QWidget):
         self.text_rows: dict[str, TextFieldRow] = {}
         self._hide_notes = False
         self._hide_unknown = False
+        #: Where the skillset dropdown's names come from (`set_command_names`):
+        #: None until the app gives it, and then the dropdown keeps what
+        #: `set_command_choices` was last given.
+        self._command_names = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 20)
@@ -571,6 +575,27 @@ class JobsPage(RefreshesWhenVisible, QWidget):
         self.command_row.set_choices(id_to_name)
         self._update_command_preview()
 
+    def set_command_names(self, names_for) -> None:
+        """
+        Where the skillset dropdown's names come from: a function of a
+        language giving `{job command id: name}` (the app's
+        `command_choices`), asked again whenever this page comes back on
+        screen or changes language.
+
+        A community report (17 November 2026): "I made a custom job using a
+        custom skillset that was 'unnamed' and the job command still shows
+        'unnamed' even if i gave it a name". The names were given once, from
+        the bundled table, so a skillset named on Job Commands (or in All
+        Game Data) kept its old name here, through every visit and a restart.
+        """
+        self._command_names = names_for
+        self.refresh_command_choices()
+
+    def refresh_command_choices(self) -> None:
+        """The skillset dropdown's names asked for again (`set_command_names`), the choice kept; nothing without a source."""
+        if self._command_names is not None:
+            self.set_command_choices(self._command_names(self.language))
+
     def _update_command_preview(self) -> None:
         """
         Lists what the selected skillset grants.
@@ -579,6 +604,13 @@ class JobsPage(RefreshesWhenVisible, QWidget):
         says so plainly when the table has not been loaded - an empty line
         would read as "this skillset grants nothing", which is a different
         and wrong claim.
+
+        The skillset as the mod has it (17 November 2026, with the names
+        above): its slots as Job Commands has them (`job_command_edits`),
+        and each ability's name as it stands (the `Ability-<lang>` table and
+        any rename typed, as Job Commands' dropdowns name them, else the
+        bundled names). The record alone showed the game's abilities beside
+        a skillset the mod had changed.
         """
         command_id = self.command_row.current_id()
         records = {r.command_id: r for r
@@ -590,9 +622,17 @@ class JobsPage(RefreshesWhenVisible, QWidget):
         if record is None:
             self.command_preview.setText("")
             return
-        names = getattr(self.state, "ability_names", None) or {}
-        granted = [ability_names.resolve_ability_name(i, names)
-                   for i in (record.ability_ids or []) if i]
+        names = dict(self.state.ability_names or {})
+        names.update(nxd_data.effective_names(self.state, "ability", self.language))
+        edited = self.state.job_command_edits.get(command_id, {})
+        granted = []
+        for number, game_value in enumerate(record.ability_ids or [], start=1):
+            try:
+                ability_id = int(edited.get(f"AbilityId{number}", game_value) or 0)
+            except (TypeError, ValueError):
+                ability_id = 0
+            if ability_id:
+                granted.append(ability_names.resolve_ability_name(ability_id, names))
         self.command_preview.setText(
             "Grants: " + ", ".join(granted) if granted
             else "That skillset has no abilities in it.")
@@ -651,7 +691,12 @@ class JobsPage(RefreshesWhenVisible, QWidget):
         `_load_text_rows` for the per-language half, so one call covers both
         stores All Game Data can write. The list is not rebuilt and the
         selection is not moved - see `widgets/visible_refresh.py`.
+
+        The skillset dropdown's names are asked for again first: Job
+        Commands and All Game Data can rename a skillset while this page is
+        away (`set_command_names`).
         """
+        self.refresh_command_choices()
         if self.current_job_id is None:
             return
         self.load_job(self.current_job_id)
@@ -806,8 +851,14 @@ class JobsPage(RefreshesWhenVisible, QWidget):
         """
         ensure_language_loaded(
             self.state, nxd_data.spec_for("job").records_attr, self.language)
+        # The skillsets' names are this language's too, and so are the
+        # abilities' its preview names.
+        ensure_language_loaded(
+            self.state, nxd_data.spec_for("ability").records_attr, self.language)
+        self.refresh_command_choices()
         if self.current_job_id is not None:
             self._load_text_rows(self.current_job_id)
+            self._update_command_preview()
         # The list shows the name in the SELECTED language, so switching
         # language has to relabel it - otherwise German names sit under
         # English rows.

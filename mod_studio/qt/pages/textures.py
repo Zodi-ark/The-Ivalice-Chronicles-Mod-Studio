@@ -29,7 +29,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
-    QPushButton, QSizePolicy, QSplitter, QTreeView, QVBoxLayout, QWidget,
+    QPushButton, QSizePolicy, QSplitter, QStackedWidget, QTreeView, QVBoxLayout, QWidget,
 )
 
 from ... import paths
@@ -43,6 +43,8 @@ from ..widgets import actions
 from ..widgets.marked_tree import MarkedTreeView
 from ..widgets.status_line import StatusLine
 from ..workers import Worker, run_in_thread
+from . import effect_sheets
+from . import sprite_sheets
 
 #: The file tree's width on first show; the editor gets the rest. Measured
 #: against the real game listing with the tree's own font: 99% of texture
@@ -98,6 +100,75 @@ class TexturePathFilter(QSortFilterProxyModel):
         self.setFilterRole(Qt.UserRole)
         self.setFilterCaseSensitivity(Qt.CaseInsensitive)
         self.setRecursiveFilteringEnabled(True)
+
+
+#: How long the search box waits after the last key before it filters the tree, in milliseconds.
+SEARCH_PAUSE_MS = 250
+
+
+class TreeSearch(QObject):
+    """
+    (17 November 2026) A tree's search box, applied when the typing pauses, in one pass.
+
+    Zodi's report of 17 November: "using the search bar on the Textures page often causes Mod Studio to not respond
+    for some time". Measured at the real scale (his unpacked game's 10,011 textures in 196 folders, from his own
+    listing of it, with the 143 unit sprites and the 400 effects): every key filtered the tree at once, and a filter
+    that hid rows of the expanded tree took them away a few at a time, the view laying itself out again and the
+    current row moving each time. The second key of a word took 1 to 6 seconds with nothing selected, and about a
+    minute with a unit sprite or an effect selected ("li" after "l": 57 and 60 seconds). Collapsing the tree first,
+    its drawing held, makes a pass a few tenths of a second whatever is selected (`apply`); and the box waits for
+    the typing to pause (`SEARCH_PAUSE_MS`), so a word typed is one pass. A change made in code (a jump from another
+    tab clearing the box, a check setting its text) is applied at once.
+
+    Qt says a key typed (`textEdited`) before the text's change (`textChanged`), and a change made in code with the
+    second alone; the clear button says the first after its change, which is applied by then.
+    """
+
+    def __init__(self, box: QLineEdit, tree: QTreeView, proxy: QSortFilterProxyModel, pause: int = SEARCH_PAUSE_MS):
+        super().__init__(box)
+        self.box, self.tree, self.proxy = box, tree, proxy
+        #: The text the tree is filtered by now.
+        self.applied = ""
+        #: How many times the tree was filtered (for the checks).
+        self.passes = 0
+        self._typed = False
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(pause)
+        self.timer.timeout.connect(self.apply)
+        box.textEdited.connect(self._edited)
+        box.textChanged.connect(self._changed)
+
+    def _edited(self, text: str) -> None:
+        if text != self.applied:
+            self._typed = True
+            self.timer.start()
+
+    def _changed(self, _text: str) -> None:
+        if self._typed:
+            self._typed = False           # typed: filtered once the typing pauses
+            return
+        self.apply()
+
+    def apply(self) -> None:
+        """Filters the tree by the box's text now, collapsed first so that the rows it hides go in one pass."""
+        self.timer.stop()
+        self._typed = False
+        text = self.box.text()
+        if text == self.applied:
+            return
+        self.applied = text
+        self.passes += 1
+        self.tree.setUpdatesEnabled(False)
+        try:
+            self.tree.collapseAll()
+            self.proxy.setFilterFixedString(text)
+            if text.strip():
+                # Expanding on a filtered tree is cheap because only matches remain; on the whole tree it would
+                # not be, which is why this happens only when there is something to show.
+                self.tree.expandAll()
+        finally:
+            self.tree.setUpdatesEnabled(True)
 
 
 # The FLOOR for a preview panel, not the ceiling.
@@ -410,11 +481,12 @@ class TexturesPage(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search by name or folder")
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._on_filter)
         left.addWidget(self.search)
 
         self.tree = MarkedTreeView()
         self.tree.setModel(self.proxy)
+        #: The search, filtering the tree when the typing pauses (`TreeSearch`: his report of 17 November).
+        self.searching = TreeSearch(self.search, self.tree, self.proxy)
         self.tree.setUniformRowHeights(True)      # skip measuring 10,011 rows
         self.tree.setAlternatingRowColors(True)
         self.tree.setMinimumWidth(280)
@@ -605,8 +677,24 @@ class TexturesPage(QWidget):
         left_holder.setLayout(left)
         right_holder = QWidget()
         right_holder.setLayout(right)
+        # (17 November 2026) The right half has two faces: a texture file's (the compare area above), and a unit
+        # sprite's (`sprite_sheets.SpritePane`), shown while a row of the group "Unit sprites" is picked.
+        self.sprite_pane = sprite_sheets.SpritePane(self.state)
+        self.sprite_pane.changed.connect(self._sprite_changed)
+        self.right_stack = QStackedWidget()
+        self.right_stack.addWidget(right_holder)
+        self.right_stack.addWidget(self.sprite_pane)
+        #: `{a sprite row's path: its sprite number}`, for the rows of the group "Unit sprites".
+        self.sprite_rows: dict = {}
+        # (17 November 2026) A third face: an effect's picture (`effect_sheets.EffectPane`), shown while a row of
+        # the group "Effects" is picked.
+        self.effect_pane = effect_sheets.EffectPane(self.state)
+        self.effect_pane.changed.connect(self._effect_changed)
+        self.right_stack.addWidget(self.effect_pane)
+        #: `{an effect row's path: its effect number}`, for the rows of the group "Effects".
+        self.effect_rows: dict = {}
         split.addWidget(left_holder)
-        split.addWidget(right_holder)
+        split.addWidget(self.right_stack)
         split.setChildrenCollapsible(False)
         # The tree gets what its names need, the previews everything else,
         # and window resizes go to the previews.
@@ -621,7 +709,7 @@ class TexturesPage(QWidget):
 
     def refresh_tree(self) -> None:
         tree = self._ensure_tree()
-        self.model.set_root(tree)
+        self.model.set_root(self._with_effects(self._with_sprites(tree)))
         # Re-read the edit store, because it may be a DIFFERENT DICT now.
         #
         # `clear_opened_mod_content` does `self.texture_edits = {}` - a
@@ -635,11 +723,91 @@ class TexturesPage(QWidget):
         # keeps the model's reference live; opening a mod does not, and
         # opening a mod is the case that matters.
         self.model.set_edits(self.state.texture_edits)
+        self.model.set_also(self._own_paths())
         self._marked = self._edits_signature()
         self.empty_note.setVisible(tree is None)
         self.tree.setVisible(tree is not None)
         self.search.setEnabled(tree is not None)
         self._update_counter()
+
+    def _with_sprites(self, tree):
+        """
+        (17 November 2026) The tree with the group "Unit sprites" first: one row for each of the game's unit
+        sprites, by its name (Zodi's choice of 16 November: "a group of their own in the page's tree, each sprite
+        by its name"). The sprites aren't files of the unpacked game (they are entries of its g2d.dat), so the
+        scanned tree is left as it is and the page's own root holds the group beside its folders.
+        """
+        from ... import reference_names
+        from ... import sprite_textures as st
+        from ... import unit_sprites as us
+        self.sprite_rows = {}
+        if tree is None:
+            return None
+        rows = []
+        for number, name in st.sprite_names(us.read_table(), reference_names.sprite_set_names()):
+            path = f"{sprite_sheets.GROUP}/{name.replace('/', ' ')}"       # its name in its path: the search finds it
+            self.sprite_rows[path] = number
+            rows.append(td.TextureTreeNode(name, path, True))
+        if not rows:
+            return tree
+        group = td.TextureTreeNode(sprite_sheets.GROUP, sprite_sheets.GROUP, False, rows)
+        return td.TextureTreeNode(tree.name, tree.relative_path, False, [group] + list(tree.children))
+
+    def _sprite_paths(self) -> set:
+        """The rows of the sprites the mod has a picture of."""
+        art = getattr(self.state, "sprite_art", None) or {}
+        return {path for path, number in self.sprite_rows.items() if number in art}
+
+    def _sprite_changed(self, _number: int) -> None:
+        """A sprite's picture was given or taken off on the pane: its row marked again, the counter, the mod."""
+        index = self.tree.currentIndex()
+        node = self.model.node_at(index) if index.isValid() else None
+        self.model.set_also(self._own_paths(), node.relative_path if node is not None else None)
+        self._marked = self._edits_signature()
+        self._update_counter()
+        self.edits_changed.emit()
+
+    def _with_effects(self, root):
+        """
+        (17 November 2026) The tree with the group "Effects" after the unit sprites': one row for each of
+        the game's effects, by its number and the name of the ability that plays it where Mod Studio has one
+        (Zodi's choice of 17 November: "a group of their own, as Unit sprites has one"). An effect's picture is the
+        last part of its file (`fftpack/effect/efc_eNNNdat_data.bin`), not a picture file, so the rows are the
+        effects the unpacked game has a file for (a picture of the mod's is only ever made from, or read back
+        against, the game's own file of its effect).
+        """
+        from ... import effect_files as ef
+        from ... import effect_pictures as ep
+        from ... import reference_names
+        self.effect_rows = {}
+        if root is None:
+            return None
+        unpacked = getattr(self.state, "nxd_unpack_dir", None)
+        numbers = ef.effect_numbers(unpacked) if unpacked else ()
+        rows = []
+        for number, name in ep.effect_names(numbers, reference_names.effect_names()):
+            path = f"{effect_sheets.GROUP}/{name.replace('/', ' ')}"       # its name in its path: the search finds it
+            self.effect_rows[path] = number
+            rows.append(td.TextureTreeNode(name, path, True))
+        if not rows:
+            return root
+        group = td.TextureTreeNode(effect_sheets.GROUP, effect_sheets.GROUP, False, rows)
+        children = list(root.children)
+        after = 1 if children and children[0].relative_path == sprite_sheets.GROUP else 0
+        return td.TextureTreeNode(root.name, root.relative_path, False, children[:after] + [group] + children[after:])
+
+    def _effect_paths(self) -> set:
+        """The rows of the effects the mod has a picture of."""
+        art = getattr(self.state, "effect_art", None) or {}
+        return {path for path, number in self.effect_rows.items() if number in art}
+
+    def _own_paths(self) -> set:
+        """The rows the mod has a picture of that are no texture file's: the unit sprites' and the effects'."""
+        return self._sprite_paths() | self._effect_paths()
+
+    def _effect_changed(self, _number: int) -> None:
+        """An effect's picture was given or taken off on the pane: its row marked again, the counter, the mod."""
+        self._sprite_changed(_number)
 
     def _ensure_tree(self):
         """
@@ -668,16 +836,6 @@ class TexturesPage(QWidget):
             self.state.texture_tree = tree
         return tree
 
-    def _on_filter(self, text: str) -> None:
-        self.proxy.setFilterFixedString(text)
-        if text.strip():
-            # Expanding on a filtered tree is cheap because only matches
-            # remain; on the unfiltered 10,011 it would not be, which is why
-            # this happens only when there is something to show.
-            self.tree.expandAll()
-        else:
-            self.tree.collapseAll()
-
     def select_record(self, relative_path) -> bool:
         """
         Selects a texture by its relative path - what a jump from another
@@ -702,6 +860,7 @@ class TexturesPage(QWidget):
             # a failure - the file exists and the user asked for it, so the
             # filter is the thing that should give way.
             self.search.clear()
+            self.searching.apply()        # (a change made in code is applied at once; said again, to be sure)
             mapped = self.proxy.mapFromSource(index)
             if not mapped.isValid():
                 return False
@@ -715,6 +874,23 @@ class TexturesPage(QWidget):
 
     def _on_selection(self, current, _previous) -> None:
         node = self.model.node_at(current) if current.isValid() else None
+        sprite = self.sprite_rows.get(node.relative_path) if node is not None else None
+        if sprite is not None:
+            # A unit sprite: the pane's face, and no texture file in hand.
+            self.current_node = None
+            self._refresh_detail()
+            self.sprite_pane.show_sprite(sprite, node.name)
+            self.right_stack.setCurrentWidget(self.sprite_pane)
+            return
+        effect = self.effect_rows.get(node.relative_path) if node is not None else None
+        if effect is not None:
+            # An effect's picture: its pane's face, and no texture file in hand.
+            self.current_node = None
+            self._refresh_detail()
+            self.effect_pane.show_effect(effect, node.name)
+            self.right_stack.setCurrentWidget(self.effect_pane)
+            return
+        self.right_stack.setCurrentIndex(0)
         self.current_node = node if node is not None and node.is_file else None
         self._refresh_detail()
 
@@ -775,6 +951,28 @@ class TexturesPage(QWidget):
         # to do: export, which is what a user asked for by name. "I want a
         # bulk export feature, so you can right-click on a directory and it
         # will export PNGs mirroring the directory structure."
+        if node.relative_path in (sprite_sheets.GROUP, effect_sheets.GROUP):
+            return                                             # the sprites' and the effects' groups are no folders of files to export
+        if node.relative_path in self.sprite_rows or node.relative_path in self.effect_rows:
+            # A unit sprite or an effect's picture: what its pane's three buttons do, on the row under the pointer.
+            self.tree.setCurrentIndex(index)
+            pane = self.sprite_pane if node.relative_path in self.sprite_rows else self.effect_pane
+            menu = QMenu(self.tree)
+            replace = menu.addAction("Replace...")
+            replace.setEnabled(pane.replace_button.isEnabled())
+            export = menu.addAction("Export as PNG...")
+            export.setEnabled(pane.export_button.isEnabled())
+            menu.addSeparator()
+            game = menu.addAction("As the game has it")
+            game.setEnabled(pane.own() is not None)
+            chosen = menu.exec(self.tree.viewport().mapToGlobal(point))
+            if chosen is replace:
+                pane.choose_replacement()
+            elif chosen is export:
+                pane.export_png()
+            elif chosen is game:
+                pane.as_game()
+            return
         if not getattr(node, "is_file", False):
             menu = QMenu(self.tree)
             export_folder = menu.addAction(TEXTURE_FOLDER_LABEL)
@@ -1036,7 +1234,12 @@ class TexturesPage(QWidget):
         # new marking folds the tree up.
         if self._edits_signature() != getattr(self, "_marked", None):
             self.model.set_edits(self.state.texture_edits)
+            self.model.set_also(self._own_paths())
             self._marked = self._edits_signature()
+            if self.right_stack.currentWidget() is self.sprite_pane and self.sprite_pane.number is not None:
+                self.sprite_pane.refresh()
+            if self.right_stack.currentWidget() is self.effect_pane and self.effect_pane.number is not None:
+                self.effect_pane.refresh()
         self._update_counter()
 
     def _edits_signature(self) -> tuple:
@@ -1261,6 +1464,6 @@ class TexturesPage(QWidget):
         if not total:
             self.counter.setText("")
             return
-        replaced = len(self.state.texture_edits)
+        replaced = len(self.state.texture_edits) + len(self._own_paths())
         self.counter.setText(
             actions.edit_counter_text(replaced, total, "textures", "replaced"))

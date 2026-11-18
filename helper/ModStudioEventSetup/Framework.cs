@@ -382,6 +382,9 @@ namespace ModStudioEventSetup
         /// <summary>(1.31.0) The mods' own items' numbers by their keys (Mod.PlanItems), which a reward's own items
         /// name.</summary>
         IReadOnlyDictionary<string, int>? _items;
+        /// <summary>(1.53.0) The mods' own jobs' numbers by their keys, of the jobs given to the game this time
+        /// (Mod.PlanJobs), which a quest's battle's Jobs name.</summary>
+        IReadOnlyDictionary<string, int>? _jobs;
         /// <summary>(1.30.0) Who plays or fights on map 116 (ArenaMap), which the framework then names: each once.</summary>
         public List<string> ArenaUsers { get; } = new List<string>();
         /// <summary>(1.30.0) Whether map 116 is given its name (ArenaName): a quest's event or a mod's place's battle is
@@ -431,6 +434,9 @@ namespace ModStudioEventSetup
         /// the battle's number and the unit's place in its file (0 to 15).</summary>
         public Dictionary<int, SortedDictionary<int, string>> OwnNames { get; }
             = new Dictionary<int, SortedDictionary<int, string>>();
+        /// <summary>(2.0.0) The quests' battles' units' items past 255 (a battle's Items), which the battles' plan puts
+        /// on with every mod's units' (BattleFile.Make).</summary>
+        public List<BattleFile.QuestItems> WideItems { get; } = new List<BattleFile.QuestItems>();
         /// <summary>(1.33.0) A battle unit's party byte (0xFF: not from the party) and its own text (64 bytes, ended by a
         /// 0), which the game shows in place of a generic's name (0x1E8B7C) and copies to the party's unit as it joins
         /// (0x274EB8: to + 0xDC); the battle file's entry of a unit, 40 bytes (dev/research/sidequests/unit_names.py).
@@ -933,12 +939,13 @@ namespace ModStudioEventSetup
                                      bool ownUnits = true, IList<(MapPlace Place, int Number)>? menuTowns = null,
                                      IList<MapPlace>? darkPlaces = null,
                                      IList<(MapPlace Place, int Number)>? dungeons = null, bool floorStarts = true,
-                                     IReadOnlyDictionary<string, int>? items = null)
+                                     IReadOnlyDictionary<string, int>? items = null,
+                                     IReadOnlyDictionary<string, int>? jobs = null)
         {
             var plan = new Framework
             {
                 _lastEvent = lastEvent, NumbersId = numbers.Id, OwnSquads = ownSquads, OwnRumors = ownRumors,
-                OwnFloorStarts = floorStarts, _items = items,
+                OwnFloorStarts = floorStarts, _items = items, _jobs = jobs,
             };
             if (mapBases != null)
                 foreach (var (number, made) in mapBases)
@@ -1101,24 +1108,6 @@ namespace ModStudioEventSetup
                 Gil = gil;
                 Items = items;
             }
-        }
-
-        /// <summary>(1.31.0) CallFunction (0x43) and its function that has the scene's units marked to join the party
-        /// join it (JOIN_UNITS_SILENTLY, 1); the first event it runs in without the game giving the new game's items back
-        /// to the bag (fft_decomp's EVENT_ID_NEW_GAME_INVENTORY_END, 0x4E; his program compares the event playing with
-        /// it before joining them, dev/research/sidequests/rewards.py).</summary>
-        public const byte CallFunction = 0x43, JoinUnits = 1;
-        public const int JoinsFrom = 0x4E;
-
-        /// <summary>(1.31.0) Whether a script may have units join the party: its bytes hold CallFunction 1 (a byte pair
-        /// inside another instruction counts too, which only keeps the event from numbers below JoinsFrom, all of them
-        /// the game's own).</summary>
-        public static bool JoinsUnits(byte[] script)
-        {
-            for (int at = 0; at + 1 < script.Length; at++)
-                if (script[at] == CallFunction && script[at + 1] == JoinUnits)
-                    return true;
-            return false;
         }
 
         /// <summary>(1.31.0) An event's reward planned under its flag's number: a mod's own item its mod hasn't added
@@ -1605,11 +1594,7 @@ namespace ModStudioEventSetup
             foreach (var ev in quest.Events)
             {
                 numbers.Has("Events", $"{quest.Key}/{ev.Name}", out int was);
-                // (1.31.0) A script that has units join the party (CallFunction 1) never below JoinsFrom: the game gives
-                // the new game's items back to the bag as it runs there (fft_decomp's EVENT_ID_NEW_GAME_INVENTORY_END).
-                Func<int, bool> mayHave = ev.Battle == null && JoinsUnits(ev.Script) ? x => free(x) && x >= JoinsFrom
-                                                                                       : free;
-                int n = numbers.Give("Events", $"{quest.Key}/{ev.Name}", candidates, mayHave, out bool moved);
+                int n = numbers.Give("Events", $"{quest.Key}/{ev.Name}", candidates, free, out bool moved);
                 if (n < 0)
                 {
                     Said.Add($"{who} is left out: no event number is left for {ev.Name}.");
@@ -1979,6 +1964,7 @@ namespace ModStudioEventSetup
                 }
                 RumorPlans.Add(new RumorPlan(key, quest, rumor, steps, flags[rumor.Read], mask, modTowns));
             }
+            var worn = new List<string>();
             foreach (var battle in quest.Battles)
             {
                 Units[battleNumbers[battle.Name]] = (byte[])battle.Units.Clone();
@@ -1986,6 +1972,13 @@ namespace ModStudioEventSetup
                 // (1.33.0) Its units' own names.
                 if (battle.Names.Count > 0)
                     OwnNames[battleNumbers[battle.Name]] = new SortedDictionary<int, string>(battle.Names);
+                // (2.0.0) Its units' items past 255.
+                if (battle.Items.Count > 0)
+                    WideItems.Add(new BattleFile.QuestItems(quest.ModId, _battleNames[battleNumbers[battle.Name]],
+                                                            battleNumbers[battle.Name], battle.Items));
+                // (1.53.0) Its units' jobs of its mod's own: each the number its job was given, where its mod gives that
+                // job to the game this time; else the unit keeps its file's job, said.
+                WearJobs(quest, battle, Units[battleNumbers[battle.Name]], worn, said);
             }
             Squads.AddRange(squads);
             foreach (var (flag, n) in flags)
@@ -2008,6 +2001,7 @@ namespace ModStudioEventSetup
                     : $"{p.Event.Name} is event {p.Number}");
             foreach (var battle in quest.Battles)
                 parts.Add($"{battle.Name} is battle {battleNumbers[battle.Name]}");
+            parts.AddRange(worn);
             // (1.12.0) How each battle is won and lost, and its objective's number.
             foreach (var ev in quest.Events)
             {
@@ -2040,6 +2034,33 @@ namespace ModStudioEventSetup
             parts.AddRange(said);
             Said.Add($"{who}: {string.Join(", ", parts)}.");
         }
+
+        /// <summary>(1.53.0, Zodi's order of 13 November: "jobs in a quest's battle") A quest's battle's units put in jobs
+        /// of its mod's own (its Jobs): each named unit's job (QuestFile.MainJobAt in its 40 bytes) the number its job was
+        /// given, where its mod gives that job to the game this time (`_jobs`, by the job's key); else the unit keeps its
+        /// file's job. What was put on (`worn`, for the quest's line) and what wasn't (`said`).</summary>
+        void WearJobs(Quest quest, QuestBattle battle, byte[] units, List<string> worn, List<string> said)
+        {
+            foreach (var (slot, job) in battle.Jobs)
+            {
+                int at = slot * QuestFile.UnitBytes + QuestFile.MainJobAt;
+                if (_jobs != null && _jobs.TryGetValue($"{quest.ModId}/{job}", out int number))
+                {
+                    units[at] = (byte)number;
+                    worn.Add(WornLine(battle.Name, slot, job, number));
+                }
+                else
+                    said.Add(NotWornLine(battle.Name, slot, job, units[at]));
+            }
+        }
+
+        /// <summary>(1.53.0) The quest's line's parts for a battle's unit put in a job of its mod's own, and for one that
+        /// keeps its file's job.</summary>
+        public static string WornLine(string battle, int slot, string job, int number)
+            => $"unit {slot + 1} of {battle} is put in its mod's {job} (job {number})";
+
+        public static string NotWornLine(string battle, int slot, string job, int kept)
+            => $"unit {slot + 1} of {battle} keeps job {kept} (its mod gives the game no job {job} this time)";
 
         /// <summary>An event's setup with what follows it: as given, else its next event when it
         /// has one, else the world map (a side quest's event goes on or back, as the game's
@@ -2800,7 +2821,7 @@ namespace ModStudioEventSetup
         /// <summary>(1.32.0) Whether a byte of the bank's tail holds quest flags: before WotL Restoration's items'
         /// counts or after them, before the mods' items' counts (ItemRoom.FlagFree's bytes; the mark's after those).</summary>
         public static bool IsFlagByte(int at)
-            => at >= BankTail && at < ItemRoom.CountsFirst && (at < ItemRoom.WotLTail || at >= ItemRoom.WotLTailEnd);
+            => at >= BankTail && at < ItemRoom.JobsMark && (at < ItemRoom.WotLTail || at >= ItemRoom.WotLTailEnd);
 
         /// <summary>Whether any quest flag is set (a save of a quest played). (1.32.0) Only the flags' bytes: WotL
         /// Restoration's items' counts and the mods' items' are no flags.</summary>

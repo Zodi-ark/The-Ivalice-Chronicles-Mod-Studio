@@ -308,7 +308,7 @@ namespace ModStudioEventSetup
         /// <summary>An item from its file's text; null when it can't be used, why in problems. `hasFile` says whether
         /// the mod has a file (its path from the mod's folder).</summary>
         public static ModItem? Read(string modId, string modName, string folder, string text, Func<string, bool> hasFile,
-                                    List<string> problems)
+                                    List<string> problems, bool neverSold = false)
         {
             JsonDocument document;
             try
@@ -372,10 +372,14 @@ namespace ModStudioEventSetup
                                  + $"({KindFlags[kind]}, with Rare 2 if it is rare)");
                     return null;
                 }
-                if (record[ShopAt] < 1 || record[ShopAt] > MostShopPoint)
+                // (2.0.0) `neverSold`: War of the Lions' own story point (WotLItems.NeverSold: past every shop's) is
+                // one of its items' too.
+                if (record[ShopAt] < 1 || (record[ShopAt] > MostShopPoint
+                                           && !(neverSold && record[ShopAt] == WotLItems.NeverSold)))
                 {
-                    problems.Add($"its Record's story point the shops sell it from (byte 10) is 1 to {MostShopPoint}, "
-                                 + $"not {record[ShopAt]}");
+                    problems.Add($"its Record's story point the shops sell it from (byte 10) is 1 to {MostShopPoint}"
+                                 + (neverSold ? $", or {WotLItems.NeverSold} for an item no shop sells" : "")
+                                 + $", not {record[ShopAt]}");
                     return null;
                 }
                 var kindRecord = Bytes(root, "KindRecord", KindBytes[kind]);

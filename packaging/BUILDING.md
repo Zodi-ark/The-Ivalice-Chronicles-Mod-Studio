@@ -179,12 +179,13 @@ front of `INFO` are timings, and differ):
 ```
 ... INFO: Building COLLECT COLLECT-00.toc completed successfully.
 
-package check: 3 required folders present, 7 excluded items absent, no Tkinter runtime.
+package check: 4 required items present, 7 excluded items absent, no Tkinter runtime.
 ... INFO: Build complete! The results are available in: ...\dist
 ```
 
 The `package check` line is the spec's own check of what it built: the
-folders the program needs are in, the things it must leave out are not.
+folders and files the program needs are in, the things it must leave out
+are not.
 If it instead stops with `*** The built package is not what it should be
 ***`, or ends in a red `ERROR`, copy the last 20 lines and send them to me
 - don't try to work around it. A few `WARNING` lines along the way are

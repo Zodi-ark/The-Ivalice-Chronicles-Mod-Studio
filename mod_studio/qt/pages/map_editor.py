@@ -62,7 +62,7 @@ from typing import Optional
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox, QPushButton, QRadioButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
@@ -1668,8 +1668,8 @@ class MapEditorPage(QWidget):
         self.edits_changed.emit()
 
     def _ask_quest_picture(self, name: str, what: str) -> None:
-        file, _ = QFileDialog.getOpenFileName(self, QUEST_TEXTURE if what == "texture" else QUEST_LIGHTING, "",
-                                              actions.image_open_filter(td.REPLACEMENT_IMAGE_EXTENSIONS))
+        file = export_dialogs.open_file(self, QUEST_TEXTURE if what == "texture" else QUEST_LIGHTING,
+                                        actions.image_open_filter(td.REPLACEMENT_IMAGE_EXTENSIONS))
         if file:
             self.quest_picture(name, file, what)
 

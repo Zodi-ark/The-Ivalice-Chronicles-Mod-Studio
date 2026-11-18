@@ -43,6 +43,7 @@ from ... import quest_maps as qm
 from ... import uib
 from ..widgets.field_rows import CollapsibleSection
 from ..widgets.form_scroll import FormScrollArea
+from .. import export_dialogs
 from ..workers import Worker, run_in_thread
 
 #: What the Open-an-existing-mod box says with no mod open - at startup, and
@@ -1145,7 +1146,7 @@ class SetupPage(QWidget):
     def browse_manual_nxd(self, _checked=False, path: str | None = None) -> None:
         if path is None:
             path = QFileDialog.getExistingDirectory(
-                self, "Select a folder containing .nxd files")
+                self, "Select a folder containing .nxd files", str(export_dialogs.near(self.manual_nxd_field.text())))
         if path:
             self.manual_nxd_field.setText(path)
 
@@ -1209,7 +1210,7 @@ class SetupPage(QWidget):
         """
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
-                self, "Open a converted game database", "",
+                self, "Open a converted game database", str(export_dialogs.near()),
                 "SQLite databases (*.sqlite *.db);;All files (*)")
         if not path:
             return
@@ -1308,7 +1309,7 @@ class SetupPage(QWidget):
                                 path: str | None = None) -> None:
         if path is None:
             path = QFileDialog.getExistingDirectory(
-                self, "Where should Open an existing mod start?")
+                self, "Where should Open an existing mod start?", str(export_dialogs.near(self.mod_browse_field.text())))
         if path:
             self.mod_browse_field.setText(path)
 
@@ -1556,7 +1557,7 @@ class SetupPage(QWidget):
 
     def _browse_cli(self, _checked=False, path: str | None = None) -> None:
         if path is None:
-            path, _ = QFileDialog.getOpenFileName(self, "Select FF16Tools.CLI")
+            path, _ = QFileDialog.getOpenFileName(self, "Select FF16Tools.CLI", str(export_dialogs.near(self.cli_field.text())))
         if path:
             self.cli_field.setText(path)
             self.state.ff16tools_cli_path = Path(path)
@@ -1564,7 +1565,7 @@ class SetupPage(QWidget):
 
     def _browse_audiomog(self, _checked=False, path: str | None = None) -> None:
         if path is None:
-            path, _ = QFileDialog.getOpenFileName(self, "Select AudioMog")
+            path, _ = QFileDialog.getOpenFileName(self, "Select AudioMog", str(export_dialogs.near(self.audiomog_field.text())))
         if path:
             self.audiomog_field.setText(path)
             self.state.audiomog_exe_path = Path(path)
@@ -1636,7 +1637,7 @@ class SetupPage(QWidget):
 
     def _browse_output(self, _checked=False, path: str | None = None) -> None:
         if path is None:
-            path = QFileDialog.getExistingDirectory(self, "Unpack into")
+            path = QFileDialog.getExistingDirectory(self, "Unpack into", str(export_dialogs.near(self.output_field.text())))
         if path:
             self.output_field.setText(path)
             self._remember_folders()
@@ -1820,7 +1821,7 @@ class SetupPage(QWidget):
     def browse_game_folder(self, _checked=False, path: str | None = None) -> None:
         if path is None:
             path = QFileDialog.getExistingDirectory(
-                self, "Select the folder holding the game's .pac files")
+                self, "Select the folder holding the game's .pac files", str(export_dialogs.near(self.folder_field.text())))
         if not path:
             return
         self.folder_field.setText(path)
@@ -1870,7 +1871,7 @@ class SetupPage(QWidget):
         if path is None:
             start = self.mod_browse_start()
             path = QFileDialog.getExistingDirectory(
-                self, "Open an existing mod", str(start) if start else "")
+                self, "Open an existing mod", str(start) if start else str(export_dialogs.near()))
         if not path:
             return
         folder = Path(path)
@@ -1971,8 +1972,17 @@ class SetupPage(QWidget):
         self._take_over_places(existing.mod_root)
         # (1.26.0) Its own items, which its towns' Outfitters may sell.
         self._take_over_items(existing.mod_root)
+        # (14 November) Its own jobs and abilities (ModStudioJobs, ModStudioAbilities): the New Content page's again.
+        self._take_over_jobs(existing.mod_root)
         # (1.28.0) The game's weapons' looks in battle it changes (its ModStudioItemLooks.json).
         self._take_over_item_looks(existing.mod_root)
+        # (16 November 2026) Its units of the game's battles and its buried treasures (its ModStudioBattles.json),
+        # and its own versions of War of the Lions' items (its ModStudioWotLItems.json).
+        self._take_over_battles(existing.mod_root)
+        self._take_over_sprites(existing.mod_root)
+        # (17 November 2026) Its own pictures of the game's effects (its fftpack/effect/ files that are the game's
+        # but for their pictures).
+        self._take_over_effects(existing.mod_root)
         # Its side quests (ModStudioQuests): the Side Quests page's again, with their words.
         self._take_over_quests(existing.mod_root)
         if self.state.mod_own_files:
@@ -2481,6 +2491,170 @@ class SetupPage(QWidget):
             self._log(f"Opened {taken} place(s) and road(s) of this mod, which the New Content page lists under "
                       f"Places.")
 
+    def _take_over_sprites(self, mod_root) -> None:
+        """
+        (17 November 2026) The mod's own pictures of the game's unit
+        sprites (`sprite_textures.read`), the Textures page's again: a
+        sprite whose two entries of g2d.dat the mod replaces, with its
+        bigger sheets where the mod's `ModStudioTextures.json` names both.
+        Their files are the sprites' now, not carried through; a sheet
+        that can't be read is said and its sprite is the mod's at the
+        game's size. The mod's jobs' figures given bigger are read from
+        the same file (`job_looks.take_big`), each the job's art again on
+        the New Content page's Jobs tab; one that isn't a figure of a job
+        of this mod's is said and left out.
+        """
+        from ... import job_looks as jl
+        from ... import sprite_textures as st
+        from ... import unit_sprites as us
+        self.state.sprite_art = {}
+        own = self.state.mod_own_files or {}
+        art, problems, taken = st.read(Path(mod_root), us.read_table())
+        for problem in problems:
+            self._log(f"{st.FILE}: {problem}; the sprite is opened at the game's size.")
+        figures, problems, theirs = jl.take_big(Path(mod_root), getattr(self.state, "mod_jobs", None) or {})
+        for problem in problems:
+            self._log(f"{st.FILE}: {problem}; that bigger figure is left out.")
+        if theirs and st.FILE not in taken:
+            taken = list(taken) + [st.FILE]
+        taken = list(taken) + theirs
+        wanted = {rel.lower() for rel in taken}
+        for rel in [r for r in own if r.replace("\\", "/").lower() in wanted]:
+            own.pop(rel)
+        # (The twenty eighth session) The two entries' files are under the mod's data folder, where a file is
+        # carried through whole unless a page takes it: taken here, so they aren't the mod's twice.
+        self._not_carried(taken)
+        if figures:
+            self._log(f"Opened {figures} bigger figure(s) of this mod's jobs, which the New Content page's Jobs tab "
+                      f"shows.")
+        if not art:
+            return
+        self.state.sprite_art = art
+        bigger = sum(1 for one in art.values() if one.is_big)
+        more = sum(1 for one in art.values() if one.has_own)
+        self._log(f"Opened {len(art)} unit sprite(s) as this mod has them"
+                  + (f", {bigger} with a bigger picture" if bigger else "")
+                  + (f", {more} in more colors" if more else "") + ", which the Textures page shows.")
+
+    def _not_carried(self, taken) -> None:
+        """(17 November 2026) Files of the mod's data folder a page has taken (paths from the mod's folder) taken
+        out of what is carried through whole (`texture_edits`, `other_file_replacements`, keyed from the data
+        folder), so a mod opened and exported again has each once."""
+        wanted = set()
+        for rel in taken or ():
+            parts = str(rel).replace("\\", "/").split("/", 3)
+            if len(parts) == 4 and parts[0].lower() == "fftivc" and parts[1].lower() == "data":
+                wanted.add(parts[3].lower())
+        if not wanted:
+            return
+        for kept in (self.state.texture_edits, self.state.other_file_replacements):
+            for key in [k for k in kept if str(k).replace("\\", "/").lower() in wanted]:
+                kept.pop(key)
+
+    def _take_over_effects(self, mod_root) -> None:
+        """
+        (17 November 2026) The mod's own pictures of the game's effects
+        (`effect_pictures.read`), the Textures page's again: each file of the
+        mod's `fftpack/effect/` that is the game's own file of that effect
+        but for its texture section's colors and pixels. Those files are the
+        pictures' now, not carried through; any other effect file the mod has
+        stays carried through as it is, and the Textures page shows its
+        picture as the mod has it.
+        """
+        from ... import effect_pictures as ep
+        from ... import sprite_textures as st
+        self.state.effect_art = {}
+        unpacked = getattr(self.state, "nxd_unpack_dir", None)
+        art, taken = ep.read(Path(mod_root), unpacked)
+        # (The twenty ninth session) Their bigger pictures, from the mod's ModStudioTextures.json: its sheets (and the
+        # file itself) the pictures' now, not the mod's own files carried through.
+        more, problems = ep.read_big(Path(mod_root), art, unpacked)
+        for problem in problems:
+            self._log(f"{st.FILE}: {problem}; the effect's picture is opened at the game's size.")
+        # (The thirty fourth session) The summons' own sheets, which the enhanced look draws: the mod loader's files
+        # of g2d.dat and the framework's sheets the mod's ModStudioTextures.json names for them.
+        sheets, problems = ep.read_summons(Path(mod_root), art, unpacked)
+        for problem in problems:
+            self._log(f"{problem}; the summon's sheet is made again from its picture.")
+        if sheets and any(rel.startswith(ep.BIG_FOLDER + "/") for rel in sheets) and st.FILE not in more:
+            more = list(more) + [st.FILE]
+        more = list(more) + sheets
+        taken = list(taken) + more
+        own = self.state.mod_own_files or {}
+        wanted = {rel.lower() for rel in more}
+        for rel in [r for r in own if r.replace("\\", "/").lower() in wanted]:
+            own.pop(rel)
+        self._not_carried(taken)
+        if not art:
+            return
+        self.state.effect_art = art
+        bigger = sum(1 for one in art.values() if one.times > 1)
+        more = sum(1 for one in art.values() if one.has_own)
+        summons = sum(1 for one in art.values() if one.is_summon)
+        self._log(f"Opened {len(art)} effect picture(s) as this mod has them"
+                  + (f", {bigger} with a bigger picture" if bigger else "")
+                  + (f", {more} in more colors" if more else "")
+                  + (f", {summons} of them a summon's with its own sheet" if summons else "")
+                  + ", which the Textures page shows.")
+
+    def _take_over_battles(self, mod_root) -> None:
+        """
+        (16 November 2026) The units of the game's battles and the buried
+        treasures this mod has (its `ModStudioBattles.json`,
+        `mod_battles.read`), the Encounters and Treasure Hunter pages'
+        again, and its own versions of War of the Lions' items (its
+        `ModStudioWotLItems.json`, `wotl_items.read`), the Items page's:
+        each read as Mod Studio Framework reads it, the file the mod's own
+        now, not carried through. A file that can't be read at all stays
+        carried through as it is, and says why; a part of it that can't be
+        read is said and left out.
+        """
+        from ... import mod_battles as mb
+        from ... import wotl_items as wl
+        self.state.battle_units, self.state.battle_treasures, self.state.wotl_items = {}, {}, {}
+        self.state.wotl_art = {}
+        own = self.state.mod_own_files or {}
+        root = Path(mod_root)
+        if (root / mb.FILE).is_file():
+            units, treasures, problems = mb.read(root)
+            if problems and not units and not treasures:
+                self._log(f"Carrying {mb.FILE} through as it is: {'; '.join(problems)}.")
+            else:
+                for problem in problems:
+                    self._log(f"{mb.FILE}: {problem}; it is left out.")
+                self.state.battle_units, self.state.battle_treasures = units, treasures
+                for rel in [r for r in own if r.lower() == mb.FILE.lower()]:
+                    own.pop(rel)
+                if units or treasures:
+                    self._log(f"Opened {len(units)} unit(s) of the game's battles, which the Encounters page shows, "
+                              f"and {len(treasures)} buried treasure(s), which the Treasure Hunter page shows.")
+        if (root / wl.FILE).is_file():
+            _asked, changed, problems = wl.read(root)
+            unread = [p for p in problems if not p.startswith(wl.OWNER) and not p.startswith("its item ")]
+            if unread:
+                self._log(f"Carrying {wl.FILE} through as it is: {'; '.join(problems)}.")
+            else:
+                for problem in problems:
+                    self._log(f"{wl.FILE}: {problem}; the framework's own stands.")
+                self.state.wotl_items = changed
+                for rel in [r for r in own if r.lower() == wl.FILE.lower()]:
+                    own.pop(rel)
+                # (The twenty fifth session) A picture of the mod's own for any of them, read back from its files.
+                art, unread_art, art_files = wl.read_art(root, changed)
+                self.state.wotl_art = art
+                for problem in unread_art:
+                    self._log(f"{wl.FILE}: {problem}; its picture is carried through as it is.")
+                # Those pictures' textures are the items' now (as an item's own icon's: `_take_over_items`).
+                data = "FFTIVC/data/enhanced/"
+                for rel in art_files:
+                    wanted = rel[len(data):].lower() if rel.lower().startswith(data.lower()) else rel.lower()
+                    for kept in (self.state.texture_edits, self.state.other_file_replacements):
+                        for key in [k for k in kept if str(k).replace("\\", "/").lower() == wanted]:
+                            kept.pop(key)
+                if changed:
+                    self._log(f"Opened {len(changed)} of War of the Lions' items as this mod has them, which the "
+                              f"Items page shows.")
+
     def _take_over_item_looks(self, mod_root) -> None:
         """
         (1.28.0) The game's weapons' looks in battle this mod changes (its
@@ -2542,6 +2716,66 @@ class SetupPage(QWidget):
                         kept.pop(key)
         if taken:
             self._log(f"Opened {taken} item(s) of this mod, which the New Content page lists under Items.")
+
+    def _take_over_jobs(self, mod_root) -> None:
+        """
+        (14 November) Turns the jobs and abilities this mod has
+        (`ModStudioJobs/<folder>/job.json`,
+        `ModStudioAbilities/<folder>/ability.json`; Zodi's order of 13
+        November: "the Jobs page") back into the New Content page's
+        (`mod_jobs.read_mod`): each one Mod Studio Framework would read, its
+        file the job's or the ability's now, not a file of the mod's own.
+        (The Jobs page's second part) A job's own art is the job's too, as an
+        item's own icon is (`job_looks.read_art`): its look's textures in its
+        folder, its part lists and their textures are no longer carried
+        through, Export writing them again. One that can't be read stays
+        carried through as it is, and says why.
+        """
+        from ... import helper_json as hj
+        from ... import job_looks as jl
+        from ... import mod_jobs as mj
+        self.state.mod_jobs, self.state.mod_abilities = {}, {}
+        jobs, abilities = mj.read_mod(mod_root)
+        if not jobs and not abilities:
+            return
+        own = self.state.mod_own_files or {}
+        taken = {"job": 0, "ability": 0}
+        for found, store, folder_name, file_name, what in (
+                (abilities, self.state.mod_abilities, mj.ABILITY_FOLDER, mj.ABILITY_FILE, "ability"),
+                (jobs, self.state.mod_jobs, mj.FOLDER, mj.FILE_NAME, "job")):
+            for folder, edit, problems in found:
+                if edit is None:
+                    self._log(f"Carrying the {what} {folder} through as it is: {'; '.join(problems)}.")
+                    continue
+                store[folder] = edit
+                taken[what] += 1
+                wanted = f"{folder_name}/{folder}/{file_name}".lower()
+                for rel in [r for r in own if r.replace("\\", "/").lower() == wanted]:
+                    own.pop(rel)
+                if what != "job":
+                    continue
+                # Its own art is the job's now: its folder's files, and its part lists and their textures.
+                prefix = f"{folder_name}/{folder}/".lower()
+                for rel in [r for r in own if r.replace("\\", "/").lower().startswith(prefix)]:
+                    own.pop(rel)
+                try:
+                    read, _problems = mj.read_job_text(hj.read_text(Path(mod_root) / folder_name / folder / file_name),
+                                                       folder)
+                except (OSError, ValueError):
+                    read = None
+                data = "fftivc/data/enhanced/"
+                for rel in (jl.files_named(mod_root, read, folder) if read is not None else []):
+                    named = rel.replace("\\", "/").lower()
+                    named = named[len(data):] if named.startswith(data) else named
+                    for kept in (self.state.texture_edits, self.state.other_file_replacements,
+                                 getattr(self.state, "utexpt_edits", None) or {}):
+                        for key in [k for k in kept if str(k).replace("\\", "/").lower() == named]:
+                            kept.pop(key)
+        if taken["job"] or taken["ability"]:
+            jobs_said = f"{taken['job']} job{'' if taken['job'] == 1 else 's'}"
+            abilities_said = f"{taken['ability']} {'ability' if taken['ability'] == 1 else 'abilities'}"
+            self._log(f"Opened {jobs_said} and {abilities_said} of this mod, which the New Content page lists under "
+                      f"Jobs and Abilities.")
 
     def _take_over_quests(self, mod_root) -> None:
         """
@@ -3144,7 +3378,7 @@ class SetupPage(QWidget):
         """
         if path is None:
             path = QFileDialog.getExistingDirectory(
-                self, "Select your already-unpacked game folder")
+                self, "Select your already-unpacked game folder", str(export_dialogs.near(self.output_field.text())))
         if not path:
             return
 

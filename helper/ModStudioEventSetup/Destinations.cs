@@ -229,7 +229,7 @@ namespace ModStudioEventSetup
 
         /// <summary>Native code being written at a known address: bytes, short jumps to its own labels, near jumps to
         /// anywhere within 2 GB.</summary>
-        sealed class Asm
+        internal sealed class Asm
         {
             readonly ulong _at;
             readonly List<byte> _bytes = new List<byte>();
@@ -291,7 +291,14 @@ namespace ModStudioEventSetup
             public byte[] Done()
             {
                 foreach (var (at, label) in _shorts)
-                    _bytes[at] = checked((byte)(sbyte)(_labels[label] - (at + 1)));
+                {
+                    // (1.55.0) A short jump back (the game jobs' scan of the second list) is a negative byte: the
+                    // distance is held to a byte's reach, then written as its byte.
+                    int distance = _labels[label] - (at + 1);
+                    if (distance < sbyte.MinValue || distance > sbyte.MaxValue)
+                        throw new InvalidOperationException($"a short jump to {label} can't reach it ({distance} bytes)");
+                    _bytes[at] = unchecked((byte)(sbyte)distance);
+                }
                 foreach (var (at, label) in _nears)
                 {
                     int distance = _labels[label] - (at + 4);

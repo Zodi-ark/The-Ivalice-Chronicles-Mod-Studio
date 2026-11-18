@@ -41,9 +41,11 @@ namespace ModStudioEventSetup
         /// deploy prompts' keys; 1.7.0: a mod's places the game goes to, Destinations.cs; 1.10.0: the quest maps,
         /// MapRoom.cs; 1.12.0: the battles' objectives, Framework.cs; 1.14.0: the battles' own deploy areas'
         /// squads, DeploySquads.cs; 1.15.0: the quests' tavern rumors' keys, Framework.cs; 1.26.0: the mods' own items,
-        /// ItemRoom.cs).</summary>
+        /// ItemRoom.cs; 1.36.0: the mods' own jobs, 1.37.0: their skillsets, JobRoom.cs; 1.41.0: the mods' own action
+        /// abilities, AbilityFile.cs; 1.42.0: the jobs' own sprites, SpriteRoom.cs).</summary>
         public static readonly string[] Kinds = { "Events", "Flags", "Rules", "Scenes", "Texts", "Battles", "Prompts",
-                                                   "Places", "Maps", "Objectives", "Squads", "Rumors", "Items" };
+                                                   "Places", "Maps", "Objectives", "Squads", "Rumors", "Items", "Jobs",
+                                                   "Skillsets", "Abilities", "Sprites" };
         /// <summary>(1.29.0, Zodi's sixth of 3 November) The kinds no save keeps a number of, numbered afresh as each
         /// game starts (`GiveNow`): a quest map's (a save keeps no map; a battle's map is its setup record's, written
         /// as the game starts) and a rumor's (a save keeps only its two bytes, which the helper settles from its flag,
@@ -481,6 +483,19 @@ namespace ModStudioEventSetup
         /// <summary>(1.32.0) The kind a save keeps: the side quests' flags. (1.35.0) And the mods' items, in its bag's
         /// counts and what its units wear.</summary>
         public const string FlagsKind = "Flags", ItemsKind = "Items";
+        /// <summary>(1.36.0) A mod's job's number.</summary>
+        public const string JobsKind = "Jobs";
+        /// <summary>(1.37.0) A mod's job's own skillset's number.</summary>
+        public const string SkillsetsKind = "Skillsets";
+        /// <summary>(1.41.0) A mod's own action ability's number (549 to 1023).</summary>
+        public const string AbilitiesKind = "Abilities";
+        /// <summary>(1.42.0) A mod's job's own sprites: the man's number (170 to 252, even; the woman's is the next). Kept
+        /// for good, as a job's number is: a battle's units hold their sprites, and a save made in battle may keep
+        /// them.</summary>
+        public const string SpritesKind = "Sprites";
+
+        /// <summary>(1.41.0) Every name of a kind and the number it has.</summary>
+        public IReadOnlyDictionary<string, int> GivenOf(string kind) => _given[kind];
 
         /// <summary>Every number of a kind any name has had.</summary>
         public IReadOnlyCollection<int> Used(string kind) => _used[kind];

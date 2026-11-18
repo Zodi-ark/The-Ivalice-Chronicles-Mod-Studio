@@ -75,8 +75,11 @@ NO_MAP = ("The game's files don't say which map this encounter is fought on. Pic
 PICK_A_MAP = "Pick a map"
 PICK_AN_ENCOUNTER = "Pick an encounter in the list to see its battle here."
 NO_SPRITES = "Units are drawn as rings: their sprites need the Textures unpack ({})."
-CANT_MOVE = ("{} has no override row, so it can't be moved here. Trade a row for its slot "
-             "first.")
+#: What the map says of a unit the page doesn't let be moved. (16 November 2026) The Encounters page moves every
+#: unit now, one without an override row too (its place set on the unit itself), so this is the New Content page's
+#: alone: the game's own units in one of its scenes. (It said "has no override row ... Trade a row for its slot
+#: first" until Trade a row went.)
+CANT_MOVE = "{} is one of the game's own units here, so it can't be moved."
 OFF_GRID = "{} stands at {}, {}, off this map's grid, so it isn't on the map."
 EMPTY = "{} has no sprite set, so the map has nothing to draw for it."
 UNKNOWN_SPRITE = "Which sprite {} wears isn't known, so it is drawn as a ring."
@@ -143,7 +146,7 @@ MAP_LEAST, MAP_BOX_LEAST = 140, 120
 class MapUnit:
     """One unit as the map draws it, from the page's effective values."""
     address: tuple             # where it sits in the list: (battle, slot)
-    editable: bool             # whether an override row is behind it
+    editable: bool             # whether the page lets it be moved (a dragged one that isn't says `CANT_MOVE`)
     x: int
     y: int
     upper: bool                # on its tile's upper level

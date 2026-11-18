@@ -858,6 +858,11 @@ WEAPON_ROW = 8
 #: type (fft_decomp's `sprite_thrown_item_palette_set`); a shield is drawn
 #: guarding with its own type's (19), as a weapon guarding with its own.
 THROWN_TYPE, FIRST_THROWN_CATEGORY, SHIELD_CATEGORY = 0x15, 32, 19
+#: (The thirty third session) War of the Lions' fell swords keep its item type
+#: 0x23, past the shurikens' 32, but the routine that sets a unit's weapon
+#: frames (`0x26A358`) gives that type the swords' frames, 3, before its test
+#: of thrown types (`0x26A389` to `0x26A392`): a fell sword swings as a sword.
+FELL_SWORD, FELL_SWORD_FRAMES = 0x23, 3
 #: The item a unit holds up (a treasure found, Move-Find Item, an item used
 #: or thrown by Item): its icon in ITEM.BIN (`fftpack/event_item_bin.en.bin`:
 #: a texture of 256 by 256 at 4 bits, then 16 palettes), 16 by 16 at column
@@ -951,19 +956,22 @@ def weapon_frame(first: list, frames: list, turned: list, weapon_type: int) -> O
 
 
 def sprite_kind(flags, category: int) -> str:
-    """How an item is drawn in battle besides held up, by its type flags' names and its category: "attack" (a weapon),
-    "throw" (a weapon of a type from the shurikens' on), "guard" (a shield), or "" (anything else)."""
+    """How an item is drawn in battle besides held up, by its type flags' names and its category: "attack" (a weapon,
+    and a fell sword, `FELL_SWORD`), "throw" (a weapon of a type from the shurikens' on), "guard" (a shield), or ""
+    (anything else)."""
     flags = set(flags or ())
     if "Weapon" in flags:
-        return "throw" if category >= FIRST_THROWN_CATEGORY else "attack"
+        return "throw" if category >= FIRST_THROWN_CATEGORY and category != FELL_SWORD else "attack"
     if "Shield" in flags:
         return "guard"
     return ""
 
 
 def frames_type(kind: str, category: int) -> int:
-    """The weapon type whose frames draw an item of `category` as `kind` (`sprite_kind`)."""
-    return THROWN_TYPE if kind == "throw" else category
+    """The weapon type whose frames draw an item of `category` as `kind` (`sprite_kind`): a fell sword's the swords'."""
+    if kind == "throw":
+        return THROWN_TYPE
+    return FELL_SWORD_FRAMES if category == FELL_SWORD else category
 
 
 class BattleSprites:

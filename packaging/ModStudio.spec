@@ -53,6 +53,7 @@ assets/  ~1.2 MB  icon.ico, logo.png - the sidebar logo is loaded from disk
 tools/  ~20.5 MB  FF16Tools.CLI (win-x64) and AudioMog, both MIT, both
                   invoked as subprocesses, so they must stay real files on
                   disk - they cannot live inside an archive
+helper/marker/   ~57 KB  the quest marker's pin, read by the New Content page
 
 local_data/ is deliberately NOT bundled. It is created at runtime and
 belongs to the user; shipping a copy would ship one machine's cached game
@@ -86,6 +87,10 @@ datas = [
     (str(PROJECT_ROOT / "data"), "data"),
     (str(PROJECT_ROOT / "assets"), "assets"),
     (str(PROJECT_ROOT / "tools"), "tools"),
+    # The New Content page draws a quest's marker from the helper's own pin
+    # (`side_quests.MARKER_TEXTURE`), and draws a plain circle when the file
+    # isn't there, which is what a build without this line did on 5 November.
+    (str(PROJECT_ROOT / "helper" / "marker"), "helper/marker"),
     # LICENSE, NOTICE.md and README.md are NOT listed here. They belong
     # beside the .exe rather than inside _internal, and `datas` cannot put
     # them there - PyInstaller rejects a destination of ".." outright
@@ -684,6 +689,9 @@ _MUST_BE_PRESENT = [
     "data",           # nex_layouts, loader_models, loader_structures, XML
     "assets",         # icon and sidebar logo, loaded from disk
     "tools",          # FF16Tools.CLI and AudioMog, run as subprocesses
+    # The pin the New Content page draws a quest's marker with. Without it
+    # the page draws a circle and says nothing, so the build has to fail.
+    "helper/marker/msq_quest_marker_uitx.png",
 ]
 _MUST_BE_PRESENT_AT_TOP = ["LICENSE", "NOTICE.md", "README.md"]
 
@@ -734,5 +742,5 @@ if _problems:
           "than deleting the check: it exists because a packaging fault is "
           "invisible in a clean build log and surfaces at a user.\n")
 
-print(f"\npackage check: {len(_MUST_BE_PRESENT)} required folders present, "
+print(f"\npackage check: {len(_MUST_BE_PRESENT)} required items present, "
       f"{len(_MUST_BE_ABSENT)} excluded items absent, no Tkinter runtime.")

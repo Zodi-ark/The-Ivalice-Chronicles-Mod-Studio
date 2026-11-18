@@ -5,7 +5,8 @@
 // with looked at (Framework.Loaded; 1.32.0: the side quest flags it can't
 // really hold cleared, said, Zodi's choice after test 67; 1.35.0: the mods'
 // items it can't really hold taken out, from its bag and its party, his
-// word of 5 November). (1.35.1, his test 72) The save's place looked at by
+// word of 5 November). (1.36.0) Its units' jobs looked at: a unit in a job no
+// mod gives now is put on a job of the game's. (1.35.1, his test 72) The save's place looked at by
 // every hook made, which is made whenever the load is found: until 1.35.1
 // only once some mod's place was ever numbered, which a free undoes. The
 // load's callers keep nothing in the registers a C# hook may change
@@ -35,11 +36,24 @@ namespace ModStudioEventSetup
         /// <summary>(1.13.0) Whether a save's mark is looked at (some quest's flag, or 1.35.0 some mod's item, was
         /// ever numbered), with the numbers' ID. (1.35.1) Its place always is.</summary>
         readonly bool _marks;
+        /// <summary>(1.36.0) The numbers the mods' jobs were given: a save's unit in any other of the game's free job
+        /// numbers is put on a job of the game's as it loads (JobRoom.Settle).</summary>
+        readonly ICollection<int> _jobs;
+        /// <summary>(1.37.0) The numbers their skillsets were given. (1.37.1) A unit's second skillset is taken off
+        /// only when it is a number the framework gave a job that isn't here now (JobRoom.Gone), never another free
+        /// one: Zodi's test 78, two units of his.</summary>
+        readonly ICollection<int> _skillsets;
+        /// <summary>(1.55.0) Whether the game's own Dark Knight and Onion Knight are the framework's to settle (Dark Knight
+        /// &amp; Onion Knight (Generic) is off).</summary>
+        readonly bool _gameJobs;
         IHook<SaveLoadFunction>? _load;
 
         SaveFallbackHook(byte* start, Places places, IEnumerable<int> given, Numbers numbers, Action<string> say,
-                         bool marks)
+                         bool marks, ICollection<int> jobs, ICollection<int> skillsets, bool gameJobs)
         {
+            _gameJobs = gameJobs;
+            _jobs = jobs;
+            _skillsets = skillsets;
             _start = start;
             _places = places;
             _given = new HashSet<int>(given);
@@ -53,9 +67,12 @@ namespace ModStudioEventSetup
         /// save's mark is looked at; (1.35.0) what its units wear looked at when its party was found
         /// (places.Roster).</summary>
         public static SaveFallbackHook Make(IReloadedHooks reloaded, byte* start, Places places, IEnumerable<int> given,
-                                            Numbers numbers, Action<string> say, bool marks = false)
+                                            Numbers numbers, Action<string> say, bool marks = false,
+                                            ICollection<int>? jobs = null, ICollection<int>? skillsets = null,
+                                            bool gameJobs = false)
         {
-            var hook = new SaveFallbackHook(start, places, given, numbers, say, marks);
+            var hook = new SaveFallbackHook(start, places, given, numbers, say, marks, jobs ?? Array.Empty<int>(),
+                                            skillsets ?? Array.Empty<int>(), gameJobs);
             hook._load = reloaded.CreateHook<SaveLoadFunction>(hook.Load, (long)(nint)start + places.SaveLoad, -1);
             hook._load.Activate();
             return hook;
@@ -75,6 +92,20 @@ namespace ModStudioEventSetup
             catch (Exception e)
             {
                 _say($"a save's place wasn't looked at as it loaded ({e.GetType().Name}: {e.Message}).");
+            }
+            if (_places.Roster >= 0)
+            {
+                try
+                {
+                    string? said = JobRoom.Settle(new Span<byte>(_start + _places.Roster, Framework.RosterBytes), _jobs,
+                                                  JobRoom.Gone(_numbers, _skillsets), _gameJobs);
+                    if (said != null)
+                        _say(said);
+                }
+                catch (Exception e)
+                {
+                    _say($"a save's units' jobs weren't looked at as it loaded ({e.GetType().Name}: {e.Message}).");
+                }
             }
             if (_marks)
             {

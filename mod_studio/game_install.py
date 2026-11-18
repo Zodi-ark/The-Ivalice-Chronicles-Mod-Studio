@@ -41,7 +41,7 @@ from typing import Iterable, Optional
 # rather than restated so the filter below and the reader that opens the
 # files cannot end up naming them differently. `entd` imports nothing from
 # this package, so the dependency only runs one way.
-from .entd import ENTD_FILENAME_PREFIX, ENTD_FOLDER
+from .entd import ADD_ON_FILTER, ENTD_FILENAME_PREFIX, ENTD_FOLDER
 
 # Steam's own app id / install folder name for the game.
 STEAM_APP_ID = "1004640"
@@ -503,8 +503,16 @@ def folders_for_groups(group_keys: Iterable[str]) -> list[str]:
 # =============================================================================
 
 #: folder name -> filters for files outside it that its own tabs need.
+#:
+#: (16 November, Zodi's third point: every one of the 16 units of every
+#: battle) The add on battle file too, `event_btlevt_bin_entrydata_add_ent.bin`
+#: (77 more battles, which the game does read: `entd.ADD_ON_FILENAME`), by a
+#: filter of its own, which matches that one file of the whole game: one
+#: more pass, as the four files' is. A game unpacked before then has the
+#: four alone and Encounters lists their 512 battles until the game is
+#: unpacked again.
 COMPANION_FILTERS: dict[str, tuple[str, ...]] = {
-    "nxd": (f"{ENTD_FOLDER}/{ENTD_FILENAME_PREFIX}",),
+    "nxd": (f"{ENTD_FOLDER}/{ENTD_FILENAME_PREFIX}", ADD_ON_FILTER),
 }
 
 

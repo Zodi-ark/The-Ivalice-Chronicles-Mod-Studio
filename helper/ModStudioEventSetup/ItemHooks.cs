@@ -43,6 +43,11 @@ namespace ModStudioEventSetup
         readonly object _lock = new object();
         readonly HashSet<string> _saidOnce = new HashSet<string>(StringComparer.Ordinal);
         readonly ItemRoom.Counts _counts = new ItemRoom.Counts();
+        /// <summary>(2.0.0) War of the Lions' items where the framework gives them (WotLItems.cs; empty where it gives
+        /// none), with the mods' own after them (`_all`: every item whose row, icon and place in a shop are the
+        /// framework's), and their counts kept in a save where WotL Restoration keeps its own.</summary>
+        readonly List<ItemRoom.Given> _wotl, _all;
+        readonly WotLItems.Counts _wotlCounts = new WotLItems.Counts();
         readonly List<object> _kept = new List<object>();
         IHook<SaveFunction>? _save;
         IHook<IconPathFunction>? _icon, _smallIcon;
@@ -58,18 +63,24 @@ namespace ModStudioEventSetup
         /// <summary>How often the thread keeps the counts and the arrays alike (ms).</summary>
         public const int Interval = 200;
 
-        ItemHooks(byte* start, ItemRoom.Found found, List<ItemRoom.Given> given, int worldBank, Action<string> say)
+        ItemHooks(byte* start, ItemRoom.Found found, List<ItemRoom.Given> given, int worldBank, Action<string> say,
+                  List<ItemRoom.Given>? wotl = null)
         {
             _base = start;
             _found = found;
             _given = given;
-            foreach (var g in given)
+            _wotl = wotl ?? new List<ItemRoom.Given>();
+            _all = new List<ItemRoom.Given>(_wotl);
+            _all.AddRange(given);
+            foreach (var g in _all)
                 _byNumber[g.Number] = g;
             _worldBank = worldBank;
             _say = say;
         }
 
         public IReadOnlyList<ItemRoom.Given> Given => _given;
+        /// <summary>(2.0.0) War of the Lions' items the framework gives (none where it gives none).</summary>
+        public IReadOnlyList<ItemRoom.Given> WotL => _wotl;
         public bool Has(int number) => _byNumber.ContainsKey(number);
 
         /// <summary>(1.35.0) The numbers' ID a save holding the mods' items is marked with as it is made, when it has
@@ -120,11 +131,16 @@ namespace ModStudioEventSetup
         /// planned with: a bonus row past every one an item of the game's (or another mod's) names.</summary>
         public static ItemHooks? Arm(IReloadedHooks reloaded, byte* start, int imageSize, ItemRoom.Found found,
                                      List<ItemRoom.Given> given, int worldBank, int sheetInit, Action<string> say,
-                                     out string why, int stock = -1)
+                                     out string why, int stock = -1, List<ItemRoom.Given>? wotl = null)
         {
             var image = new ReadOnlySpan<byte>(start, imageSize);
             ulong imageBase = (ulong)start;
-            var hooks = new ItemHooks(start, found, given, worldBank, say);
+            if (wotl != null && wotl.Count > 0 && found.Moved)
+            {
+                why = "War of the Lions' items can't be given where another mod has made the items' room";
+                return null;
+            }
+            var hooks = new ItemHooks(start, found, given, worldBank, say, wotl);
             // The items' data (anywhere: the native code reaches it by its address) and the native code.
             nint data = (nint)NativeMemory.AllocZeroed((nuint)ItemRoom.DataBytes);
             var made = ItemRoom.Data(given, (ulong)data);
@@ -135,6 +151,26 @@ namespace ModStudioEventSetup
             {
                 why = "Windows gave no memory for the items' native code";
                 return null;
+            }
+            // (2.0.0) War of the Lions' items: a block of their own, laid out as the mods' own items', and their native
+            // code, each function's way on the mods' own items' code (whose way on is the game's).
+            nint wotlCode = 0;
+            int[] wotlStarts = starts;
+            if (hooks._wotl.Count > 0)
+            {
+                nint wotlData = (nint)NativeMemory.AllocZeroed((nuint)ItemRoom.DataBytes);
+                var wotlMade = ItemRoom.Data(hooks._wotl, (ulong)wotlData, WotLItems.First);
+                Marshal.Copy(wotlMade, 0, wotlData, wotlMade.Length);
+                var theirCode = ItemRoom.Code((ulong)wotlData, out wotlStarts, WotLItems.First, WotLItems.Count);
+                wotlCode = Thunks.Executable(theirCode);
+                if (wotlCode == 0)
+                {
+                    why = "Windows gave no memory for War of the Lions' items' native code";
+                    return null;
+                }
+                for (int g = 0; g < ItemRoom.Getters.Length; g++)
+                    *(long*)(wotlData + ItemRoom.SlotsAt + 8 * g) = (long)(codeAt + starts[g]);
+                hooks._kept.Add(theirCode);
             }
             // No other mod's page: the page, within 2 GB of the program, and the item test's way for its two calls.
             nint page = 0, lowTest = 0;
@@ -153,7 +189,7 @@ namespace ModStudioEventSetup
                     why = "the menus' item lists aren't the game's where its pointers lead";
                     return null;
                 }
-                var bytes = ItemRoom.Page(image, found, lists, given);
+                var bytes = ItemRoom.Page(image, found, lists, hooks._all);
                 Marshal.Copy(bytes, 0, page, bytes.Length);
             }
             var patches = ItemRoom.Patches(image, found, page == 0 ? 0 : (long)((ulong)page - imageBase),
@@ -170,8 +206,9 @@ namespace ModStudioEventSetup
             var getters = new List<IHook<GetterFunction>>();
             for (int g = 0; g < ItemRoom.Getters.Length; g++)
             {
-                var hook = reloaded.CreateHook<GetterFunction>((void*)(codeAt + starts[g]),
-                                                               (long)(start + found.At[ItemRoom.Getters[g]]), -1);
+                // (2.0.0) War of the Lions' items' code first where the framework gives them.
+                void* entry = wotlCode != 0 ? (void*)(wotlCode + wotlStarts[g]) : (void*)(codeAt + starts[g]);
+                var hook = reloaded.CreateHook<GetterFunction>(entry, (long)(start + found.At[ItemRoom.Getters[g]]), -1);
                 long original = (long)hook.OriginalFunctionAddress;
                 if (original == 0)
                 {
@@ -278,7 +315,7 @@ namespace ModStudioEventSetup
             hooks._sheetInit.Activate();
             // (1.27.0) The game's towns' Outfitters selling the mods' items their files name: the stock hooked for them
             // (`stock`, its site, -1 when it wasn't found; said then, the items sold at the mods' towns only).
-            hooks._townItems = ItemRoom.TownItems(given);
+            hooks._townItems = ItemRoom.TownItems(hooks._all);
             if (hooks._townItems.Count > 0)
             {
                 var calls = stock >= 0 ? Places.StockCalls(new ReadOnlySpan<byte>(start + stock, Places.StockSortAt + 5),
@@ -360,6 +397,10 @@ namespace ModStudioEventSetup
                 int done = _counts.Sync(bag, bank, atSave);
                 if (done == 1)
                     SayOnce("the mods' items' counts are taken from the save loaded.");
+                // (2.0.0) War of the Lions' items' counts, where the framework gives them: kept where WotL Restoration
+                // keeps its own.
+                if (_wotl.Count > 0 && _wotlCounts.Sync(bag, bank, atSave) == 1)
+                    SayOnce("War of the Lions' items' counts are taken from the save loaded.");
                 // (1.35.0) A save holding the mods' items (in its bag or worn) marked with the numbers as it is made.
                 if (atSave && MarkWith != 0 && Framework.ReadMark(bank) == 0)
                 {
@@ -435,7 +476,7 @@ namespace ModStudioEventSetup
                 return;
             }
             var said = new List<string>();
-            var table = ItemRoom.WithItemRows(new ReadOnlySpan<byte>((void*)bytes, (int)size), _given, said, out string why);
+            var table = ItemRoom.WithItemRows(new ReadOnlySpan<byte>((void*)bytes, (int)size), _all, said, out string why);
             foreach (var line in said)
                 SayOnce(line);
             if (table == null)
@@ -450,7 +491,10 @@ namespace ModStudioEventSetup
             *(long*)(file + Hooks.FileSize) = table.Length;
             *(nint*)(file + Hooks.FileBytes) = copy;
             int added = _given.Count;
-            _say($"Item: the mods' items' {added} row{(added == 1 ? "" : "s")} added.");
+            if (added > 0)
+                _say($"Item: the mods' items' {added} row{(added == 1 ? "" : "s")} added.");
+            if (_wotl.Count > 0)
+                _say($"Item: War of the Lions' items' {_wotl.Count} rows added.");
         }
 
         /// <summary>The first equipment bonus row past every one an item names (the game's, and another mod's: each

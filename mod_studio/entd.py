@@ -38,7 +38,7 @@ Each file holds 128 events, each event 16 unit slots, each slot 40 bytes:
 128 x 16 x 40 = 81,920, which is the exact size of all four files. Four
 files cover event ids 0x000-0x1FF, file *n* starting at (n-1) * 0x80.
 
-**A fifth file is in the game, and nothing reads it.** The PSP release has
+**A fifth file is in the game** (read here since 16 November). The PSP release has
 an ENTD5 with more battles (FFTPatcher ships it as `PSP/bin/ENTD5.bin`, and
 reads it at event id 0x200 upward). It was thought cut from The Ivalice
 Chronicles; measured 12 October, it is there:
@@ -46,7 +46,10 @@ Chronicles; measured 12 October, it is there:
 of 16 units (ids 0x200 to 0x24C), in both `fftpack.bin`s and the unpacked
 folder. The database still stops short of it - `EntryNo` holds exactly 512
 rows and `OverrideEntryData.Key` tops out at 500, both inside 0x1FF - so
-this module reads the four, and an event id above 511 is not one of them.
+this module read the four alone until 16 November. The game does read it
+(measured in his program: a battle from 0x200 on is taken from it), so
+since then it is read too where it is beside the four (`find_add_on`,
+`EntdTables.from_files`): `MAX_EVENT_ID` stays the four files' last.
 
 ### The mapping into Mod Studio
 
@@ -103,6 +106,22 @@ ENTD_FILENAMES = tuple(
 
 #: Where they live inside an unpacked game folder.
 ENTD_FOLDER = "fftpack"
+
+#: (16 November, Zodi's third point: "override every single 16 unit slot for
+#: every battle") The add on file, 77 more battles from 0x200 (see the notes
+#: at the top). The game does read it: its battle's load (`0x30428C` in his
+#: program) takes a battle from 0x200 on from it
+#: (`claude/battle-units-research.md`). Read when it is beside the four;
+#: without it the four alone are the battles, as before.
+ADD_ON_FILENAME = "event_btlevt_bin_entrydata_add_ent.bin"
+ADD_ON_FIRST = 0x200
+ADD_ON_EVENTS = 77
+ADD_ON_BYTES = ADD_ON_EVENTS * EVENT_BYTES              # 49,280
+#: The last battle of the add on file (0x24C).
+ADD_ON_LAST = ADD_ON_FIRST + ADD_ON_EVENTS - 1
+#: What the unpack's filter takes for it: a plain substring, which only this
+#: file of the whole game holds (his unpacked game's listing).
+ADD_ON_FILTER = f"{ENTD_FOLDER}/event_btlevt_bin_entrydata_add"
 
 #: 0xFE is "Random" on far more fields than the equipment ones. A layout
 #: probe over all 8,192 slots flagged Bravery, Faith, Month, Day and Facing
@@ -400,17 +419,33 @@ def find_entd_files(unpacked_dir) -> list:
     return []
 
 
+def find_add_on(unpacked_dir) -> Optional[Path]:
+    """The add on file inside an unpacked game folder (`ADD_ON_FILENAME`), or None when it isn't there."""
+    if unpacked_dir is None:
+        return None
+    path = Path(unpacked_dir) / ENTD_FOLDER / ADD_ON_FILENAME
+    try:
+        return path if path.is_file() else None
+    except OSError:
+        return None
+
+
 class EntdTables:
     """
-    The 512 events, read once and kept.
+    The 512 events, read once and kept; (16 November) and the add on file's
+    77 where it is beside them (`find_add_on`), with every battle's own 640
+    bytes (`block`), which a mod's units are held against
+    (`mod_battles`).
 
     Read once because all four files together are 320 KB and the answer
     does not change while the tool runs - the same bargain
     `pzd_data.build_voice_index` makes, at a fraction of the cost.
     """
 
-    def __init__(self, events: dict):
+    def __init__(self, events: dict, blocks: Optional[dict] = None):
         self.events = events
+        #: `{battle: its 640 bytes}`, as the files have them.
+        self.blocks = dict(blocks or {})
 
     # -- loading ----------------------------------------------------------
 
@@ -429,14 +464,26 @@ class EntdTables:
         if not paths:
             return None
         try:
-            return cls.from_files(paths)
+            return cls.from_files(paths, find_add_on(unpacked_dir))
         except (OSError, ValueError):
             return None
 
     @classmethod
-    def from_files(cls, paths) -> "EntdTables":
-        """`paths` in file order: battle_entd1 first."""
+    def from_files(cls, paths, add_on=None) -> "EntdTables":
+        """`paths` in file order: battle_entd1 first. `add_on`: the add on
+        file, its battles from `ADD_ON_FIRST` (left out when it isn't a
+        whole number of battles: read by this layout it would give numbers
+        that aren't the game's)."""
         events = {}
+        blocks = {}
+        if add_on is not None:
+            more = Path(add_on).read_bytes()
+            if more and len(more) % EVENT_BYTES == 0:
+                for event in range(len(more) // EVENT_BYTES):
+                    base = event * EVENT_BYTES
+                    event_id = ADD_ON_FIRST + event
+                    blocks[event_id] = more[base:base + EVENT_BYTES]
+                    events[event_id] = battle_units(blocks[event_id], event_id)
         for index, path in enumerate(paths):
             data = Path(path).read_bytes()
             if len(data) != FILE_BYTES:
@@ -450,12 +497,35 @@ class EntdTables:
             for event in range(EVENTS_PER_FILE):
                 base = event * EVENT_BYTES
                 event_id = index * EVENTS_PER_FILE + event
+                blocks[event_id] = data[base:base + EVENT_BYTES]
                 events[event_id] = [
                     read_unit(data[base + slot * UNIT_BYTES:
                                    base + (slot + 1) * UNIT_BYTES],
                               event_id, slot)
                     for slot in range(UNITS_PER_EVENT)]
-        return cls(events)
+        return cls(events, blocks)
+
+    def battles(self) -> list:
+        """Every battle the files hold, in order: the four files' 512 and the add on file's where it was read."""
+        return sorted(self.events)
+
+    def block(self, key: int) -> Optional[bytes]:
+        """A battle's own 640 bytes as its file has them, or None for a battle the files don't hold."""
+        try:
+            return self.blocks.get(int(key))
+        except (TypeError, ValueError):
+            return None
+
+    def entry(self, key: int, key2: int) -> Optional[bytes]:
+        """One place's 40 bytes of a battle as its file has them (an empty place's too), or None outside the files."""
+        block = self.block(key)
+        try:
+            slot = int(key2)
+        except (TypeError, ValueError):
+            return None
+        if block is None or not 0 <= slot < UNITS_PER_EVENT:
+            return None
+        return block[slot * UNIT_BYTES:(slot + 1) * UNIT_BYTES]
 
     # -- lookup -----------------------------------------------------------
 

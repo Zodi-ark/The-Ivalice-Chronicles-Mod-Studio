@@ -55,6 +55,7 @@ from ... import constants as c
 from ... import item_xml_io as ix
 from ... import reference_names
 from ... import texture_data as td
+from ... import wotl_items as wl
 from ..widgets import actions
 from ..widgets.actions import (
     page_intro,
@@ -438,6 +439,17 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         self.body.setStretchFactor(0, 0)
         self.body.setStretchFactor(1, 1)
         right.addWidget(self.body, 1)
+        # (The twenty fifth session, 16 November 2026: Zodi's first point of that day, "edited on the Items page";
+        # his "Always listed (Recommended)" and, for how one is edited, "I go with your recommendations") War of the
+        # Lions' 40 items are listed after the game's, and one picked is edited on the New Content page's item
+        # sheet, shown here in the form's place (`lion_items`: its notes say why the sheet and not this form).
+        # Made here and not at the module's top: that module leans on this one.
+        from .lion_items import LionItemPane
+        self.lion_pane = LionItemPane(state)
+        self.lion_pane.setVisible(False)
+        self.lion_pane.changed.connect(self._after_edit)
+        self.lion_pane.named.connect(self._relabel_lions)
+        right.addWidget(self.lion_pane, 1)
         split.addLayout(right, 1)
 
                 # The counter goes on a line of its OWN, directly above the body.
@@ -1254,6 +1266,10 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         before setup; one that used only the XML would never show a
         translation.
         """
+        if wl.is_one(item_id):
+            # One of War of the Lions' 40: its name as the mod has it.
+            from .lion_items import LISTED
+            return LISTED.format(number=item_id, name=self.lion_pane.name_of(item_id))
         edited = self._edited_name(item_id)
         if edited:
             return f"{item_id:03d} - {edited}"
@@ -1279,12 +1295,19 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
             item = QListWidgetItem(self._display_name(record.item_id))
             item.setData(Qt.UserRole, record.item_id)
             self.list.addItem(item)
+        # (16 November 2026) War of the Lions' 40 after the game's, for every mod (his "Always listed").
+        for number in (self.lion_numbers() if records else ()):
+            item = QListWidgetItem(self._display_name(number))
+            item.setData(Qt.UserRole, number)
+            self.list.addItem(item)
 
         has_data = bool(records)
         set_empty_state(
             self.empty_note, has_data,
             self.body, self.search, self.list, self.editing_label,
             self.language_controls, self.counter)
+        if not has_data:
+            self.lion_pane.setVisible(False)
         self._mark_edited()
         self._update_counter()
         if self.list.count():
@@ -1382,7 +1405,36 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
 
     # -- loading ------------------------------------------------------------
 
+    def lion_numbers(self) -> tuple:
+        """War of the Lions' 40 items' numbers, as the list has them after the game's items."""
+        return wl.numbers()
+
+    def is_lion(self, item_id) -> bool:
+        """Whether an item of the list is one of War of the Lions' 40 (edited on the sheet, not this form)."""
+        return wl.is_one(item_id)
+
+    def _relabel_lions(self) -> None:
+        """The 40's lines of the list, and the title over one shown, said again (one was renamed)."""
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            if self.is_lion(item.data(Qt.UserRole)):
+                item.setText(self._display_name(item.data(Qt.UserRole)))
+        if self.is_lion(self.current_item_id):
+            self.editing_label.setText(f"Editing: {self._display_name(self.current_item_id)}")
+        self._filter_list(self.search.text())
+
     def load_record(self, item_id: int) -> None:
+        lion = self.is_lion(item_id)
+        # The form for one of the game's items, the sheet for one of War of the Lions': one of the two shown. The
+        # language's copy button is the form's (the 40 have one set of words).
+        self.body.setVisible(not lion)
+        self.lion_pane.setVisible(lion)
+        self.copy_button.setEnabled(not lion)
+        if lion:
+            self.current_item_id = item_id
+            self.editing_label.setText(f"Editing: {self._display_name(item_id)}")
+            self.lion_pane.show_item(item_id)
+            return
         self._loading = True
         try:
             self.current_item_id = item_id
@@ -1669,7 +1721,7 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         Japanese table is not a translation, it is a mod that ships English
         text claiming to be Japanese.
         """
-        if self.current_item_id is None:
+        if self.current_item_id is None or self.is_lion(self.current_item_id):
             return
         copy_edits_to_languages(
             self.state.item_edits, self.language, self.current_item_id,
@@ -1687,6 +1739,9 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         list or its icon is an edited item, and a list that marked only base
         edits would show a mod's own work as untouched.
         """
+        if self.is_lion(item_id):
+            # (16 November 2026) One of War of the Lions' 40: the mod has its own version of it.
+            return item_id in (getattr(self.state, "wotl_items", None) or {})
         if self.state.item_edits.get(self.language, {}).get(item_id):
             return True
         # EVERY item table, which is what the docstring above has always
@@ -1733,6 +1788,9 @@ class ItemsPage(RefreshesWhenVisible, QWidget):
         # added up table counts separately.
         edited = sum(1 for record in self.records()
                      if self._is_edited(record.item_id))
+        # (16 November 2026) And War of the Lions' 40 the mod has its own version of, where they are listed.
+        if self.records():
+            edited += sum(1 for number in self.lion_numbers() if self._is_edited(number))
         self.counter.setText(
             edit_counter_text(edited, self.list.count(), "items"))
 

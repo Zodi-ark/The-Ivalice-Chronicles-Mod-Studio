@@ -1539,7 +1539,9 @@ JOB_NXD_NUMERIC_FIELDS = {
 JOB_NXD_NUMERIC_LABELS = {
     "jobtype+Id": "Job Type ID",
     "jobcommand+Id": "Job Command ID (nxd copy)",
-    "TexturePartsIndex": "Face Texture Parts Index",
+    # (Approved by Zodi, 13 November, 00:43) The job's icon's number, measured: one routine names the icon's part list
+    # j_<number>_uitx from it (dev/research/sidequests/job_art.py); the layout file's note called it a face's.
+    "TexturePartsIndex": "Job Icon Number",
     "uijobabilityhelp+Id": "Ability Help Text ID",
     "egg+Id": "Egg ID",
     "HideJobTree": "Hide From Job Tree",
@@ -1553,10 +1555,7 @@ JOB_NXD_NUMERIC_NOTES = {
         "The same value as Job Command above, in the .nxd. Both are written "
         "together - see the note on that row."
     ),
-    "TexturePartsIndex": (
-        "Picks the face texture: "
-        "ui/ffto/common/face/textureparts/wldface_<job>_<index>_uitx.utexpt"
-    ),
+    "TexturePartsIndex": "The job's icon: ui/ffto/icon/job/textureparts/j_<number>_uitx.utexpt",
     "uijobabilityhelp+Id": "Links to the uijobabilityhelp table. 0-34 in vanilla.",
     "egg+Id": "Links to the egg table. 0-48 in vanilla.",
     "HideJobTree": "1 hides the job from the job tree. 25 jobs use this.",

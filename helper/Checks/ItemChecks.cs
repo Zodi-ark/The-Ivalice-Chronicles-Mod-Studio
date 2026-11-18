@@ -10,7 +10,10 @@
 //
 // The request: {"program", "moved": a page's address or 0, "data", "page", "lowTest" (addresses from the program's
 // start), "firstRow", "numbers" (a file or ""), "mods": [{"id", "name", "folder"}], "table" (an Item table's .nxd or
-// ""), "counts": [[bag 66 bytes hex, bank 1024 bytes hex, atSave] ...] (a sequence run through one Counts), and
+// ""), "counts": [[bag 66 bytes hex, bank 1024 bytes hex, atSave] ...] (a sequence run through one Counts), (2.0.0,
+// optional) "lions": true (War of the Lions' items planned as Mod.PlanItems plans them: each mod's
+// ModStudioWotLItems.json read, the 40 given their rows before the mods' own items', their block at "lionsData",
+// "lionsCounts" a sequence run through one WotLItems.Counts, each [bag 55 bytes hex, bank 1024 bytes hex, atSave]), and
 // (1.27.0, optional) "stock": [{"items", "category", "listed", "storyPoint", "mode", "cantUse"} ...] (the words a game
 // town's Outfitter's list gets for each, ItemRoom.Appended: "cantUse" the items the unit can't use)}.
 using System;
@@ -66,8 +69,80 @@ static class ItemChecks
         var numbers = numbersPath.Length > 0 && File.Exists(numbersPath)
             ? Numbers.FromText(File.ReadAllText(numbersPath), problems) : new Numbers();
         var said = new List<string>();
-        var given = ItemRoom.Plan(items, numbers, r.GetProperty("firstRow").GetInt32(), said);
+        // (2.0.0) War of the Lions' items, as Mod.PlanItems plans them: asked for by a mod's file, WotL Restoration's
+        // where its page is made, their rows before the mods' own items'.
+        int firstRow = r.GetProperty("firstRow").GetInt32();
+        var lions = new List<ItemRoom.Given>();
+        if (r.TryGetProperty("lions", out var lionsAsked) && lionsAsked.ValueKind == JsonValueKind.True)
+        {
+            bool asked = false;
+            var changed = new Dictionary<int, ModItem>();
+            var theirProblems = new List<string>();
+            foreach (var mod in r.GetProperty("mods").EnumerateArray())
+            {
+                var theirs = WotLItems.ReadMod(mod.GetProperty("id").GetString()!, mod.GetProperty("name").GetString()!,
+                                               mod.GetProperty("folder").GetString()!, theirProblems);
+                if (theirs == null)
+                    continue;
+                asked = true;
+                foreach (var (number, item) in theirs)
+                    changed[number] = item;
+            }
+            var lionsSaid = new List<string>();
+            string lionsLine = "";
+            if (asked && found.Moved)
+                lionsLine = WotLItems.TheirsLine;
+            else if (asked)
+            {
+                lions = WotLItems.Plan(firstRow, changed, lionsSaid, out firstRow);
+                int theirs = 0;
+                foreach (var g in lions)
+                    if (g.Item.ModId != WotLItems.ModId)
+                        theirs++;
+                if (lions.Count > 0)
+                    lionsLine = WotLItems.Line(lions, theirs);
+            }
+            var lionsOut = new List<object>();
+            foreach (var g in lions)
+                lionsOut.Add(new Dictionary<string, object>
+                {
+                    ["key"] = g.Item.Key, ["mod"] = g.Item.ModId, ["name"] = g.Item.Name, ["number"] = g.Number,
+                    ["row"] = g.Row, ["kind"] = (int)g.Item.Kind, ["record"] = Hex(ItemRoom.Record(g)),
+                    ["kindRecord"] = Hex(g.Item.KindRecord), ["pair"] = Hex(g.Item.SpritePair),
+                    ["bonus"] = g.Item.Bonus == null ? "" : Hex(g.Item.Bonus), ["icon"] = g.Item.Icon,
+                    ["iconPicture"] = g.Item.IconPicture, ["row40"] = Hex(ItemRoom.ItemRow(g.Item, g.Number)),
+                    ["uiCategory"] = g.Item.UiCategory, ["sort"] = g.Item.Sort, ["uiStatus"] = g.Item.UiStatus,
+                    ["randomDamage"] = g.Item.RandomDamage, ["description"] = g.Item.Description,
+                });
+            ulong lionsAt = r.TryGetProperty("lionsData", out var at) ? (ulong)at.GetInt64() : 0;
+            var lionsCounts = new WotLItems.Counts();
+            var lionsSteps = new List<object>();
+            if (r.TryGetProperty("lionsCounts", out var theirSteps))
+                foreach (var step in theirSteps.EnumerateArray())
+                {
+                    var bag = new byte[ItemRoom.LastItem + 1];
+                    Convert.FromHexString(step[0].GetString()!).CopyTo(bag, WotLItems.First);
+                    var bank = Convert.FromHexString(step[1].GetString()!);
+                    int done = lionsCounts.Sync(bag, bank, step[2].GetBoolean());
+                    lionsSteps.Add(new Dictionary<string, object>
+                    {
+                        ["done"] = done, ["bag"] = Hex(bag.AsSpan(WotLItems.First, WotLItems.Count)), ["bank"] = Hex(bank),
+                    });
+                }
+            report["lions"] = new Dictionary<string, object>
+            {
+                ["asked"] = asked, ["problems"] = theirProblems, ["said"] = lionsSaid, ["line"] = lionsLine,
+                ["given"] = lionsOut, ["nextRow"] = firstRow,
+                ["data"] = lions.Count == 0 ? "" : Hex(ItemRoom.Data(lions, lionsAt, WotLItems.First)),
+                ["code"] = lions.Count == 0 ? "" : Hex(ItemRoom.Code(lionsAt, out _, WotLItems.First, WotLItems.Count)),
+                ["counts"] = lionsSteps, ["first"] = WotLItems.First, ["count"] = WotLItems.Count,
+                ["tail"] = WotLItems.Tail, ["magic"] = Hex(WotLItems.TailMagic),
+            };
+        }
+        var given = ItemRoom.Plan(items, numbers, firstRow, said);
         report["said"] = said;
+        var all = new List<ItemRoom.Given>(lions);
+        all.AddRange(given);
         // (1.35.0, optional "stamp") The numbers stamped as the helper keeps them once its items are given (Mod.PlanItems):
         // a mark for the items' numbers no name had.
         if (r.TryGetProperty("stamp", out var stamp) && stamp.ValueKind == JsonValueKind.True)
@@ -99,6 +174,12 @@ static class ItemChecks
         foreach (var (town, sold) in ItemRoom.TownItems(given))
             townItems[town.ToString()] = sold;
         report["townItems"] = townItems;
+        // (Test 126) The game's towns' Outfitters as the running framework stocks them: War of the Lions' 40 and the
+        // mods' own items together (ItemHooks' _all), so one of the 40 a mod's version sells is held too.
+        var townItemsAll = new Dictionary<string, List<int>>();
+        foreach (var (town, sold) in ItemRoom.TownItems(all))
+            townItemsAll[town.ToString()] = sold;
+        report["townItemsAll"] = townItemsAll;
         var shopsLines = new List<string>();
         foreach (var g in given)
             if (g.Item.Shops.Length > 0)
@@ -153,13 +234,13 @@ static class ItemChecks
             var lists = ItemRoom.Lists(image, found, PreferredBase);
             report["lists"] = lists;
             if (!found.Moved && !Array.Exists(lists, l => l < 0))
-                report["page"] = Hex(ItemRoom.Page(image, found, lists, given));
+                report["page"] = Hex(ItemRoom.Page(image, found, lists, all));
         }
         string tablePath = r.GetProperty("table").GetString() ?? "";
         if (tablePath.Length > 0 && File.Exists(tablePath))
         {
             var rowsSaid = new List<string>();
-            var table = ItemRoom.WithItemRows(File.ReadAllBytes(tablePath), given, rowsSaid, out string tableWhy);
+            var table = ItemRoom.WithItemRows(File.ReadAllBytes(tablePath), all, rowsSaid, out string tableWhy);
             report["table"] = table == null ? null : Hex(table);
             report["tableWhy"] = tableWhy;
             report["tableSaid"] = rowsSaid;

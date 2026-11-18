@@ -62,6 +62,14 @@ DATA = {
     "FFTIVC/data/enhanced/ui/ffto/worldmap/textureparts/msq_quest_marker_uitx.utexpt":
         "helper/marker/msq_quest_marker_uitx.utexpt",
 }
+#: (The twenty third session, toward 2.0.0) War of the Lions' 40 items' own icons (helper/wotl_items/, made by
+#: dev/research/sidequests/make_wotl_icons.py from Zodi's own pictures): each one's menus' texture and part list and
+#: its small one's, at the paths the game's own item icons have.
+_ICONS = "FFTIVC/data/enhanced/ui/ffto/icon"
+for _file in sorted((ROOT / "helper" / "wotl_items").glob("msf_wotl_*.*")):
+    _small = _file.stem.endswith("_s")
+    _kind = "texture" if _file.suffix == ".tex" else "textureparts"
+    DATA[f"{_ICONS}/equip_item{'_s' if _small else ''}/{_kind}/{_file.name}"] = f"helper/wotl_items/{_file.name}"
 INTERFACES_NAME = "Reloaded.Mod.Interfaces"
 #: The shared hooks' interfaces the helper carries (1.1.0): each DLL's name and version.
 HOOKS = {"Reloaded.Hooks.Definitions": (1, 11, 0, 0), "Reloaded.Hooks.ReloadedII.Interfaces": (1, 9, 0, 0)}

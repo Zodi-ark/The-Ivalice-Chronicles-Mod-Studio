@@ -188,6 +188,14 @@ class WizardState:
         self.roads = {}
         self.items = {}
         self.item_looks = {}
+        self.mod_jobs = {}
+        self.mod_abilities = {}
+        self.battle_units = {}
+        self.battle_treasures = {}
+        self.wotl_items = {}
+        self.wotl_art = {}
+        self.sprite_art = {}
+        self.effect_art = {}
         self.script_edits = {}
         self.setup_edits = {}
         self.sound_file_replacements = {}
@@ -771,6 +779,43 @@ class WizardState:
     #: mod's `ModStudioItemLooks.json` (`mod_items.LOOKS_FILE`), with Mod Studio Framework beside it, which writes
     #: each where the game's program keeps it; opening the mod brings them back.
     item_looks: dict = field(default_factory=dict)
+    #: (Zodi's order of 13 November: "the Jobs page") The mod's own jobs and abilities, made on the New Content page's
+    #: Jobs and Abilities tabs: `{folder: mod_jobs.JobEdit}` and `{folder: mod_jobs.AbilityEdit}`, in their folders'
+    #: order. At export each goes into the mod as `ModStudioJobs/<folder>/job.json` and
+    #: `ModStudioAbilities/<folder>/ability.json`, with Mod Studio Framework beside it, which numbers each and gives
+    #: it to the game; opening the mod brings them back. (`jobs` is the Jobs page's own: the game's jobs' edits.)
+    mod_jobs: dict = field(default_factory=dict)
+    mod_abilities: dict = field(default_factory=dict)
+    #: (16 November 2026, Zodi's third point: "override every single 16 unit slot for every battle") The mod's units
+    #: of the game's battles that the game's override table has no row for, and the places it makes a unit in:
+    #: `{(battle, place 0 to 15): mod_battles.UnitEdit}` (its bits over the battle file's 40 bytes, one of the mod's
+    #: own jobs, its items past 255), set on the Encounters page; and, of his first point, its buried treasures'
+    #: items past 255: `{(map, tile 0 to 3): {"Rare": item, "Common": item}}`, set on the Treasure Hunter page. At
+    #: export the mod's `ModStudioBattles.json` (`mod_battles.FILE`), with Mod Studio Framework beside it, which
+    #: gives each to the game as a battle loads; opening the mod brings them back.
+    battle_units: dict = field(default_factory=dict)
+    battle_treasures: dict = field(default_factory=dict)
+    #: (16 November 2026, Zodi's first point: War of the Lions' items "edited on the Items page") The mod's own
+    #: version of any of War of the Lions' 40 items: `{item number (261 to 313): mod_items.ModItem}`, set on the
+    #: Items page. At export the mod's `ModStudioWotLItems.json` (`wotl_items.FILE`), which is also written, holding
+    #: none, whenever the mod names one of the 40 anywhere: the file's being there is what asks the framework for
+    #: them. Opening the mod brings them back.
+    wotl_items: dict = field(default_factory=dict)
+    #: (The twenty fifth session, 16 November 2026) The mod's own pictures for those of War of the Lions' items it
+    #: gave one, on the Items page: `{item number: wotl_items.Art}` (only for numbers in `wotl_items`). At export
+    #: each one's four texture files beside `ModStudioWotLItems.json`, named of the mod and the item; opening the
+    #: mod reads them back.
+    wotl_art: dict = field(default_factory=dict)
+    #: (The twenty sixth session, 17 November 2026; Zodi's second point of 16 November) The mod's own pictures of
+    #: the game's unit sprites, given on the Textures page: `{sprite number: sprite_textures.SpriteArt}`. At export
+    #: each one's two entries of g2d.dat as the mod loader takes them, and for a bigger picture its sheets and the
+    #: file Mod Studio Framework reads them from; opening the mod reads them back.
+    sprite_art: dict = field(default_factory=dict)
+    #: (The twenty eighth session, 17 November 2026; the same point) The mod's own pictures of the game's effects,
+    #: given on the Textures page: `{effect number: effect_pictures.EffectArt}`, each the effect's whole file as the
+    #: mod has it (the game's own but for its texture section's colors and pixels). At export each is written as
+    #: the mod's own file of that effect; opening the mod reads them back.
+    effect_art: dict = field(default_factory=dict)
 
     def has_places(self) -> bool:
         """Whether the mod has places or roads of its own (the Side Quests page's Places)."""
@@ -780,9 +825,56 @@ class WizardState:
         """(1.26.0) Whether the mod has items of its own (the Side Quests page's Items)."""
         return bool(getattr(self, "items", None))
 
+    def has_mod_jobs(self) -> bool:
+        """Whether the mod has jobs or abilities of its own (the New Content page's Jobs and Abilities)."""
+        return bool(getattr(self, "mod_jobs", None)) or bool(getattr(self, "mod_abilities", None))
+
     def has_item_looks(self) -> bool:
         """(1.28.0) Whether the mod changes a game weapon's look in battle (the Items page's In battle)."""
         return bool(getattr(self, "item_looks", None))
+
+    def has_battles(self) -> bool:
+        """(16 November 2026) Whether the mod has units of the game's battles or buried treasures of its own
+        (`battle_units`, `battle_treasures`: the Encounters and Treasure Hunter pages)."""
+        from . import mod_battles
+        return mod_battles.has_any(getattr(self, "battle_units", None), getattr(self, "battle_treasures", None))
+
+    def edited_battle_unit_count(self) -> int:
+        """How many units of the game's battles the mod has as its own."""
+        return sum(1 for edit in (getattr(self, "battle_units", None) or {}).values()
+                   if edit is not None and edit.changes())
+
+    def has_sprite_art(self) -> bool:
+        """(17 November 2026) Whether the mod has a picture of its own for any of the game's unit sprites (the
+        Textures page's Unit sprites)."""
+        return bool(getattr(self, "sprite_art", None))
+
+    def has_effect_art(self) -> bool:
+        """(17 November 2026) Whether the mod has a picture of its own for any of the game's effects (the Textures
+        page's Effects)."""
+        return bool(getattr(self, "effect_art", None))
+
+    def has_big_sprites(self) -> bool:
+        """Whether any of those pictures is bigger than the game's (the mod then needs Mod Studio Framework)."""
+        from . import sprite_textures
+        return sprite_textures.has_big(getattr(self, "sprite_art", None))
+
+    def has_big_effects(self) -> bool:
+        """(The twenty ninth session) Whether any of the mod's pictures of effects is bigger than the game's (the
+        Textures page's Effects): the mod's `ModStudioTextures.json` then names it, and the mod needs Mod Studio
+        Framework."""
+        from . import effect_pictures
+        return effect_pictures.has_big(getattr(self, "effect_art", None))
+
+    def has_big_figures(self) -> bool:
+        """(17 November 2026) Whether any of the mod's jobs has a figure given bigger (the New Content page's Jobs
+        tab): the mod's `ModStudioTextures.json` then names it."""
+        from . import job_looks
+        return job_looks.has_big(getattr(self, "mod_jobs", None))
+
+    def has_wotl_items(self) -> bool:
+        """(16 November 2026) Whether the mod changes any of War of the Lions' items (the Items page)."""
+        return bool(getattr(self, "wotl_items", None))
 
     def edited_map_numbers(self) -> list:
         """The maps with a tile edit or a grid replaced whole, as numbers."""

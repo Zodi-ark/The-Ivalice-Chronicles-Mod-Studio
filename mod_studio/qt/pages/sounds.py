@@ -85,7 +85,7 @@ from ..widgets.field_rows import CollapsibleSection
 from ..widgets.marked_tree import MarkedTreeView
 from ..widgets.number_boxes import FittedSpinBox
 from ..workers import Worker, run_in_thread
-from ..pages.textures import TexturePathFilter, TreePaneSizer
+from ..pages.textures import TexturePathFilter, TreePaneSizer, TreeSearch
 from ..audio_output import LoopPlayer
 from ..widgets.waveform import WaveformView
 from ..widgets.stable_button import StableButton
@@ -378,11 +378,13 @@ class SoundsPage(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search by name or folder")
         self.search.setClearButtonEnabled(True)
-        self.search.textChanged.connect(self._on_filter)
         left.addWidget(self.search)
 
         self.tree = MarkedTreeView()
         self.tree.setModel(self.proxy)
+        #: The search, filtering the tree when the typing pauses (`textures.TreeSearch`: Zodi's report of 17 November
+        #: of the Textures page's search; this page's is the same, over 14,545 sound archives).
+        self.searching = TreeSearch(self.search, self.tree, self.proxy)
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
         self.tree.setMinimumWidth(280)
@@ -784,13 +786,6 @@ class SoundsPage(QWidget):
         self.search.setEnabled(tree is not None)
         self._update_counter()
 
-    def _on_filter(self, text: str) -> None:
-        self.proxy.setFilterFixedString(text)
-        if text.strip():
-            self.tree.expandAll()
-        else:
-            self.tree.collapseAll()
-
     def _open_selected_archive(self) -> None:
         """
         Opens whatever archive is now selected.
@@ -880,6 +875,7 @@ class SoundsPage(QWidget):
             # a failure - the file exists and the person asked for it, so
             # the filter is the thing that should give way.
             self.search.clear()
+            self.searching.apply()        # (a change made in code is applied at once; said again, to be sure)
             mapped = self.proxy.mapFromSource(index)
             if not mapped.isValid():
                 return False

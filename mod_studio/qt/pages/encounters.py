@@ -48,6 +48,39 @@ a row (`entry_dropped`) exists in the engine for recovery - it is how a mod
 that vacated an address is read back - rather than as something to offer as
 "delete this row", which would invite exactly the row-count change that does
 not work.
+
+**Every one of the 16 places of every battle is listed, and every one is
+edited** (16 November 2026, Zodi's third point of that day: "can we overcome
+this and allow users to override every single 16 unit slot for every battle
+... the empty slots are missing I believe"). Measured in his program
+(`claude/battle-units-research.md`): the game's reader of the table has no
+count of rows, and a row has no column for a unit's name, birthday, palette,
+team, war trophy, gil or AI, so a row alone can't make a unit in an empty
+place. So three kinds of place stand in the list:
+
+* **a unit with a row** is edited in the game's table, as before;
+* **a unit without one** is edited as a whole unit, on the card a quest's
+  battle's unit has (`side_quests.unit_card_of`): the mod's bits over the
+  battle file's 40 bytes (`mod_battles`, `state.battle_units`), written at
+  export to the mod's `ModStudioBattles.json`, which Mod Studio Framework
+  gives the game as the battle loads;
+* **an empty place** (its sprite set 0: the game makes no unit there) reads
+  "Empty" in grey, and Add a unit makes one there, a copy of the unit picked
+  before it or the battle's first (his choice of 16 November).
+
+**Trade a row is gone** (his choice of 16 November, "Remove it"): it spent
+one of the 516 rows to reach a unit the table didn't cover, which every unit
+now is without it. A mod made with traded rows still opens and exports the
+same (`state.entry_rekeys`), and a traded row can still be put back (Undo
+trade).
+
+**The add on file's 77 battles** (0x200 to 0x24C), which the game does read,
+are listed where the file is unpacked (`entd.find_add_on`).
+
+**An item past the 255 a byte holds** (the game's own five, War of the
+Lions' 40, the mod's own) is offered wherever a unit's item is chosen: a
+row's column stays as it was and the item goes to the unit in
+`ModStudioBattles.json` (`wide_item_choices`).
 """
 from __future__ import annotations
 
@@ -56,9 +89,9 @@ from typing import Optional
 from PySide6.QtCore import QRect, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFontMetrics, QPalette, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox,
+    QAbstractItemView, QApplication, QComboBox,
     QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPushButton, QSizePolicy, QStyle,
+    QPushButton, QSizePolicy, QStyle,
     QStyledItemDelegate, QStyleOptionViewItem, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget,
 )
@@ -66,10 +99,13 @@ from PySide6.QtWidgets import (
 from ... import constants as c
 from ... import encounter_names
 from ... import entd
+from ... import mod_battles as mb
+from ... import mod_items as mi
 from ... import nxd_data
 from ... import nxd_layouts
 from ... import reference_names
 from ... import unit_sprites
+from ... import wotl_items
 from ..widgets.actions import (
     page_intro,
     COPY_LANGUAGES_LABEL, COPY_LANGUAGES_NOTE, ViewToggles, apply_view_toggles,
@@ -78,6 +114,7 @@ from ..widgets.actions import (
 from ..widgets.field_rows import (
     CollapsibleSection, DropdownFieldRow, NumericFieldRow)
 from ..widgets.form_scroll import FormScrollArea
+from ..widgets.layout_settle import retire
 from ..widgets.visible_refresh import RefreshesWhenVisible
 from .encounter_map import EncounterMap, MapUnit, drawn_palette
 from .poaching import BoolFieldRow, TextFieldRow
@@ -132,17 +169,25 @@ GREYED = QBrush(QColor(0x88, 0x88, 0x88))
 #: `EncounterNames.txt` still opens on the same battle.
 FIRST_STORY_ENCOUNTER = 384
 
-#: What a greyed row says when you select it. The right-hand pane, not a
-#: tooltip.
-#:
-#: It was both, and the tooltip was the wrong half: 7,313 rows carried a
-#: four-line explanation that appeared under the pointer while scrolling
-#: past them. The same sentence is on the page the moment one is selected,
-#: which is the moment it is worth reading.
-ENTD_ONLY_MESSAGE = (
-    "This ENTD unit lacks an override row. Since the mod loader ignores "
-    "new OverrideEntryData rows, the count must stay at 516. Replace an "
-    "unused row instead.")
+#: (16 November 2026) What a unit the game's table has no row for says under its name: where its changes are kept.
+#: The right-hand pane, not a tooltip (a tooltip on 8,900 rows appeared under the pointer while scrolling past
+#: them).
+UNIT_NOTE = ("The game's table has no row for this unit. Its changes are kept in ModStudioBattles.json, which "
+             "Mod Studio Framework gives the game.")
+#: What an empty place reads in the list and over its pane, what it says there, and its button (Zodi's choice of 16
+#: November: "Copy of a unit").
+EMPTY_PLACE = "Empty"
+EMPTY_NOTE = "The game makes no unit in this place. Add a unit puts a copy of one of this battle's units here."
+EMPTY_NOTE_NO_UNIT = "The game makes no unit in this place, and this battle has no unit to copy."
+ADD_UNIT = "Add a unit"
+ADD_UNIT_TIP = "A copy of the unit picked before this place (or the battle's first), ready to change"
+#: A unit the mod changed put back as the game has it, and its tip.
+AS_THE_GAME = "As the game has it"
+AS_THE_GAME_TIP = "Takes the mod's changes off this unit"
+#: The card's line under its name (the quest battle's says a unit stands on the map as it is changed).
+UNIT_CARD_BLURB = ""
+#: The counter's second half, once the mod has units the table has no row for.
+MORE_UNITS = "{line}, and {n:,} more {units} changed"
 
 #: Between the two halves of a slot's label: its sprite, then its level.
 SLOT_SEPARATOR = "  ·  "
@@ -669,112 +714,120 @@ def inherited_entry_label(field_name: str, inherited_value,
     return f"{inherited_value}{INHERITED_SUFFIX}"
 
 
-class TradeRowDialog(QDialog):
+def wide_item_choices(state, language: str = "en") -> dict:
     """
-    "which row would you like to trade out?"
+    (16 November 2026, Zodi's first point of that day) The items past the 255
+    a byte holds, for each of the five places a unit wears one:
+    `{the place's field (`entd.BYTE_FIELDS`): [(key, words)]}`, each key the
+    item's as a dropdown keeps it (`mod_battles.ref_key`).
 
-    A plain searchable list of the rows that exist, because the answer is
-    a judgement the tool cannot make: which battle the author does not care
-    about is the whole content of the decision, and a tool that picked one
-    would be picking somebody's favourite fight.
+    Three kinds, in this order: **the game's own five** (256 to 260: until now
+    listed as "above 255, can't be set here"), by the type its row of the Item
+    table has; **War of the Lions' 40** (261 to 313, `wotl_items`), by their
+    kinds; **the mod's own items** (`state.items`), by their kinds, each by
+    its Name, as the framework finds it. A weapon or a shield goes in either
+    hand, as the game's own.
+    """
+    wanted = {"head": (mi.HEAD,), "body": (mi.BODY,), "accessory": (mi.ACCESSORY,),
+              "right_hand": (mi.WEAPON, mi.SHIELD), "left_hand": (mi.WEAPON, mi.SHIELD)}
+    columns = {"head": "Head", "body": "Body", "accessory": "Accessory", "right_hand": "RightHand",
+               "left_hand": "LeftHand"}
+    lions = wotl_items.facts()
+    own = [edit.item for edit in (getattr(state, "items", None) or {}).values()]
+    changed = getattr(state, "wotl_items", None) or {}
+    out = {}
+    for field, kinds in wanted.items():
+        found = []
+        game = base_choices_for(state, columns[field], language)
+        for number in sorted(n for n in game if mb.FIRST_WIDE <= n <= mb.LAST_GAME):
+            found.append((mb.ref_key(number), game[number]))
+        for fact in lions:
+            if fact.kind in kinds:
+                name = changed[fact.number].word_name if fact.number in changed else fact.name
+                found.append((mb.ref_key(fact.number), name or fact.name))
+        for item in own:
+            if item.kind in kinds:
+                found.append((mb.ref_key(item.name), WIDE_OWN.format(item=item.name)))
+        out[field] = found
+    return out
 
-    Three things it does say, because they change the answer:
 
-    * **What each row is**, by the same label the tree uses - the battle's
-      name and the unit standing in that slot. "83 Balias Tor South 5 /
-      Generic Monster - Random" is a row an author can decide about;
-      "83/2" is not.
-    * **Which rows are already spent**, marked and unselectable. A row
-      traded away once cannot be traded again, and finding that out after
-      choosing would be worse than not being offered it.
-    * **Which rows have edits**, marked, because trading one carries those
-      edits to the new address rather than discarding them. That is the
-      existing rekey behaviour and it surprises people.
+#: One of the mod's own items among a unit's items, and one of its own jobs among a unit's main jobs: the words a
+#: quest unit's card has for its mod's own job (`job_tabs.UNIT_OWN_JOB`).
+WIDE_OWN = "{item} (your mod's own)"
+OWN_JOB = "{job} (your mod's own)"
+#: An encounter row's item columns by the unit's field each is (`entd.BYTE_FIELDS`), and the other way.
+ITEM_COLUMNS = {"Head": "head", "Body": "body", "Accessory": "accessory", "RightHand": "right_hand",
+                "LeftHand": "left_hand"}
+#: An item past 255 a row's unit wears that the lists don't have (one of the mod's own items the mod no longer has).
+WIDE_KEPT = "{item}, an item past 255"
+#: Where a row's dropdown keeps an item past 255 it can't hold in its column: a number of its own past every item
+#: (`WIDE_BASE` and up), so that the dropdown, whose values are numbers, can offer it; `WideNumbers` turns it back
+#: into the item.
+WIDE_BASE = 100000
 
-    Modal and returns the chosen origin address, or None. Nothing is
-    written here - the caller does the rekey, so the dialog has no access
-    to the store and cannot half-apply anything.
+
+class WideNumbers:
+    """
+    (16 November 2026) The numbers a dropdown of numbers keeps the items past
+    255 under (an encounter row's five items, a buried treasure's two): the
+    game's own five and War of the Lions' under their own numbers, one of the
+    mod's own items under a number of the page's own from `WIDE_BASE`, since
+    the game numbers it only as it starts. Kept for a page's life, so an item
+    keeps its number from one refresh to the next.
     """
 
-    #: On a row whose edits would travel with it.
-    EDITED_SUFFIX = "   (has your edits)"
-    #: On a row already traded away.
-    SPENT_SUFFIX = "   (already traded)"
+    def __init__(self):
+        self._numbers: dict = {}
+        self._items: dict = {}
 
-    def __init__(self, page, target, parent=None):
-        super().__init__(parent or page)
-        self.setWindowTitle("Trade a row")
-        self.setModal(True)
-        self._chosen = None
+    def number_of(self, ref) -> int:
+        """The number an item is kept under (given one the first time it is asked for)."""
+        if isinstance(ref, int) and not isinstance(ref, bool):
+            self._items[ref] = ref
+            return ref
+        key = mb.ref_key(ref)
+        if key not in self._numbers:
+            self._numbers[key] = WIDE_BASE + len(self._numbers)
+            self._items[self._numbers[key]] = ref
+        return self._numbers[key]
 
-        column = QVBoxLayout(self)
-        heading = QLabel(
-            f"Give <b>{target[0]}/{target[1]}</b> one of the "
-            f"{len(page.records())} rows that exist.<br>"
-            f"The row you pick stops affecting its own battle and starts "
-            f"affecting this one. Any edits you have made to it travel "
-            f"with it.")
-        heading.setWordWrap(True)
-        column.addWidget(heading)
-
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search battles\u2026")
-        self.search.textChanged.connect(self._filter)
-        column.addWidget(self.search)
-
-        self.list = QListWidget()
-        spent = set(page.state.entry_rekeys)
-        for record in page.records():
-            address = page.address_of(record)
-            label = (f"{address[0]}/{address[1]}   "
-                     f"{page._name_for(record)}   \u00b7   "
-                     f"{page.slot_label(address, record)}")
-            if address in spent:
-                label += self.SPENT_SUFFIX
-            elif page.state.entry_edits.get(address):
-                label += self.EDITED_SUFFIX
-            item = QListWidgetItem(label)
-            item.setData(Qt.UserRole, address)
-            if address in spent:
-                # Unselectable rather than absent: a row that has already
-                # been traded is still a fact about this mod, and leaving
-                # it out would make the list disagree with the count in the
-                # heading.
-                item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
-                item.setForeground(GREYED)
-            self.list.addItem(item)
-        self.list.itemDoubleClicked.connect(lambda _i: self.accept())
-        column.addWidget(self.list, 1)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok
-                                   | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Trade this row")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        column.addWidget(buttons)
-        self.resize(560, 480)
-
-    def _filter(self, text: str) -> None:
-        needle = text.strip().lower()
-        for index in range(self.list.count()):
-            item = self.list.item(index)
-            item.setHidden(bool(needle) and needle not in item.text().lower())
-
-    def chosen(self):
-        """The selected origin address, or None."""
-        item = self.list.currentItem()
-        if item is None or not (item.flags() & Qt.ItemIsEnabled):
+    def item_of(self, number):
+        """The item a number stands for, or None for a number that is no item past 255 (one a byte holds)."""
+        try:
+            number = int(number)
+        except (TypeError, ValueError):
             return None
-        address = item.data(Qt.UserRole)
-        return tuple(address) if address is not None else None
-
-    @classmethod
-    def pick(cls, page, target):
-        """Runs the dialog. Returns the chosen address, or None."""
-        dialog = cls(page, target)
-        if dialog.exec() != QDialog.Accepted:
+        if number <= 255:
             return None
-        return dialog.chosen()
+        if number in self._items:
+            return self._items[number]
+        return number if mb.FIRST_WIDE <= number <= mb.LAST_WIDE else None
+
+    def offered(self, choices) -> dict:
+        """`{number: words}` for `[(key, words)]` (`wide_item_choices`'s lists)."""
+        return {self.number_of(mb.key_ref(key)): words for key, words in choices}
+
+    @staticmethod
+    def label(row, offered: dict) -> None:
+        """A dropdown row's entries for the mod's own items read by their words alone: the number each is kept
+        under is no number of the game's to show."""
+        for number, words in offered.items():
+            if isinstance(number, int) and number >= WIDE_BASE:
+                row.set_choice_label(number, words)
+
+
+def wide_items_of_any_kind(state, language: str = "en") -> list:
+    """Every item past 255 whatever it is worn as, `[(key, words)]`, each once (a buried treasure holds any)."""
+    seen, found = set(), []
+    for choices in wide_item_choices(state, language).values():
+        for key, words in choices:
+            if key not in seen:
+                seen.add(key)
+                found.append((key, words))
+    # In the order of their kinds: the game's own five, War of the Lions' by their numbers, the mod's own by name.
+    return sorted(found, key=lambda pair: (pair[0].startswith("="), mb.key_ref(pair[0])
+                                           if pair[0].startswith("#") else 0, pair[1]))
 
 
 class EncountersPage(RefreshesWhenVisible, QWidget):
@@ -812,6 +865,20 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         #: missing from here is what makes a slot greyed, so it has to
         #: cover all of them.
         self._origin_at: dict = {}
+        # (16 November 2026) A unit the game's table has no row for, while it is the one shown: its place
+        # (`current_address` stays the ROWS' own, None for such a unit, so every writer of a row stays out).
+        self.current_unit = None
+        # What the unit's card is made on (`side_quests.unit_card_of`'s `host`): its controls by their names, and
+        # which of its sections are open, kept from one unit to the next.
+        self.field_widgets: dict = {}
+        self._open_sections: dict = {}
+        self.card = None
+        self._loading_unit = False
+        # The unit picked last in each battle: the one Add a unit copies.
+        self._last_unit: dict = {}
+        # The numbers a row's item dropdowns keep the items past 255 under (`WideNumbers`).
+        self._wide = WideNumbers()
+        self._wide_cache = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 20)
@@ -957,13 +1024,16 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         move_column.setSpacing(4)
 
         move_row = QHBoxLayout()
-        self.trade_button = QPushButton("Trade a row for this slot\u2026")
-        self.trade_button.setToolTip(
-            "The game ignores rows added to OverrideEntryData, so the "
-            "count has to stay at 516. Reaching a new slot means giving up "
-            "an existing row - this picks which one.")
-        self.trade_button.clicked.connect(self.trade_for_current)
-        move_row.addWidget(self.trade_button)
+        # (16 November 2026) Add a unit, for an empty place, and As the game has it, for a unit the mod changed:
+        # where Trade a row for this slot stood (his choice: "Remove it").
+        self.add_unit_button = QPushButton(ADD_UNIT)
+        self.add_unit_button.setToolTip(ADD_UNIT_TIP)
+        self.add_unit_button.clicked.connect(self.add_unit)
+        move_row.addWidget(self.add_unit_button)
+        self.as_game_button = QPushButton(AS_THE_GAME)
+        self.as_game_button.setToolTip(AS_THE_GAME_TIP)
+        self.as_game_button.clicked.connect(self.unit_as_game)
+        move_row.addWidget(self.as_game_button)
 
         self.undo_move_button = QPushButton("Undo trade")
         self.undo_move_button.setEnabled(False)
@@ -1024,6 +1094,13 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         scroll.setWidget(holder)
         self.scroll = scroll
         right.addWidget(scroll, 1)
+
+        # (16 November 2026) Where the card of a unit without a row stands, in the rows' form's place.
+        self.unit_holder = QWidget()
+        self._unit_column = QVBoxLayout(self.unit_holder)
+        self._unit_column.setContentsMargins(0, 0, 0, 0)
+        right.addWidget(self.unit_holder, 1)
+        self.unit_holder.setVisible(False)
 
         # What holds the column together when the form is hidden.
         #
@@ -1097,13 +1174,18 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         """
         if self._entd is None:
             return None
+        origin = self._origin_at.get(tuple(address))
+        if origin is None:
+            # (16 November 2026) A place without a row: the battle file's unit with the mod's bits over it (an
+            # empty place's too: the map draws nothing for it and says so when it is picked).
+            now = self.unit_now(address)
+            if now is None:
+                return None
+            return dict(entd.read_unit(now, address[0], address[1]).values)
         unit = self._entd.unit_at(address[0], address[1])
         if unit is None:
             return None
         values = dict(unit.values)
-        origin = self._origin_at.get(tuple(address))
-        if origin is None:
-            return values
         record = {self.address_of(r): r for r in self.records()}.get(origin)
         stored = dict(getattr(record, "values", {}) or {})
         stored.update(self.state.entry_edits.get(origin, {}))
@@ -1154,7 +1236,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             palette = drawn_palette(sprite, sprite_set, int(values.get("palette", 0) or 0), monster_palette)
             origin = self._origin_at.get(address)
             units.append(MapUnit(
-                address=tuple(address), editable=origin is not None,
+                address=tuple(address), editable=True,
                 x=int(values.get("x", 0)), y=int(values.get("y", 0)),
                 upper=bool(values.get("upper_level")), facing=int(values.get("facing", 0)),
                 sprite=sprite, palette=palette,
@@ -1182,6 +1264,13 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         field is ticked for the mod unless it ends up where the game has it.
         """
         if self._origin_at.get(tuple(address)) is None:
+            # (16 November 2026) A unit without a row: its place and its level of the map set on the unit itself.
+            if self.unit_now(address) is None:
+                return
+            self.select_slot(address)
+            self._set_unit_fields(tuple(address), x=int(x), y=int(y), upper_level=bool(level))
+            if self.current_unit == tuple(address):
+                self._show_unit_card(tuple(address))
             return
         self.select_slot(address)
         if self.current_address is None:
@@ -1335,6 +1424,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         given `_loading` for.
         """
         names_by_field = {}
+        self._wide_cache = None
         for field_name in DROPDOWN_FIELDS:
             row = self.rows.get(field_name)
             if row is None:
@@ -1342,7 +1432,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             names = base_choices_for(self.state, field_name, self._language)
             names_by_field[field_name] = names
             self._base_choices[field_name] = names
-            row.set_choices(self._offered(field_name, names))
+            self._set_row_choices(field_name, row, self._offered(field_name, names))
         self._names_by_field = names_by_field
         # The Inherit entry is per-row, so whatever is selected needs its
         # label recomputed against the row now loaded. The nine numeric
@@ -1384,18 +1474,49 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         """
         offered = {}
         byte_cast = field_name in c.ENTRY_BYTE_CAST_FIELDS
+        wide = field_name in ITEM_COLUMNS
         for row_id, name in names.items():
+            if wide and row_id > 255:
+                # (16 November 2026) An item past 255 is offered with the others it stands among (`_wide_offered`),
+                # not marked as out of reach: it goes on the unit by the framework's hand.
+                continue
             # An id above 255 on a byte-cast field cannot be reached
             # through this table at all. Marked rather than dropped: a mod
             # that already points at one is still pointing at it, and
             # hiding the row would make that invisible.
             offered[row_id] = (f"{name}{UNREACHABLE_SUFFIX}"
                                if byte_cast and row_id > 255 else name)
+        if wide:
+            offered.update(self._wide_offered(field_name))
         offered.update(c.entry_special_values(field_name))
         inherit = c.entry_inherit_value(field_name)
         if inherit is not None:
             offered[inherit] = INHERIT_LABEL
         return offered
+
+    def _wide_offered(self, field_name: str) -> dict:
+        """(16 November 2026) The items past 255 one of a row's five item dropdowns offers, `{the number the dropdown
+        keeps it under: its words}` (`wide_item_choices`, `WideNumbers`)."""
+        return self._wide.offered(self._wide_choices().get(ITEM_COLUMNS[field_name], ()))
+
+    def _set_row_choices(self, field_name: str, row, offered: dict) -> None:
+        """A row's dropdown given its list (`WideNumbers.label`: one of the mod's own items reads by its words)."""
+        row.set_choices(offered)
+        if field_name in ITEM_COLUMNS:
+            WideNumbers.label(row, offered)
+
+    def _wide_choices(self) -> dict:
+        """`wide_item_choices` as the tables and the mod's items stand now, read once a refresh."""
+        if self._wide_cache is None:
+            self._wide_cache = wide_item_choices(self.state, self._language)
+        return self._wide_cache
+
+    def _row_wide_id(self, address, column: str):
+        """The number a row's item dropdown shows for the item past 255 the unit at `address` wears at `column`'s
+        place, or None where it wears none there."""
+        edit = self.unit_edit(address)
+        ref = edit.worn().get(column) if edit is not None else None
+        return self._wide.number_of(ref) if ref is not None else None
 
     def inherited_values(self, address) -> dict:
         """
@@ -1467,41 +1588,244 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
 
     def entd_only_addresses(self) -> list:
         """
-        Every occupied ENTD slot the nxd has no row for, in order.
+        Every place of every battle the game's files hold that the nxd has no
+        row for, in order: a unit's, and (16 November 2026, Zodi: "the empty
+        slots are missing I believe") an empty one's too.
 
         "include in the list all the Key 1s and Key 2s not in the nxd but
-        in the users entd files but grey them out and make them
-        uneditable."
+        in the users entd files" - greyed and uneditable then, edited whole
+        now (see the notes at the top).
 
-        There are a lot of them: the four ENTD files hold **7,829 occupied
-        slots across 512 events**, and `OverrideEntryData` covers 516 of
-        them under 95. So the list goes from 95 battles to 512, and from
-        516 unit rows to 7,829 - which is the point. The battles a mod
-        author most wants to reach are precisely the ones the override
-        table does not mention, and until now the page behaved as though
-        they did not exist.
-
-        Every one of the 516 nxd rows IS an occupied ENTD slot - measured,
-        none is orphaned - so the two sets nest rather than overlapping,
-        and a greyed row is exactly "a real unit with no override row".
+        The four battle files hold 512 battles of 16 places, and the add on
+        file 77 more where it is unpacked: 9,424 places, of which
+        `OverrideEntryData` covers 516 under 95 battles. Every one of the
+        516 rows sits on a place the files hold, so the two sets nest.
 
         Empty with no ENTD files unpacked, which leaves the list as it was.
         """
         if self._entd is None:
             return []
         have = {self.address_of(r) for r in self.records()}
-        found = []
-        for event in range(entd.MAX_EVENT_ID + 1):
-            for slot in range(entd.UNITS_PER_EVENT):
-                address = (event, slot)
-                if address in have:
-                    continue
-                if self._entd.unit_at(event, slot) is not None:
-                    found.append(address)
-        return found
+        return [(event, slot) for event in self._entd.battles()
+                for slot in range(entd.UNITS_PER_EVENT)
+                if (event, slot) not in have]
+
+    # -- a unit the game's table has no row for (16 November 2026) ------------
+
+    def unit_base(self, address) -> Optional[bytes]:
+        """A place's 40 bytes as its battle file has them; None without the files, or outside them."""
+        if self._entd is None or address is None:
+            return None
+        return self._entd.entry(address[0], address[1])
+
+    def unit_edit(self, address):
+        """What the mod has of the unit at `address` (`mod_battles.UnitEdit`), or None."""
+        return (getattr(self.state, "battle_units", None) or {}).get(tuple(address))
+
+    def unit_now(self, address) -> Optional[bytes]:
+        """A place's 40 bytes as the game is given them: the battle file's with the mod's bits over them."""
+        base = self.unit_base(address)
+        return mb.unit_bytes(base, self.unit_edit(address)) if base is not None else None
+
+    def is_empty_place(self, address) -> bool:
+        """Whether a place with no row is empty as it now stands: the game makes no unit there (its sprite set 0)."""
+        now = self.unit_now(address)
+        return now is not None and mb.is_empty(now)
+
+    def battle_now(self, battle: int) -> Optional[bytes]:
+        """A battle's 640 bytes as its units now stand: each place's `unit_now`."""
+        if self._entd is None or self._entd.block(battle) is None:
+            return None
+        return b"".join(self.unit_now((battle, slot)) for slot in range(entd.UNITS_PER_EVENT))
+
+    def _keep_unit(self, address, edit) -> None:
+        """The mod's unit at `address` kept (or, None, the mod's no more), and everything that shows it brought up."""
+        store = getattr(self.state, "battle_units", None)
+        if store is None:
+            store = self.state.battle_units = {}
+        address = tuple(address)
+        if edit is None:
+            store.pop(address, None)
+        else:
+            store[address] = edit
+        self._relabel_slot(address)
+        self._mark_edited()
+        self._update_counter()
+        self.map.refresh_units()
+        self.edits_changed.emit()
+
+    def _set_unit_fields(self, address, **changes) -> None:
+        """Fields of a unit without a row set (`entd.unit_with`'s names): its mask each changed field's whole."""
+        base = self.unit_base(address)
+        if base is None:
+            return
+        try:
+            edit = mb.with_fields(base, self.unit_edit(address), **changes)
+        except ValueError:
+            return
+        self._keep_unit(address, edit)
+        self._refresh_unit_head(address)
+
+    def _set_unit_field(self, address, field: str, value) -> None:
+        """One field set on the unit's card. A main job chosen there is one of the game's: the unit wears none of
+        the mod's own any more (as a quest's unit's)."""
+        if self._loading_unit or value is None:
+            return
+        self._set_unit_fields(address, **{field: value})
+        edit = self.unit_edit(address)
+        if field == "main_job" and edit is not None and edit.job:
+            self._keep_unit(address, mb.without_job(edit))
+            self._show_unit_card(address)
+        elif field == "sprite_set" and self.is_empty_place(address):
+            self._load_unit(tuple(address))
+
+    def _set_unit_job(self, address, job: str) -> None:
+        """A unit without a row put in one of the mod's own jobs (`mod_battles.with_job`); its card shown again, its
+        Job Unlock and Job Level as they now are."""
+        base = self.unit_base(address)
+        like = self._own_job_like(job)
+        if self._loading_unit or not job or base is None or like is None:
+            return
+        self._keep_unit(address, mb.with_job(base, self.unit_edit(address), job, like))
+        self._show_unit_card(address)
+        self._refresh_unit_head(address)
+
+    def _set_unit_wide(self, address, field: str, ref) -> None:
+        """An item past 255 put on a unit at one of its five places (`ref` None: none there)."""
+        if self._loading_unit:
+            return
+        self._keep_unit(address, mb.with_item(self.unit_edit(address), mb.FIELD_PLACES[field], ref))
+        self._refresh_unit_head(address)
+
+    def add_unit(self) -> None:
+        """
+        Makes a unit in the empty place shown: a copy of the unit picked
+        before it (or the battle's first), with a unit id no other unit of
+        the battle has (`mod_battles.copied_unit`; Zodi's choice of 16
+        November: "Copy of a unit"). A whole unit of the mod's.
+        """
+        address = self.current_unit
+        base = self.unit_base(address)
+        block = self.battle_now(address[0]) if address is not None else None
+        if base is None or block is None or not self.is_empty_place(address):
+            return
+        size = entd.UNIT_BYTES
+        entries = [block[n * size:(n + 1) * size] for n in range(entd.UNITS_PER_EVENT)]
+        made = mb.copied_unit(entries, self._last_unit.get(address[0], -1))
+        if made is None:
+            return
+        self._keep_unit(address, mb.with_unit(base, self.unit_edit(address), made))
+        self._load_unit(tuple(address))
+
+    def take_out_unit(self) -> None:
+        """Empties the place of the unit shown: its sprite set made 0, which is all the game asks to make no unit
+        there (a unit the mod made in an empty place is the mod's no more)."""
+        address = self.current_unit
+        base = self.unit_base(address)
+        if base is None:
+            return
+        if mb.is_empty(base):
+            self._keep_unit(address, None)
+        else:
+            self._set_unit_fields(address, sprite_set=0)
+        self._load_unit(tuple(address))
+
+    def unit_as_game(self) -> None:
+        """Takes the mod's changes off the unit shown: its place as the battle file has it."""
+        address = self.current_unit
+        if address is None or self.unit_edit(address) is None:
+            return
+        self._keep_unit(address, None)
+        self._load_unit(tuple(address))
+
+    # -- what the unit's card is made on (`side_quests.unit_card_of`'s host) ----
+
+    def _choices(self, column: str) -> dict:
+        """`{value: name}` of one of a unit's fields, as the rows' dropdowns have them."""
+        if column not in self._base_choices:
+            self._base_choices[column] = base_choices_for(self.state, column, self._language)
+        return self._base_choices[column]
+
+    def _unit_words(self, values: dict, own_job: str = "") -> str:
+        """A unit over its card: its sprite and its level, as its row in the list reads."""
+        return self._unit_label(values)
+
+    def own_job_choices(self) -> list:
+        """The mod's own jobs a unit may be put in: `[(the job's name, its words)]`."""
+        return [(edit.job.name, OWN_JOB.format(job=edit.job.name))
+                for edit in (getattr(self.state, "mod_jobs", None) or {}).values()]
+
+    def _own_job_like(self, name: str) -> Optional[int]:
+        """The game's job one of the mod's jobs is based on; None when the mod has no job of that name."""
+        for edit in (getattr(self.state, "mod_jobs", None) or {}).values():
+            if edit.job.name == name:
+                return edit.job.like
+        return None
+
+    def _unit_label(self, values: dict) -> str:
+        """A unit's sprite and level from its own values, as `slot_label` words a row's."""
+        parts = []
+        for field_name, source in (("Spriteset", "sprite_set"), ("Level", "level")):
+            named = inherited_entry_label(field_name, values.get(source),
+                                          self._choices(field_name))
+            if field_name == "Level" and named.isdigit():
+                named = f"Level {named}"
+            elif field_name == "Spriteset" and named.isdigit():
+                named = f"Sprite {named}"
+            parts.append(named)
+        return self.SLOT_SEPARATOR.join(parts)
+
+    def _refresh_unit_head(self, address) -> None:
+        """The pane's name of the unit shown, its card's title and its buttons, after a change."""
+        if self.current_unit != tuple(address):
+            return
+        self.editing_label.setText(
+            f"Editing: {address[0]}/{address[1]}{SLOT_SEPARATOR}{self.slot_label(address)}")
+        self.as_game_button.setVisible(self.unit_edit(address) is not None)
+
+    def _show_unit_card(self, address) -> None:
+        """The card of the unit without a row at `address`, made again in the rows' form's place."""
+        from .side_quests import unit_card_of
+        address = tuple(address)
+        place = self.card.scroll.verticalScrollBar().value() if self.card is not None else 0
+        while self._unit_column.count():
+            old = self._unit_column.takeAt(0).widget()
+            if old is not None:
+                # Through `retire` (hidden first, then without a parent, then deleted), as every page takes a
+                # widget out: left without a parent while still shown it is a little window of its own for a
+                # moment on Windows (his report of 21 October on the Event Editor). The twenty fourth session
+                # wrote this by leaving it without a parent itself; `dev/test_qt_event_setup.py`'s check of every page
+                # named the line in the twenty fifth, the first time that suite ran over it.
+                retire(old)
+        self.card = None
+        self.field_widgets = {}
+        block = self.battle_now(address[0])
+        if block is None or self.is_empty_place(address):
+            return
+        edit = self.unit_edit(address)
+        worn = {mb.PLACE_FIELDS[name]: ref for name, ref in (edit.items if edit is not None else ())}
+        self._loading_unit = True
+        try:
+            self.card = unit_card_of(
+                self, block, address[1],
+                lambda field, value, a=address: self._set_unit_field(a, field, value),
+                None, self.take_out_unit,
+                own_job=edit.job if edit is not None else "",
+                set_own_job=lambda job, a=address: self._set_unit_job(a, job),
+                wide_choices=wide_item_choices(self.state, self._language), worn=worn,
+                set_wide=lambda field, ref, a=address: self._set_unit_wide(a, field, ref),
+                blurb=UNIT_CARD_BLURB)
+        finally:
+            self._loading_unit = False
+        # The pane's own line over the card names the unit: the card's title would say it twice.
+        self.card.title.setVisible(False)
+        self._unit_column.addWidget(self.card)
+        if place:
+            self.card.keep_place(place)
 
     def is_editable(self, address) -> bool:
-        """Whether this address has an `OverrideEntryData` row behind it."""
+        """Whether this address has an `OverrideEntryData` row behind it (a unit without one is edited too, whole:
+        see the notes at the top)."""
         return tuple(address) not in self._entd_only
 
     def display_address(self, origin) -> tuple:
@@ -1534,7 +1858,8 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         # every setup change, not only at startup.
         was_open = {key for key, item in self._encounter_items.items()
                     if item.isExpanded()}
-        selected = self.current_address
+        # A row's own address, or (16 November 2026) the place of the unit without a row that was shown.
+        selected = self.current_address if self.current_address is not None else self.current_unit
         self.list.clear()
         self._encounter_items = {}
         self._slot_items = {}
@@ -1549,12 +1874,13 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         # back to being a greyed ENTD slot, which is what it now is.
         placed = {self.display_address(self.address_of(r)): r
                   for r in records}
+        # (16 November 2026) Every place the files hold that no row sits on: a unit's or an empty one's. A traded
+        # row's origin is such a place again.
         self._entd_only = {a for a in self.entd_only_addresses()
                            if a not in placed}
         vacated = {self.address_of(r) for r in records} - set(placed)
         self._entd_only |= {a for a in vacated
-                            if self._entd is not None
-                            and self._entd.unit_at(a[0], a[1]) is not None}
+                            if self.unit_base(a) is not None}
         every = sorted(set(placed) | self._entd_only)
         for address in every:
             record = placed.get(address)
@@ -1575,15 +1901,10 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
                 self._encounter_items[address[0]] = parent
             slot = QTreeWidgetItem([self.slot_label(address, record)])
             slot.setData(0, Qt.UserRole, address)
-            if record is None:
-                # Greyed, and still selectable.
-                #
-                # `setDisabled` would have been the obvious way to make a
-                # row uneditable and is the wrong one: a disabled tree item
-                # cannot be clicked, and clicking one of these is the whole
-                # feature - it is how you say which slot you want to trade
-                # a row for. So it is greyed and carries a tooltip, and
-                # `load_record` is what refuses to open the form.
+            if record is None and self.is_empty_place(address):
+                # (16 November 2026) An empty place: greyed, and still selectable (a disabled tree item can't be
+                # clicked, and clicking one is how a unit is made there). A unit without a row is no longer grey:
+                # it is edited like any other.
                 slot.setForeground(0, GREYED)
             parent.addChild(slot)
             # Keyed by where the row IS in the tree, not by its identity.
@@ -1692,6 +2013,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         """
         self.list.setCurrentItem(None)
         self.current_address = None
+        self.current_unit = None
         self.form_visible(False)
         self.move_controls.setVisible(False)
         self.editing_label.setText(self.NOTHING_SELECTED)
@@ -1814,6 +2136,14 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         what happens with no ENTD files unpacked on a row that overrides
         nothing. The page has to stay usable without `fftpack`.
         """
+        if record is None and tuple(address) not in self._origin_at:
+            # (16 November 2026) A place without a row: "Empty" where the game makes no unit, else the unit as the
+            # battle file has it with the mod's bits over it.
+            now = self.unit_now(address)
+            if now is not None:
+                if mb.is_empty(now):
+                    return EMPTY_PLACE
+                return self._unit_label(entd.read_unit(now).values)
         inherited = self.inherited_values(address)
         # The EFFECTIVE view, pending edits included - the same three
         # layers the form itself shows, in the same order. A label built
@@ -1995,6 +2325,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         battle = current.data(0, BATTLE_ROLE)
         if battle is not None:
             self.current_address = None
+            self.current_unit = None
             self.form_visible(False)
             self.move_controls.setVisible(False)
             self.editing_label.setText(self.PICK_A_UNIT)
@@ -2015,12 +2346,15 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         by_address = {self.address_of(r): r for r in self.records()}
         record = by_address.get(origin) if origin is not None else None
         if record is None:
-            # A slot from the ENTD files that the override table does not
-            # cover. Selectable, so it can be traded FOR; not editable,
-            # because there is no row to edit - which is the whole of what
-            # "greyed out and uneditable" means here.
-            self._load_entd_only(tuple(address))
+            # A place the override table does not cover: a unit edited whole, or an empty place (16 November 2026;
+            # greyed and uneditable until then).
+            self._load_unit(tuple(address))
             return
+        self.current_unit = None
+        self._last_unit[address[0]] = address[1]
+        self.unit_holder.setVisible(False)
+        self.add_unit_button.setVisible(False)
+        self.as_game_button.setVisible(False)
         self.current_address = origin
         self.form_visible(True)
         # "if a user is on an editable unit there is no need for the 'Trade
@@ -2032,7 +2366,6 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         # else - the trade button never does here, because this slot is not
         # one you can trade FOR.
         traded = self.current_address in self.state.entry_rekeys
-        self.trade_button.setVisible(False)
         self.undo_move_button.setVisible(traded)
         self.move_controls.setVisible(traded)
         # The address it will be WRITTEN to, which is the battle these
@@ -2053,6 +2386,16 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         already = self.state.entry_edits.get(self.current_address, {})
         inherited = self.inherited_values(self.current_address)
         for field_name, row in self.rows.items():
+            if field_name in ITEM_COLUMNS:
+                # (16 November 2026) An item past 255 the unit wears there: the mod's, shown in the column's place.
+                wide = self._row_wide_id(address, field_name)
+                if wide is not None:
+                    offered = self._offered(field_name, self._base_choices.get(field_name, {}))
+                    if wide not in offered:
+                        self._set_row_choices(field_name, row,
+                                              {**offered, wide: WIDE_KEPT.format(item=self._wide.item_of(wide))})
+                    row.load(wide, True)
+                    continue
             if field_name in already:
                 row.load(already[field_name], True)
                 continue
@@ -2068,69 +2411,52 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             row.load(stored, False)
         self.map.show_unit(address)
 
-    def _load_entd_only(self, address: tuple) -> None:
+    def _load_unit(self, address: tuple) -> None:
         """
-        Selecting a greyed row: say what it is, and offer the trade.
+        Selecting a place the game's table has no row for (16 November 2026):
+        a unit's card (`side_quests.unit_card_of`) in the rows' form's place,
+        or, for an empty place, what it is and Add a unit.
 
-        `current_address` is deliberately cleared. Everything that writes -
-        `_on_field_edited`, `trade_for_current`, `undo_move` - returns
-        early on None, so one assignment makes the whole page read-only for
-        this row rather than each writer needing its own guard.
+        `current_address` is deliberately cleared: everything that writes a
+        ROW (`_on_field_edited`, `undo_move`) returns early on None, so one
+        assignment keeps every one of them off a place that has no row.
+        `current_unit` is the place shown here.
         """
+        address = tuple(address)
         self.current_address = None
+        self.current_unit = address
         self.form_visible(False)
-        self.move_controls.setVisible(True)
-        self.trade_button.setVisible(True)
+        self._form_spacer.setVisible(False)
         self.undo_move_button.setVisible(False)
-        self.editing_label.setText(
-            f"{address[0]}/{address[1]}{SLOT_SEPARATOR}{self.slot_label(address)}")
-        self.trade_button.setEnabled(True)
         self.undo_move_button.setEnabled(False)
-        self._pending_target = address
-        self.move_note.setText(ENTD_ONLY_MESSAGE)
+        empty = self.is_empty_place(address)
+        self.move_controls.setVisible(True)
+        self.add_unit_button.setVisible(empty)
+        self.as_game_button.setVisible(self.unit_edit(address) is not None)
+        self.editing_label.setText(
+            f"{'' if empty else 'Editing: '}{address[0]}/{address[1]}{SLOT_SEPARATOR}{self.slot_label(address)}")
+        if empty:
+            block = self.battle_now(address[0]) or b""
+            size = entd.UNIT_BYTES
+            has_unit = any(not mb.is_empty(block[n:n + size]) for n in range(0, len(block), size))
+            self.add_unit_button.setEnabled(has_unit)
+            self.move_note.setText(EMPTY_NOTE if has_unit else EMPTY_NOTE_NO_UNIT)
+        else:
+            self._last_unit[address[0]] = address[1]
+            self.move_note.setText(UNIT_NOTE)
+        self._show_unit_card(address)
+        self.unit_holder.setVisible(not empty)
+        self._form_spacer.setVisible(empty)
         self.map.show_unit(address)
 
     def form_visible(self, on: bool) -> None:
-        """Shows or hides the editing form, leaving the list alone."""
+        """Shows or hides the ROWS' editing form, leaving the list alone; the card of a unit without a row goes
+        with it either way (`_load_unit` shows its own)."""
         self.scroll.setVisible(on)
         self._form_spacer.setVisible(not on)
+        self.unit_holder.setVisible(False)
 
-    # -- trading a row for a slot the override table does not cover -----------
-
-    def trade_for_current(self) -> None:
-        """
-        Gives the selected greyed slot one of the 516 existing rows.
-
-        "a user can click on a greyed out key 2 from the list, then ...
-        there will be a button you can click to trade an editable row for
-        this uneditable row. So when you click on it it will let you select
-        which row you'd like to trade it out so that it becomes a row that
-        you can now edit."
-
-        Underneath it is a rekey, the same one the Move button wrote. What
-        changed is which end the user names: Move asked for a destination
-        address in a table they could not see, and the addresses worth
-        naming were precisely the ones the list did not show. Here the
-        destination is the row they clicked and the choice is which row to
-        spend.
-        """
-        target = getattr(self, "_pending_target", None)
-        if target is None or self.is_editable(target):
-            return
-        chosen = TradeRowDialog.pick(self, target)
-        if chosen is None:
-            return
-        taken = {tuple(v) for v in self.state.entry_rekeys.values()}
-        if target in taken:
-            self.move_note.setText(
-                f"{target[0]}/{target[1]} has already been traded for.")
-            return
-        self.state.entry_rekeys[chosen] = target
-        self.refresh_records()
-        # Land on the row they just freed up, which is the one they now
-        # want to edit - not on the address it came from.
-        self.select_record(chosen)
-        self.edits_changed.emit()
+    # -- a traded row (Trade a row is gone since 16 November 2026: see the notes at the top) --
 
     def undo_move(self) -> None:
         if self.current_address is None:
@@ -2188,6 +2514,10 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         self._update_counter()
         self.map.refresh()
         if self.current_address is None:
+            # (16 November 2026) A unit without a row shown again as the mod now has it: its card's lists (the
+            # mod's own jobs and items) may have changed on another page.
+            if self.current_unit is not None and self.current_unit in self._slot_items:
+                self._load_unit(self.current_unit)
             return
         self.load_record(self.current_address)
 
@@ -2195,7 +2525,29 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
         if self.current_address is None:
             return
         edits = self.state.entry_edits.setdefault(self.current_address, {})
+        where = self.display_address(self.current_address)
         for field_name, row in self.rows.items():
+            if field_name in ITEM_COLUMNS:
+                # (16 November 2026) An item past 255: the column can't hold it, so it stays as the game has it and
+                # the item goes on the unit (`state.battle_units`), at the place the row is written to.
+                try:
+                    chosen = int(row.get_value_str())
+                except (TypeError, ValueError):
+                    chosen = None
+                ref = self._wide.item_of(chosen) if row.included else None
+                worn = self.unit_edit(where)
+                if ref is not None or (worn is not None and field_name in worn.worn()):
+                    store = getattr(self.state, "battle_units", None)
+                    if store is None:
+                        store = self.state.battle_units = {}
+                    kept = mb.with_item(worn, field_name, ref)
+                    if kept is None:
+                        store.pop(where, None)
+                    else:
+                        store[where] = kept
+                if ref is not None:
+                    edits.pop(field_name, None)
+                    continue
             if row.included:
                 edits[field_name] = row.get_value_str()
             elif field_name in edits:
@@ -2290,7 +2642,8 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             # `.get(..., address)` is right here and not a guess: a greyed
             # slot has no row, so it has no edits under either reading.
             edited = (bool(self.state.entry_edits.get(origin))
-                      or origin in self.state.entry_rekeys)
+                      or origin in self.state.entry_rekeys
+                      or self.unit_edit(address) is not None)
             mark_edited(item, edited)
             # ...and put the grey back.
             #
@@ -2303,7 +2656,7 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             #
             # Two mechanisms own one property, so the later one has to know
             # about the earlier. This is the later one.
-            if address in self._entd_only:
+            if address in self._entd_only and self.is_empty_place(address):
                 item.setForeground(0, GREYED)
             if edited:
                 edited_keys.add(address[0])
@@ -2325,7 +2678,14 @@ class EncountersPage(RefreshesWhenVisible, QWidget):
             self.counter.setText("")
             return
         edited = sum(1 for fields in self.state.entry_edits.values() if fields)
-        self.counter.setText(edit_counter_text(edited, total, "encounters"))
+        line = edit_counter_text(edited, total, "encounters")
+        # (16 November 2026) The mod's units the table has no row for, said after the rows' count (which stays "of
+        # 516": his word of October, that the count is the table's rows).
+        more = sum(1 for address, edit in (getattr(self.state, "battle_units", None) or {}).items()
+                   if edit is not None and edit.changes() and tuple(address) not in self._origin_at)
+        if more:
+            line = MORE_UNITS.format(line=line, n=more, units="unit" if more == 1 else "units")
+        self.counter.setText(line)
 
 
     def _apply_view(self, hide_notes: bool, hide_unknown: bool,

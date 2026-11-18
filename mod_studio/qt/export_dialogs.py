@@ -109,6 +109,18 @@ def open_start_folder() -> Path:
     return _existing(_remembered(OPEN_SETTING)) or start_folder()
 
 
+def near(current: str | Path | None = None) -> Path:
+    """
+    Where a dialog that picks a tool, a folder of the game's or a mod should
+    open: what is chosen already (its folder, or that folder's nearest parent
+    that still exists), else the root of the drive Mod Studio is on. Given no
+    folder at all, a dialog opens in the working directory, which can be
+    System32 (his report of 14 November: the job icon's Replace... and Export
+    as PNG..., "among many other where the file explorer opens").
+    """
+    return _existing(str(current or "")) or drive_root()
+
+
 def remember(chosen: str | Path, is_folder: bool = False) -> None:
     """Records where somebody just saved, for the next dialog."""
     if not chosen:

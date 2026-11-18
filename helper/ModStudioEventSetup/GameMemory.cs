@@ -20,18 +20,24 @@ namespace ModStudioEventSetup
         /// for the log: after a game update, which program the helper met.</summary>
         public string Program { get; }
 
-        GameMemory(byte* start, int size, string program)
+        /// <summary>(1.44.2) Where the program's file is, or null where it can't be seen: the bytes another mod's hook has
+        /// changed in memory are still the game's own there (ProgramFile).</summary>
+        public string? ProgramPath { get; }
+
+        GameMemory(byte* start, int size, string program, string? path)
         {
             _base = start;
             _size = size;
             Program = program;
+            ProgramPath = path;
         }
 
         public static GameMemory OfThisProcess()
         {
             var module = Process.GetCurrentProcess().MainModule
                 ?? throw new InvalidOperationException("the game's program can't be seen");
-            return new GameMemory((byte*)module.BaseAddress, module.ModuleMemorySize, Describe(module.FileName));
+            return new GameMemory((byte*)module.BaseAddress, module.ModuleMemorySize, Describe(module.FileName),
+                                  module.FileName);
         }
 
         /// <summary>A program's file name and size, or its name alone when it can't be read.</summary>

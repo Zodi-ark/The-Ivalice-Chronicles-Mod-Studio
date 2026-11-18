@@ -47,6 +47,9 @@ class TextureTreeModel(QAbstractItemModel):
         self._index_nodes: list = []
         # folder id -> replaced files under it; see `_replaced_under`
         self._counts: dict[int, int] = {}
+        #: (17 November 2026) Rows that are the mod's for another reason than a replaced texture file: the paths
+        #: of the unit sprites it has a picture of (`set_also`; the page's group "Unit sprites").
+        self._also: frozenset = frozenset()
 
     # -- population ----------------------------------------------------------
 
@@ -83,7 +86,7 @@ class TextureTreeModel(QAbstractItemModel):
         if cached is not None:
             return cached
         if getattr(node, "is_file", False):
-            total = 1 if node.relative_path in self._edits else 0
+            total = 1 if (node.relative_path in self._edits or node.relative_path in self._also) else 0
         else:
             total = sum(self._replaced_under(child)
                         for child in (getattr(node, "children", ()) or ()))
@@ -120,6 +123,12 @@ class TextureTreeModel(QAbstractItemModel):
             return
         self.beginResetModel()
         self.endResetModel()
+
+    def set_also(self, paths, changed_path: str | None = None) -> None:
+        """The rows marked besides the replaced files (the unit sprites the mod has a picture of): marked and
+        counted again, the one that changed and the folders above it repainted (as `set_edits` does)."""
+        self._also = frozenset(paths or ())
+        self.set_edits(self._edits, changed_path)
 
     # -- tree navigation ------------------------------------------------------
 
@@ -187,7 +196,7 @@ class TextureTreeModel(QAbstractItemModel):
             return None
         node = index.internalPointer()
         is_file = getattr(node, "is_file", False)
-        replaced = is_file and node.relative_path in self._edits
+        replaced = is_file and (node.relative_path in self._edits or node.relative_path in self._also)
 
         if role == Qt.DisplayRole:
             if is_file:
