@@ -153,6 +153,16 @@ SINGULAR, PLURAL = "Singular", "Plural"
 ITEM_NUMBERS = "Numbers"
 PRICE_FIELD = "Price"
 SOLD_FROM = "Sold from"
+#: (2.0.6, his answer of 18 November: "yes we should do that") A War of the Lions item's Required Level and Rare on the
+#: Items page, as the page has them for the game's items: Random equipment (an Encounters' 254) gives an item only to a
+#: unit of at least its Required Level, and never a Rare one.
+REQUIRED_LEVEL = "Required Level"
+RARE_FIELD = "Rare"
+RARE_BOX = "Never given by Random"
+REQUIRED_LEVEL_TIP = ("Random equipment (254 on the Encounters page) gives this item only to a unit of at least this "
+                      "level, as it gives the game's own items. Needs Mod Studio Framework.")
+RARE_TIP = ("A Rare item is never given by Random equipment. Every War of the Lions item starts Rare, as in War of "
+            "the Lions: untick it to let Random give it.")
 #: The story's points the shops sell an item from, in words: the Items page's (Zodi, 5 November, both alike).
 SOLD_FROM_POINTS = SHOP_POINT_WORDS
 BONUSES_FIELD = "Equipment bonuses"
@@ -244,6 +254,9 @@ ITEM_SHEET_LOOK = jt.SHEET_LOOK
 ITEM_SHEET_SOLD = "Where {item} is sold"
 ITEM_SHEET_YOUR_TOWNS = "Your towns"
 ITEM_SHEET_GAME_TOWNS = "The game's towns"
+#: (The thirty fourth session's second part) His report of 17 November: "the Gaius Caligae and Deathbringer are
+#: available at all shops but non of the shops have it in stock" (both ticked for every town, both still Never sold).
+NEVER_SOLD_TOWNS = "The towns ticked don't sell it while it is Never sold: choose when the shops sell it."
 #: The room each picture has in the middle, each drawn a whole number of times its size (its pixels kept sharp): the
 #: Art Texture twice the game's 100 by 100, the Sprite Texture three times its 48 by 48, a sword as it attacks five
 #: times the enhanced look's 48 by 32, an icon held up or thrown three times its 32 by 32.
@@ -2277,6 +2290,10 @@ class ItemSheet:
         written = mi.written_item(edit, "x")
         _item, problems = mi.read_item_text(mi.item_text(written), lambda _path: True,
                                             never_sold=self.sheet_never_sold())
+        # (The thirty fourth session's second part) Towns ticked for an item never sold, as a mod made before this
+        # session may have it: no shop sells it (Mod Studio's own word, not the framework's).
+        if edit.item.shops and mi.shop_point(edit.item) == mi.NEVER_SOLD:
+            problems = list(problems) + [NEVER_SOLD_TOWNS]
         return problems
 
     # -- what a page may answer otherwise (the class's notes) ----------------------------------------------------
@@ -2862,17 +2879,42 @@ class ItemSheet:
         towns = set(edit.item.shops)
         (towns.add if sold else towns.discard)(int(town))
         mi.set_shops(edit.item, towns)
+        # (The thirty fourth session's second part, his report of 17 November) A town ticked sells the item: one never
+        # sold (War of the Lions' own are) is sold from the story's first point, its Sold from following.
+        if sold and mi.shop_point(edit.item) == mi.NEVER_SOLD:
+            mi.set_shop_point(edit.item, self.sheet_shop_points()[0][0], never_sold=self.sheet_never_sold())
+            self._show_shops(edit.item)
+            self._item_sheet_words(edit.item)
         self._fill_items()
         self._item_status()
         self.edits_changed.emit()
+
+    def _show_shops(self, item: mi.ModItem) -> None:
+        """(The thirty fourth session's second part) The middle's Sold from and towns showing the item's, nothing set
+        again by them."""
+        was, self._building = self._building, True
+        try:
+            sold_from = self.field_widgets.get("item_sold_from")
+            if sold_from is not None and sold_from.findData(mi.shop_point(item)) >= 0:
+                sold_from.setCurrentIndex(sold_from.findData(mi.shop_point(item)))
+            for town, box in enumerate(self.field_widgets.get("item_game_towns") or []):
+                box.setChecked(town in item.shops)
+        finally:
+            self._building = was
 
     def set_item_shop_point(self, point) -> None:
         edit = self._picked_item()
         if edit is None or self._building or point is None:
             return
         mi.set_shop_point(edit.item, int(point), never_sold=self.sheet_never_sold())
+        # (The thirty fourth session's second part) Never sold: no town sells it, so its towns are unticked.
+        if mi.shop_point(edit.item) == mi.NEVER_SOLD and edit.item.shops:
+            mi.set_shops(edit.item, ())
+            self._show_shops(edit.item)
+            self._fill_items()
         # (14 November) The middle's Sold from following it.
         self._item_sheet_words(edit.item)
+        self._item_status()
         self.edits_changed.emit()
 
     def set_game_icon(self, number) -> None:
@@ -3110,6 +3152,29 @@ class ItemSheet:
         self.field_widgets.update(item_price=price, item_sold_from=sold_from, item_game_towns=town_boxes)
         return out, pair((PRICE_FIELD, price), (SOLD_FROM, sold_from))
 
+    def _random_pair(self, item: mi.ModItem) -> QWidget:
+        """(2.0.6) Its Required Level and Rare side by side, each its caption over it (the Items page's own words for
+        the game's items), kept in `field_widgets` (`item_level`, `item_rare`)."""
+        _label, where, at, width, most = mi.LEVEL
+        level = spin(mi.number(item, where, at, width), 0, most)
+        level.setToolTip(REQUIRED_LEVEL_TIP)
+        level.valueChanged.connect(lambda v, w=where, a=at, n=width: self.set_item_number(w, a, n, v))
+        rare = QCheckBox(RARE_BOX)
+        rare.setChecked(mi.is_rare(item))
+        rare.setToolTip(RARE_TIP)
+        rare.toggled.connect(self.set_item_rare)
+        self.field_widgets.update(item_level=level, item_rare=rare)
+        return pair((REQUIRED_LEVEL, level), (RARE_FIELD, rare))
+
+    def set_item_rare(self, rare: bool) -> None:
+        """(2.0.6) The item made Rare or not: Random equipment never gives a Rare item."""
+        edit = self._picked_item()
+        if edit is None or self._building:
+            return
+        mi.set_rare(edit.item, bool(rare))
+        self._item_status()
+        self.edits_changed.emit()
+
     def _items_page_layout(self, edit: mi.ItemEdit, boxes: dict, sheet) -> None:
         """(The thirty second session) The sheet's parts as the Items page lays out one of the game's items (his ask
         of 17 November: the War of the Lions items "closer to that of the original items for the vanilla items
@@ -3117,7 +3182,7 @@ class ItemSheet:
         game's item whose icon it uses and what a right click does under them, its words (The item) beside that
         column; then, one under another and as wide as the page, Battle Sprite (as it attacks or guards, as a unit
         holds it up or throws it, each one's palette and Choose), Base Item Data (its kind, its price and the point of
-        the story it is sold from), Additional Data (its numbers and, a weapon, what it does as it attacks), Equip
+        the story it is sold from; since 2.0.6 its Required Level and Rare), Additional Data (its numbers and, a weapon, what it does as it attacks), Equip
         Bonus (its bonuses, statuses and elements), Shop Availability (the towns that sell it) and its values in the
         menus. The same fields and pictures as the sheet's own layout, each kept as that keeps it."""
         item = edit.item
@@ -3152,7 +3217,8 @@ class ItemSheet:
                                                   category=self._category_words(item)))
         parts["kind"] = kind_words
         towns_parts, price_pair = self._sold_parts(item)
-        sheet.addWidget(self._sheet_box(ITEMS_PAGE_BASE, caption(KIND), kind_words, price_pair))
+        sheet.addWidget(self._sheet_box(ITEMS_PAGE_BASE, caption(KIND), kind_words, price_pair,
+                                        self._random_pair(item)))
         additional = jt.Turning(10)
         for key in ("numbers", "attack"):
             if key in boxes:

@@ -81,6 +81,15 @@ namespace ModStudioEventSetup
         /// the battles' hooks, kept while the game runs.</summary>
         Framework? _questPlan;
         BattleHooks? _battles;
+        /// <summary>(2.0.6) Random equipment reaching War of the Lions' items the framework gives: the game's function and
+        /// its asks, found (null: Random is the game's own), the items that could be Random equipment by kind (none
+        /// Rare), and every given one's name by its number.</summary>
+        RandomItems.Found? _randomFound;
+        Dictionary<ItemKind, List<int>>? _randomExtras;
+        Dictionary<int, ModItem>? _randomPlanned;
+        /// <summary>(2.0.6) WotL Restoration's 40 items shown with the framework's own pictures, kept while the game runs.
+        /// </summary>
+        WotLIcons? _theirIcons;
         /// <summary>Where the side quests and the places join the game, found once.</summary>
         Places? _found;
         /// <summary>(1.17.0) The mods' battle grounds with random battles of their own, each with the number it was
@@ -324,6 +333,10 @@ namespace ModStudioEventSetup
             }
             foreach (var problem in theirProblems)
                 Say($"{problem}; the framework's own stands.");
+            // (2.0.6, his answer of 18 November: "yes we should considering WotL Restoration does not have any") Where
+            // WotL Restoration has given War of the Lions' items (its room made), they are shown in the menus with the
+            // framework's own pictures, his, whether or not a mod asks for them.
+            ShowTheirIcons();
             if (items.Count == 0 && !asked)
                 return;
             string them = items.Count == 0 ? "War of the Lions' items"
@@ -371,6 +384,11 @@ namespace ModStudioEventSetup
                 // WotL Restoration's are the same items at the same numbers: what each is worn as is known.
                 foreach (var fact in WotLItems.Facts)
                     _itemKinds[fact.Number] = fact.Kind;
+                // (2.0.6) Random equipment reaches them where a mod's version of one isn't Rare.
+                var planned = new Dictionary<int, ModItem>();
+                foreach (var fact in WotLItems.Facts)
+                    planned[fact.Number] = changed.TryGetValue(fact.Number, out var theirs) ? theirs : WotLItems.Item(fact);
+                PlanRandom(image, places, found, planned);
             }
             else if (asked)
                 wotl = WotLItems.Plan(firstRow, changed, said, out firstRow);
@@ -414,6 +432,12 @@ namespace ModStudioEventSetup
                         theirs++;
                 }
                 Say(WotLItems.Line(wotl, theirs));
+                // (2.0.6, his answer of 18 November: "yes we should do that") Random equipment may give the ones that
+                // aren't Rare.
+                var planned = new Dictionary<int, ModItem>();
+                foreach (var g in wotl)
+                    planned[g.Number] = g.Item;
+                PlanRandom(image, places, found, planned);
             }
             foreach (var g in given)
             {
@@ -1578,14 +1602,17 @@ namespace ModStudioEventSetup
             foreach (var problem in problems)
                 Say($"{problem}; it is left out.");
             var quests = _questPlan?.WideItems ?? new List<BattleFile.QuestItems>();
-            if (mods.Count == 0 && quests.Count == 0)
+            // (2.0.6) Random equipment reaching War of the Lions' items needs the units' equipment hooked, battles of the
+            // mods' or none.
+            bool randoms = _randomFound != null && _randomExtras != null && _randomPlanned != null;
+            if (mods.Count == 0 && quests.Count == 0 && !randoms)
                 return;
             var plan = BattleFile.Make(mods, quests, _itemNumbers,
                                        n => _itemKinds.TryGetValue(n, out var kind) ? kind : BattleFile.GameKind(n),
                                        _jobKeys);
             foreach (var line in plan.Said)
                 Say($"{line}.");
-            if (!plan.Any)
+            if (!plan.Any && !randoms)
                 return;
             if (_memory == null)
             {
@@ -1602,7 +1629,8 @@ namespace ModStudioEventSetup
             }
             unsafe
             {
-                _battles = BattleHooks.Arm(reloaded, _memory.Base, places, plan, Say);
+                _battles = BattleHooks.Arm(reloaded, _memory.Base, places, plan, Say, _randomFound, _randomExtras,
+                                           _randomPlanned);
             }
             if (_battles == null)
                 return;
@@ -1610,7 +1638,56 @@ namespace ModStudioEventSetup
                 _battles.QuestEntry = _hooks.EntryOf;
             if (_questPlan != null)
                 _battles.BattleName = _questPlan.BattleNameOf;
-            Say(BattleFile.Line(plan));
+            if (plan.Any)
+                Say(BattleFile.Line(plan));
+            if (_battles.Randoms)
+                Say(RandomItems.Line(_randomExtras!));
+        }
+
+        /// <summary>(2.0.6) Random equipment reaching War of the Lions' items (`planned`: each by its number as the
+        /// framework plans it), the ones that aren't Rare: the game's function and its asks found now, the hook made with
+        /// the battles' (PlanBattles); said where they can't be found.</summary>
+        void PlanRandom(ReadOnlySpan<byte> image, Places places, ItemRoom.Found found, Dictionary<int, ModItem> planned)
+        {
+            var extras = RandomItems.Extras(planned);
+            if (extras.Count == 0 || _memory == null)
+                return;
+            var random = RandomItems.Find(image, places.UnitEquipment, found.At["ItemCommon"], found.At["ItemWeapon"]);
+            if (!random.Ok)
+            {
+                Say($"Random equipment can't give War of the Lions' items: {string.Join(", ", random.Missing)} wasn't "
+                    + $"found in {_memory.Program}. A game update may have changed it: look for a newer {Name}.");
+                return;
+            }
+            _randomFound = random;
+            _randomExtras = extras;
+            _randomPlanned = planned;
+        }
+
+        /// <summary>(2.0.6) Where WotL Restoration has given War of the Lions' items (its room made: ItemRoom's Moved),
+        /// each of the 40 shown in the menus with the framework's own pictures (his: WotLItems.IconName), the game's
+        /// own two icon paths hooked for their numbers alone (WotLIcons.cs); said.</summary>
+        void ShowTheirIcons()
+        {
+            if (_memory == null || _theirIcons != null)
+                return;
+            var image = (ReadOnlySpan<byte>)_memory.Bytes;
+            var found = ItemRoom.Find(image, Finder.Sections(image));
+            if (!found.Ok || !found.Moved)
+                return;
+            var reloaded = SharedHooks();
+            if (reloaded == null)
+            {
+                Say("WotL Restoration's War of the Lions items can't be shown with the framework's own pictures: "
+                    + "Reloaded-II's shared hooks (reloaded.sharedlib.hooks) aren't loaded. Enable them in Reloaded-II.");
+                return;
+            }
+            unsafe
+            {
+                _theirIcons = WotLIcons.Arm((IReloadedHooks)reloaded, _memory.Base, found, Say);
+            }
+            if (_theirIcons != null)
+                Say(WotLIcons.Line);
         }
 
         /// <summary>(2.0.0) The mods' bigger pictures of sprites (BigTextures.cs: each mod's ModStudioTextures.json), in

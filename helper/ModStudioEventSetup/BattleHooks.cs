@@ -22,6 +22,12 @@
 // - the map's load (Places.MapTreasures): then the mods' items are written
 //   over the map's treasures where the battle reads them (BattleFile.Bury).
 //
+// (2.0.6) The putting of an entry's equipment on its unit is hooked too where
+// War of the Lions' items the framework gives could be Random equipment (not
+// Rare): a unit with a Random slot one of them could fill has its equipment
+// put on by the framework in the game's place (RandomItems.cs), every other
+// unit by the game's own function.
+//
 // Nothing here throws into the game: a fault is said once.
 using System;
 using System.Collections.Generic;
@@ -55,6 +61,13 @@ namespace ModStudioEventSetup
         IHook<OverridesFunction>? _overrides;
         IHook<EquipmentFunction>? _equipment;
         IHook<MapLoadFunction>? _mapLoad;
+        /// <summary>(2.0.6) The game as Random equipment asks it, the War of the Lions items that could be Random
+        /// equipment by kind, and their names; null: Random is the game's own.</summary>
+        RandomItems.Native? _random;
+        IReadOnlyDictionary<ItemKind, List<int>>? _extras;
+        IReadOnlyDictionary<int, string>? _names;
+        /// <summary>(2.0.6) Whether Random equipment can give the War of the Lions items here.</summary>
+        public bool Randoms => _random != null;
         /// <summary>The battle the game's changes were last made to, and its block.</summary>
         int _battle = -1;
         nint _block;
@@ -105,7 +118,9 @@ namespace ModStudioEventSetup
 
         /// <summary>The hooks the plan needs, made and active; what can't be done said. Null when nothing can.</summary>
         public static BattleHooks? Arm(IReloadedHooks reloaded, byte* start, Places places, BattleFile.Plan plan,
-                                       Action<string> say)
+                                       Action<string> say, RandomItems.Found? random = null,
+                                       IReadOnlyDictionary<ItemKind, List<int>>? extras = null,
+                                       IReadOnlyDictionary<int, ModItem>? planned = null)
         {
             foreach (string line in Missing(places, plan))
                 say(line);
@@ -114,13 +129,25 @@ namespace ModStudioEventSetup
             bool units = plan.UnitsChanged > 0 && places.Units;
             bool wears = plan.UnitsWearing > 0 && places.WideItems;
             bool treasures = plan.TreasuresChanged > 0 && places.Treasures;
-            if (!units && !wears && !treasures)
+            // (2.0.6) Random equipment reaching War of the Lions' items: where the function and its asks were found.
+            bool randoms = random != null && random.Ok && extras != null && extras.Count > 0 && planned != null
+                           && places.UnitEquipment == random.Equipment;
+            if (!units && !wears && !treasures && !randoms)
                 return null;
+            if (randoms)
+            {
+                hooks._random = new RandomItems.Native(start, random!, planned!);
+                hooks._extras = extras;
+                var names = new Dictionary<int, string>();
+                foreach (var (number, item) in planned!)
+                    names[number] = item.Name;
+                hooks._names = names;
+            }
             // Each kept before it is active, so a call the moment it is finds the game's own function. A unit's items
             // need its battle's block too, which the game's own changes are handed (where that site was found).
             if ((units || wears) && places.Units)
                 hooks._overrides = reloaded.CreateHook<OverridesFunction>(hooks.Overrides, loaded + places.UnitOverrides, -1);
-            if (wears)
+            if (wears || randoms)
                 hooks._equipment = reloaded.CreateHook<EquipmentFunction>(hooks.Equipment, loaded + places.UnitEquipment, -1);
             if (treasures)
                 hooks._mapLoad = reloaded.CreateHook<MapLoadFunction>(hooks.MapLoad, loaded + places.MapTreasures, -1);
@@ -159,7 +186,37 @@ namespace ModStudioEventSetup
 
         void Equipment(nint unit, nint entry)
         {
-            _equipment!.OriginalFunction(unit, entry);
+            // (2.0.6) A unit with a Random slot one of the War of the Lions items could fill: its equipment put on by the
+            // framework, as the game puts it on (RandomItems.Equip); any other, or a fault, the game's own function.
+            bool own = false;
+            if (_random != null && unit != 0 && entry != 0)
+            {
+                try
+                {
+                    var entryBytes = new ReadOnlySpan<byte>((void*)entry, RandomItems.EntryBytes);
+                    own = RandomItems.Wants(_random, new ReadOnlySpan<byte>((void*)unit, RandomItems.UnitBytes),
+                                            entryBytes, _extras!);
+                    if (own)
+                    {
+                        var unitBytes = new Span<byte>((void*)unit, RandomItems.UnitBytes);
+                        RandomItems.Equip(_random, unitBytes, entryBytes, _extras!);
+                        for (int k = 0; k < RandomItems.Words; k++)
+                        {
+                            int item = unitBytes[RandomItems.WordHead + 2 * k] | unitBytes[RandomItems.WordHead + 2 * k + 1] << 8;
+                            if (_names != null && _names.TryGetValue(item, out var name))
+                                SayOnce($"Random equipment gave a unit War of the Lions' {name} (item {item}).");
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    SayOnce($"a unit's Random equipment wasn't put on by the framework ({e.GetType().Name}: {e.Message}); "
+                            + "the game's own function put it on.");
+                    own = false;
+                }
+            }
+            if (!own)
+                _equipment!.OriginalFunction(unit, entry);
             try
             {
                 if (unit == 0 || entry == 0)

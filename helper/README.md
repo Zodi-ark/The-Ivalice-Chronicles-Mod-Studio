@@ -3097,8 +3097,83 @@ Abilities, and Job Abilities on T; his log as rehearsed).
   ability, as halves of a range of another kind; they are the action tab's
   own. Every other range check was read again: each is another kind's.
 
+**2.0.7: the jobs alongside WotL Restoration 3.1.0** (test 133, `make_test133.py`, `Test_133.zip`). His message of
+18 November (15:45), with his log and WotL Restoration 3.1.0's zip: "I can no longer scroll down to Dark Knight on the
+Jobs page also Wotl Restoration updated". His log: "the mods' 2 jobs can't be added: Atlas (0 places like it, not 1),
+Restart (0 places like it, not 1) wasn't found in FFT_enhanced.exe of 12,158,720 bytes", the game the same as before.
+
+- **What WotL Restoration 3.1.0 changes** (`dev/research/sidequests/wotl_restoration_hooks.py`; its files read as data
+  only): it hooks or patches 40 places before the framework plans. Three of them are where the framework found a place
+  from its first byte: the unit atlas (0x2897B4: "Hooked unit icon mapper"), the effect's chooser (0x319B50: "Darkness
+  effects: hooked the effect starter"), which the jobs' abilities need, and the putting back of the plain state as a
+  battle is started again (0x2CF768, hooked without a line: its strings hold the function's first 16 bytes).
+- **What 2.0.7 changes**: each of the three found from its sixteenth byte or later. `JobRoom`'s "Restart" is a
+  Reloaded-II hook of the function's start, which goes on through one made before it; `JobRoom`'s "Atlas" and
+  `AbilityRoom`'s "effect" were stand ins at the functions' first instructions, now at instructions past the start
+  (0x2897CA: `mov r9, r8; movzx r10d, dx`, before the job in cx is first read; 0x319B79: `mov rsi, r8; mov r8d, ecx`,
+  before the ability in edx is first read), so a hook of the start runs first and the framework's after it.
+  `AbilityRoom.Entries` gained where in its pattern each is taken.
+
+Checked here: `dev/test_jobs.py` (`Checks --jobs`' `withTheirHooks`: the jobs' and the abilities' places found again
+with a jump of 14 bytes at each of the 40, none missing or moved; the atlas run in his program's own code from its
+start, the effect's chooser from where it is taken, each as before), `dev/test_event_setup.py` (no pattern of the framework's
+under one of the 40 but the variables' function, which the places find past its first 15 bytes). **In his game**
+(test 133, 18 November 16:36, with WotL Restoration 3.1.0): "Test 133 was a complete success."
+
+**2.0.6: Ramza's top left job really in its own colors; Random equipment reaching War of the Lions' items; WotL
+Restoration's 40 with his pictures** (test 132, `make_test132.py`, `Test_132.zip`). His message of 18 November (14:05),
+with test 131's log and screenshot: "Still green", and his answers to two offers: "yes we should do that" (Random
+equipment picking the 40, a Required Level on their sheet) and "yes we should considering WotL Restoration does not have
+any" (his pictures on WotL Restoration's 40).
+
+- **Ramza's top left job** (`JobRoom.cs`'s site "OwnFigure"; `claude/dark-onion-knight-research.md`): the job screen's
+  filling treats place 0 as the unit's own in two steps. Before its palette's test (2.0.5's) it makes each place's
+  figure record with a flag for place 0 alone (the record maker, `0x2C1D40`), which gives the unit's own figure its
+  chosen color (Ramza's, the record's + 0xA) and palette 0: so place 0's palette was 0 already, and the green was his
+  chosen color. A second stand in clears that flag too while the rows are moved down (the same number as 2.0.5's).
+- **Random equipment** (`RandomItems.cs`; `claude/wotl-items-research.md`): the game's pick of a Random item (an
+  entry's 254) goes through the game's items of the slot's kind only and answers a byte. For a unit with a Random slot
+  one of the 40 could fill (not Rare, of a type it can equip, its Required Level at most the unit's), the framework
+  puts its equipment on in the game's place (BattleHooks' hook of the function), every step as the game's and with the
+  game's random words, its pick going on to the 40 of the slot's kind; every other unit's is the game's own. Held to
+  the game's function in a machine over 400 units: the same, word for word and draw for draw, until one of the 40
+  isn't Rare. The 40 as the framework plans them (a mod's version where one gives it), with either giver: with WotL
+  Restoration's items in the game its 40 are reached by the mods' versions. Its lines: "Random equipment (an entry's
+  item 254) can give War of the Lions' N items that aren't Rare, each to a unit of at least its Required Level that can
+  equip it, as the game gives its own." and, once each, "Random equipment gave a unit War of the Lions' <name> (item
+  <number>)."
+- **His pictures on WotL Restoration's 40** (`WotLIcons.cs`): where WotL Restoration has made the items' room, the
+  game's two icon paths are hooked for the 40 numbers alone, each named the framework's own pictures (his), whether or
+  not a mod asks for them. Its line: "War of the Lions' items are WotL Restoration's here: Mod Studio Framework shows
+  each of the 40 with its own pictures in the menus (its Art Texture and its Sprite Texture), the rest of them WotL
+  Restoration's own."
+
+Checked here: `dev/test_jobs.py` (the flag run in his program's own code as it is and as changed, what it does in the
+record filler), `dev/test_wotl_items.py` (the game's function and the framework's over the same units, one entry in ten
+with a shield in the right hand or a weapon in the left; the pictures' paths), `dev/test_event_setup.py` (Random
+equipment's patterns in the items' part: the one pair they make with another part's, the places' pattern of the same
+function, read by both and written by neither, looked at). **In his game** with 2.0.7 (test 133 held test 132's steps:
+Ramza's screen, the Moonblade, random battles): "Test 133 was a complete success."
+
+**2.0.5: Ramza's top left job in its own colors once the rows move** (test 131, `make_test131.py`,
+`Ramza_Test_131.zip`). His report of 18 November (12:55): "When going to the next job of our new Jobs the very first
+Job in the top left changes palette this only happens with ramza. In this example you can see the Dragoon is not the
+palette he should be" (his screenshots: the rows moved down to Dark Knight, the Dragoon in the top left green; the
+game's three rows, the same Dragoon in the bottom row white and red). **Measured in his program**
+(`claude/dark-onion-knight-research.md`, "Ramza's top left job on the framework's rows"; `job_screen.py`'s
+`UNIT_COLORS` and `PALETTE_TEST`): before each place is given its job, the job screen's filling makes the record's
+palette 0 for every place but place 0, for a unit with colors of its own (its row of sheet 0x112), as the game's place 0
+is always the unit's first job (Ramza's Gallant Knight, in his colors). With the framework's rows moved down, place 0
+holds another job, and it kept Ramza's palette number. **What 2.0.5 changes** (`JobRoom.cs`, `JobScreen.cs`): a number
+of the framework's (`ScreenPaletteCell`, 1 while the rows shown aren't the game's first, written at every filling) and
+a stand in at the test's first five bytes (the site "Palette"): place 0 with the number set goes on to the game's test
+of the unit's row, which gives it palette 0 as every other place; with the game's rows, or for a generic unit, nothing
+changes. Nothing is said of it in the log. Checked here: the test run in his program's own code as it is and as
+changed (`dev/test_jobs.py`), the number in each step of `Checks --screen`. **In his game** (test 131, 18 November):
+"Still green": place 0's palette was 0 already (2.0.6, above).
+
 **2.0.4: the 16 summons' own sheets, bigger and in more colors** (test 130, `make_test130.py`,
-`Lich_Test_130.zip`; nothing of it has run in the game). His Lich test of 17 November (his picture of Lich didn't
+`Lich_Test_130.zip`; passed in his game, 17 November: "Test 130 was a complete success"). His Lich test of 17 November (his picture of Lich didn't
 show) was traced in the thirty third session: in the enhanced look the game draws each of the 16 summons from a sheet
 of its own in g2d.dat (entry 1426 plus two times the effect's number), not from its effect file. **Measured in his
 program first** (`claude/texture-resolution-research-continued.md`, "The summons' remastered sheets, measured";

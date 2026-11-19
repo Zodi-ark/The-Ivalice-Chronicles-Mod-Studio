@@ -414,6 +414,8 @@ static class Program
             return BattleChecks.Run(args);
         if (args.Length > 0 && args[0] == "--textures")
             return TextureChecks.Run(args);
+        if (args.Length > 0 && args[0] == "--random")
+            return RandomChecks.Run(args);
         var image = Load(args[0]);
         var report = new Dictionary<string, object?>();
         var table = Finder.Find(image, out string why);

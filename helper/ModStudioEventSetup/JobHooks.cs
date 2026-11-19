@@ -314,7 +314,8 @@ namespace ModStudioEventSetup
             var rows = new JobScreen(numbers, (nint*)(start + screen.Root), (short*)(start + screen.ListAt),
                                      (short*)(start + found.MenuIndex), (byte**)(start + found.MenuTable),
                                      JobProgress.MenuRecords, (short*)(start + screen.Count), sides,
-                                     (int*)(cells + JobRoom.ScreenAliveCell), (int*)(cells + JobRoom.ScreenHarvestCell));
+                                     (int*)(cells + JobRoom.ScreenAliveCell), (int*)(cells + JobRoom.ScreenHarvestCell),
+                                     (int*)(cells + JobRoom.ScreenPaletteCell));
             nint fill = (nint)(start + screen.Fill), place = (nint)(start + screen.Place), refresh = (nint)(start + screen.Refresh),
                  upDown = (nint)(start + screen.UpDown), cycle = (nint)(start + screen.CycleStep);
             rows.CycleStep = (piece, pressed, held, told) =>

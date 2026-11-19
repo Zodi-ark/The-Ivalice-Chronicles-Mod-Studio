@@ -53,6 +53,7 @@
     <Compile Include="..\ModStudioEventSetup\ItemLooks.cs" Link="ItemLooks.cs" />
     <Compile Include="..\ModStudioEventSetup\ItemRoom.cs" Link="ItemRoom.cs" />
     <Compile Include="..\ModStudioEventSetup\WotLItems.cs" Link="WotLItems.cs" />
+    <Compile Include="..\ModStudioEventSetup\RandomItems.cs" Link="RandomItems.cs" />
     <Compile Include="..\ModStudioEventSetup\BattleFile.cs" Link="BattleFile.cs" />
     <Compile Include="..\ModStudioEventSetup\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\ModStudioEventSetup\JobFile.cs" Link="JobFile.cs" />

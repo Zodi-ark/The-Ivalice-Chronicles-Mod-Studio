@@ -548,9 +548,7 @@ namespace ModStudioEventSetup
 
         /// <summary>An item's own icon's path, as the Icon table's two give the game's (under the UI's texture parts of
         /// ui/ffto/icon/, as a town's own art's path is made, PlaceHooks.BaseArt).</summary>
-        public static string ItemIconPath(string picture, bool small)
-            => small ? $"UITextureParts://ui/ffto/icon/equip_item_s/textureparts/{picture}_s"
-                     : $"UITextureParts://ui/ffto/icon/equip_item/textureparts/{picture}";
+        public static string ItemIconPath(string picture, bool small) => ItemFile.IconPath(picture, small);
 
         // --- the Outfitter ------------------------------------------------------------------------------------------
 

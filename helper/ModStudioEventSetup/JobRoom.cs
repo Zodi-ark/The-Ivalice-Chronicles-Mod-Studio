@@ -155,6 +155,17 @@ namespace ModStudioEventSetup
         /// <summary>(1.55.1) One more, for the game's Onion Knight's words on Job Summary: the framework's answer to which
         /// row of the job help table a key asks for (JobAsker.SummaryKey, through JobHooks).</summary>
         public const int SummaryCell = 128;
+        /// <summary>(2.0.5, his report of 18 November) Not 0 while the job screen's place 0 holds another job than the
+        /// unit's first (the framework's rows moved down): the filling then gives place 0 palette 0 as every other
+        /// place (JobScreen.Listed writes it), and (2.0.6, his test 131: still green) makes its figure's record as
+        /// every other place's, not as the unit's own (the record maker's flag, "OwnFigure").</summary>
+        public const int ScreenPaletteCell = 136;
+        /// <summary>(2.0.5) In "Palette": where the game's test of the unit's row is, and where the place's
+        /// jumps meet (past the palette made 0).</summary>
+        public const int PaletteRowAt = 5, PaletteKeptAt = 15;
+        /// <summary>(2.0.6) In "OwnFigure": where the game goes on after the two instructions changed (its store, then
+        /// its sete of the flag from the place's test).</summary>
+        public const int OwnFigureBack = 6;
 
         /// <summary>The job numbers free in the game, in the order they are given.</summary>
         public static readonly int[] FreeNumbers = { 142, 143, 146, 147, 148, 149, 155, 156, 157, 158, 159 };
@@ -255,8 +266,11 @@ namespace ModStudioEventSetup
             new Site("RowSecond", "48 0F BF CE 8B FD 48 83 C1 29", 0, 6),
             // A job's cell on the job screen: the job read to choose the sprite it shows (0x368424).
             new Site("Cell", "0F B6 4D E8 41 8D 46 3D 89 45 FC 41 BA 01 00 00 00", 0, 8),
-            // A unit's place in the atlas of units, by its job and sex (0x2897B4: its first instruction).
-            new Site("Atlas", "48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 48 8D 35 ?? ?? ?? ?? 4D 8B C8 44 0F B7 D2 66 83 F9 34", 0, 5),
+            // A unit's place in the atlas of units, by its job and sex (0x2897B4). (2.0.7, his report of 18 November:
+            // WotL Restoration 3.1.0 hooks the function's start, its "unit icon mapper") Found from its sixteenth byte
+            // (the lea of the atlas), the stand in at its twenty third (0x2897CA: mov r9, r8; movzx r10d, dx), before
+            // the job in cx is first read and past where any hook of its start writes.
+            new Site("Atlas", "48 8D 35 ?? ?? ?? ?? 4D 8B C8 44 0F B7 D2 66 83 F9 34", 7, 7),
             // The battle's two readers of a unit's learned abilities by the skillset.
             new Site("LearnedBattle", "8D 4A FB 83 F9 12 76 ?? 81 FA E0 00 00 00", 0, 6),
             new Site("LearnedList", "41 8D 47 FB 3C 12 77 06 41 8D 47 FB EB ??", 0, 6),
@@ -313,8 +327,10 @@ namespace ModStudioEventSetup
                              + "8B DA 48 8B F9 48 8B CB 33 D2 41 B8 80 02 00 00", 0, 0),
             new Site("Shown", "40 55 48 8D AC 24 20 FE FF FF 48 81 EC E0 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 D0 01 "
                               + "00 00 4C 8B CA BA 14 00 00 00 3B CA", 0, 0),
-            new Site("Restart", "48 89 5C 24 08 57 48 83 EC 30 BA 01 00 00 00 E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 44 24 "
-                                + "28 4C 8D 0D", 0, 0),
+            // (2.0.7, his report of 18 November: WotL Restoration 3.1.0 hooks the start of the putting back of the plain
+            // state, 0x2CF768) Found from its sixteenth byte (its first call), the place its start; the hook of it a
+            // Reloaded-II hook, which goes on through one made there before it.
+            new Site("Restart", "E8 ?? ?? ?? ?? 48 8D 05 ?? ?? ?? ?? 48 89 44 24 28 4C 8D 0D", -15, 0),
             new Site("CopyBank", "48 8D 05 ?? ?? ?? ?? 48 8D 0D ?? ?? ?? ?? 8D 72 78 0F 10 01", 0, 0),
             // (1.38.3, test 83) Read only. Two functions at their first instruction, hooked whole, each of which copies
             // a record of the menu's for the status card before the job's slot is asked: the menu's update of the card
@@ -381,6 +397,16 @@ namespace ModStudioEventSetup
             // the screen and always there; its call, the pattern's last, is changed: 1.39.1).
             new Site("Tree", "48 8B 4F 78 48 85 C9 74 24 45 8B C6 48 8D 55 A0 E8 ?? ?? ?? ?? 48 8B 8F 80 00 00 00 48 85 C9 74 0C "
                              + "45 8B C6 48 8D 55 A0 E8", 0, 0),
+            // (2.0.5, his report of 18 November) Before each place is given its job: every place but place 0 its
+            // palette 0 where the unit's row gives it colors of its own (Ramza), as the game's place 0 is always the
+            // unit's first job (r14d the place, r12b the row's word, the record's palette at rbp + 4; changed: its
+            // first five bytes, the place's test and its jump).
+            new Site("Palette", "45 85 F6 74 0A 45 84 E4 74 05 66 44 89 6D 04 48 8B 05", 0, 5),
+            // (2.0.6, his test 131: the Dragoon still green) Before that, each place's figure record made (0x2C1D40: the
+            // record, the unit, 0, then r9b "the unit's own figure", set for place 0 alone): the record maker gives
+            // the unit's own figure its chosen color (Ramza's, at + 0xA) and no palette. Changed: the place's test
+            // and the unit's number read (six bytes), so the game's sete reads the flags the stub leaves.
+            new Site("OwnFigure", "48 8D 4D FC 45 85 F6 0F BF D7 44 88 6C 24 28 41 0F 94 C1 44 88 6C 24 20 45 33 C0 E8", 4, 6),
             // (1.39.2) Which side of the cursor's place its window goes (in 0x12FC6C): the row the place is in found
             // by the three row ends (the row's number in rdx, its end in eax, the place in r8d), then "its end less
             // the place, 3 or less: the left" (changed: six bytes, the ends the framework's own).
@@ -788,6 +814,10 @@ namespace ModStudioEventSetup
             if (list < screen.Fill || list > screen.Fill + 0x200 || screen.At["FillScreen"] < screen.Fill
                 || screen.At["FillScreen"] > list || screen.At["Tree"] < list)
                 screen.Missing.Add("List (not in the job screen's filling)");
+            if (screen.At["Palette"] < list || screen.At["Palette"] > screen.At["Tree"])
+                screen.Missing.Add("Palette (not in the job screen's filling, before a job is given to its place)");
+            if (screen.At["OwnFigure"] < list || screen.At["OwnFigure"] > screen.At["Palette"])
+                screen.Missing.Add("OwnFigure (not in the job screen's filling, before a place's palette is made)");
             int vertical = screen.At["Vertical"];
             screen.Step = CallTarget(image, vertical);
             if (screen.Step <= 0 || screen.Step + StepCallAt + 5 > image.Length
@@ -1625,12 +1655,15 @@ namespace ModStudioEventSetup
             Call("SetJob", 5, stub);
 
             // The unit's place in the atlas of units, by the job in cx: the job it looks like. (1.42.0) Its Look's, where
-            // it has sprites of its own (the atlas has a place for each of the game's jobs only).
+            // it has sprites of its own (the atlas has a place for each of the game's jobs only). (2.0.7) Taken at its
+            // twenty third byte, where cx is still the job asked for and nothing has read it: what a hook of the
+            // function's start does with it (WotL Restoration 3.1.0's, for its own units) is done first.
             stub = a.Here;
             Like(a, given, "80 F9", "B1", 2, g => g.Atlas);    // cmp cl, number; jne; mov cl, like
-            a.Hex("48 89 5C 24 08");                           // mov [rsp + 8], rbx
-            a.Near(Address(Site("Atlas") + 5));
-            Jump("Atlas", 5, stub);
+            a.Hex("4D 8B C8");                                 // mov r9, r8
+            a.Hex("44 0F B7 D2");                              // movzx r10d, dx
+            a.Near(Address(Site("Atlas") + 7));
+            Jump("Atlas", 7, stub);
 
             // A job's cell on the job screen: the job it looks like, in ecx, only for the sprite the cell shows (the
             // game's generic jobs draw by the job there, any other job as the unit already looks).
@@ -1824,6 +1857,42 @@ namespace ModStudioEventSetup
                 a.Hex("83 F8 03");                             // cmp eax, 3
                 a.Hex("C3");                                   // ret
                 made.Add(new Change(screen.At["Side"], Instruction(0xE8, imageBase, screen.At["Side"], stub, 6)));
+
+                // (2.0.5, his report of 18 November: Ramza's top left job in another job's colors once the rows moved)
+                // Place 0 keeps the unit's own palette only while it holds the unit's first job: with the framework's
+                // rows moved down it is given palette 0 as every other place (the cell not 0). The place's test and
+                // its jump are the stub's; it goes on at the game's test of the unit's row, or past it. rax is the
+                // game's to lose there (it is loaded anew where the place's jumps meet); the flags are set anew there.
+                ulong paletteCell = at + CellsAfter + ScreenPaletteCell;
+                int palette = screen.At["Palette"];
+                stub = a.Here;
+                a.Hex("45 85 F6");                             // test r14d, r14d
+                a.Short(ShortJne, "paletteOther");
+                a.Hex("83 3D");                                // cmp dword [rip + the number], 0
+                a.Rip(paletteCell, 1);
+                a.Hex("00");
+                a.Short(ShortJne, "paletteOther");
+                a.Near(Address(palette + PaletteKeptAt));        // jmp: the unit's own palette kept
+                a.Label("paletteOther");
+                a.Near(Address(palette + PaletteRowAt));         // jmp: the game's test of the unit's row
+                made.Add(new Change(palette, Instruction(0xE9, imageBase, palette, stub, 5)));
+
+                // (2.0.6, his test 131: the Dragoon still green with 2.0.5) Place 0's figure record is made as the
+                // unit's own only while place 0 holds the unit's first job: the record maker's flag (the game's sete of
+                // the place's test) is cleared with the framework's rows moved down, as for every other place. The
+                // place's test and the unit's number read are the stub's; the game goes on at its own store and sete,
+                // which read the flags the stub leaves: not place 0, or the number set, clears it.
+                int own = screen.At["OwnFigure"];
+                stub = a.Here;
+                a.Hex("0F BF D7");                             // movsx edx, di (the game's)
+                a.Hex("45 85 F6");                             // test r14d, r14d (the game's)
+                a.Short(ShortJne, "ownFigureBack");
+                a.Hex("83 3D");                                // cmp dword [rip + the number], 0
+                a.Rip(paletteCell, 1);
+                a.Hex("00");
+                a.Label("ownFigureBack");
+                a.Near(Address(own + OwnFigureBack));            // jmp: the game's store, then its sete
+                made.Add(new Change(own, Instruction(0xE9, imageBase, own, stub, 6)));
 
                 // (1.39.3) After each of the game's two calls of the filling the framework is told (the rows noted at
                 // that filling for the unit's own job are moved to at once, by the filling again): the same call,

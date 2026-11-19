@@ -71,14 +71,17 @@ namespace ModStudioEventSetup
 
     public static partial class AbilityRoom
     {
-        /// <summary>A central routine taken at its first instructions: its name, its pattern from its first byte,
-        /// and how many bytes its first whole instructions are (done in the framework's own code before going
-        /// back).</summary>
-        internal static readonly (string Name, string Pattern, int Length)[] Entries =
+        /// <summary>A central routine taken at its first instructions: its name, its pattern, where in the pattern
+        /// the instructions taken start, and how many bytes they are (whole instructions, done in the framework's own
+        /// code before going back). (2.0.7, his report of 18 November: WotL Restoration 3.1.0 hooks the effect's
+        /// chooser at its start, its "Darkness effects") The effect's chooser is found from its twenty sixth byte and
+        /// taken at its forty second (0x319B79: mov rsi, r8; mov r8d, ecx), before edx, the ability, is first read
+        /// and past where any hook of its start writes.</summary>
+        internal static readonly (string Name, string Pattern, int Lead, int Length)[] Entries =
         {
-            ("reader", "41 B8 B0 00 00 00 4C 63 CA", 6),   // 0x275860
-            ("action record", "40 53 48 83 EC 20 48 63 D9 81 FB 6F 01 00 00", 6),   // 0x2BB060
-            ("effect", "48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 41 56 48 83 EC 20 33 ED 48 8D 3D ?? ?? ?? ??", 7),   // 0x319B50
+            ("reader", "41 B8 B0 00 00 00 4C 63 CA", 0, 6),   // 0x275860
+            ("action record", "40 53 48 83 EC 20 48 63 D9 81 FB 6F 01 00 00", 0, 6),   // 0x2BB060
+            ("effect", "33 ED 48 8D 3D ?? ?? ?? ?? 40 88 2D ?? ?? ?? ?? 49 8B F0 44 8B C1", 16, 6),   // 0x319B79 (from 0x319B69)
         };
 
         /// <summary>A compare that is to take a mod's ability for a plain action: its pattern from the compare's

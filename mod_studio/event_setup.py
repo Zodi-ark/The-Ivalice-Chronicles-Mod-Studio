@@ -118,7 +118,7 @@ HELPER_NAME = "Mod Studio Framework"
 HELPER_DESCRIPTION = ("Needed by mods made with The Ivalice Chronicles Mod Studio: it adds their side quests, places, "
                       "roads, dungeons, maps and event changes to the game. Place it directly after the mod loader in "
                       "your load order.")
-HELPER_VERSION = "2.0.4"
+HELPER_VERSION = "2.0.7"
 #: Where Mod Studio keeps its built copy, from the project's folder.
 HELPER_FOLDER = "tools/ModStudioEventSetup"
 #: Where Reloaded-II fetches it for a player whose mod needs it: its own

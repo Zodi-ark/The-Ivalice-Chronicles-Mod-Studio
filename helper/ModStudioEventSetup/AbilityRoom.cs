@@ -82,17 +82,18 @@ namespace ModStudioEventSetup
             public bool Ok => Missing.Count == 0;
         }
 
-        /// <summary>Each routine found once by its first bytes.</summary>
+        /// <summary>Each routine found once by its bytes, the place its instructions taken (2.0.7: the effect's
+        /// chooser's past its start).</summary>
         public static Found Find(ReadOnlySpan<byte> image, List<Section> sections)
         {
             var found = new Found();
-            foreach (var (name, pattern, _) in Entries)
+            foreach (var (name, pattern, lead, _) in Entries)
             {
                 var matches = Places.Search(image, sections, Places.Pattern(pattern));
                 if (matches.Count != 1)
                     found.Missing.Add($"the abilities' {name} ({matches.Count} places like it, not 1)");
                 else
-                    found.At[name] = matches[0];
+                    found.At[name] = matches[0] + lead;
             }
             // Each compare, found as many times as measured (twice where its function has a twin, and then the one of
             // the two measured, by their order in the program). Its pattern is the compare whole and the instruction
@@ -190,7 +191,7 @@ namespace ModStudioEventSetup
 
         static int Length(string name)
         {
-            foreach (var (entry, _, length) in Entries)
+            foreach (var (entry, _, _, length) in Entries)
                 if (entry == name)
                     return length;
             throw new ArgumentException(name);
@@ -207,7 +208,7 @@ namespace ModStudioEventSetup
 
             // Each routine's first instructions as they stand in the program.
             var first = new Dictionary<string, byte[]>();
-            foreach (var (name, _, length) in Entries)
+            foreach (var (name, _, _, length) in Entries)
                 first[name] = image.Slice(found.At[name], length).ToArray();
 
             // A routine's first instructions done here, then back to the one after them.
@@ -268,7 +269,8 @@ namespace ModStudioEventSetup
             Take("action record", getter);
 
             // The effect's chooser. For a number from 549 to 1023 that a mod's ability has: the game's ability it is
-            // like in its place (edx), then on as the game's own.
+            // like in its place (edx), then on as the game's own. (2.0.7) Taken past its start (Entries), where edx is
+            // still the ability asked for: what a hook of its start does (WotL Restoration 3.1.0's) is done first.
             ulong effect = a.Here;
             a.Hex("81 FA");                                        // cmp edx, 549
             a.I32(First);

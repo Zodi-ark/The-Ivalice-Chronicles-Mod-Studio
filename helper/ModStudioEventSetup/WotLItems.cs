@@ -361,6 +361,28 @@ namespace ModStudioEventSetup
         public const string TheirsLine = "War of the Lions' items are WotL Restoration's here: Mod Studio Framework "
                                          + "gives none of its own.";
 
+        /// <summary>(2.0.6) What is said where WotL Restoration's 40 are shown with the framework's own pictures
+        /// (WotLIcons.cs).</summary>
+        public const string PicturesLine = "War of the Lions' items are WotL Restoration's here: Mod Studio Framework "
+                                           + "shows each of the 40 with its own pictures in the menus (its Art Texture "
+                                           + "and its Sprite Texture), the rest of them WotL Restoration's own.";
+
+        /// <summary>(2.0.6) The path the game is given for one of the 40's pictures (the framework's own, as a mod's
+        /// item's own is given: ItemFile.IconPath).</summary>
+        public static string PicturePath(int number, bool small) => ItemFile.IconPath(IconName(number), small);
+
+        /// <summary>(2.0.6) That path written into `buffer` (`size` bytes, its end 0), as the game's own icon path
+        /// writes one: its length; below 0 where it doesn't fit.</summary>
+        public static unsafe int WritePicturePath(nint buffer, int number, int size, bool small)
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(PicturePath(number, small));
+            if (bytes.Length + 1 > size)
+                return -1;
+            System.Runtime.InteropServices.Marshal.Copy(bytes, 0, buffer, bytes.Length);
+            *((byte*)buffer + bytes.Length) = 0;
+            return bytes.Length;
+        }
+
         // --- the counts in a save ---------------------------------------------------------------------------------------
 
         /// <summary>Whether a save's event variables hold the counts' mark.</summary>

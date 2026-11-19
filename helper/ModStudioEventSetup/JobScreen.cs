@@ -155,6 +155,22 @@
 //   hands each of those records on (TreePlace, Harvested). And a job chosen
 //   on Job Progress has its row shown as the tree goes back to the screen
 //   (Show).
+// - (2.0.5, his report of 18 November: "When going to the next job of our
+//   new Jobs the very first Job in the top left changes palette this only
+//   happens with ramza") The filling gives every place but place 0 palette
+//   0 where the unit's row gives it colors of its own (Ramza: the game's
+//   place 0 is always the unit's first job, his Gallant Knight in his own
+//   colors). With the rows moved down, place 0 holds the first job of the
+//   rows shown, which kept Ramza's palette number (his Dragoon green). The
+//   framework writes a number the filling's test reads (Listed: not 0
+//   while place 0 holds another job than the unit's first), and place 0
+//   then gets palette 0 as every other place (JobRoom's stub at 0x368A09).
+// - (2.0.6, his test 131: "Still green") Place 0's palette was 0 already:
+//   the filling makes place 0's figure record as the unit's own (a flag of
+//   the record maker, 0x2C1D40, set for place 0 alone), which gives it the
+//   unit's chosen color (Ramza's, the record's + 0xA) and no palette. The
+//   same number now clears that flag too (JobRoom's stub at 0x368959), so
+//   place 0's record is made as every other place's.
 //
 // With Dark Knight & Onion Knight (Generic) on, none of this is made: the
 // jobs take its second page's empty places, as before (Zodi's choice).
@@ -417,6 +433,10 @@ namespace ModStudioEventSetup
         /// the filling's readying of the screen and its giving of a job to a place (null: none to tell). The first of the
         /// mods' jobs that run is for (below 0: no such run), and how many it listed.</summary>
         readonly int* _harvesting;
+        /// <summary>(2.0.5) Not 0 while the screen's place 0 holds another job than the unit's first (the rows moved
+        /// down): the native code then gives it palette 0 as every other place and (2.0.6) makes its figure's
+        /// record as every other place's (null: none to tell).</summary>
+        readonly int* _palette;
         int _harvest = -1, _harvested;
         /// <summary>(1.49.1) The filling is being run for the game's own list, so the job tree holds every one of the
         /// game's jobs for this unit whatever rows are shown.</summary>
@@ -448,7 +468,7 @@ namespace ModStudioEventSetup
         /// game's count of the jobs listed. `sides`: three numbers the window's side is read from. `alive`: a number
         /// the screen's end makes 0.</summary>
         public JobScreen(IList<int> mods, nint* root, short* list, short* menuIndex, byte** menuTable, int records,
-                         short* gameCount, int* sides, int* alive, int* harvesting = null)
+                         short* gameCount, int* sides, int* alive, int* harvesting = null, int* palette = null)
         {
             _gameCount = gameCount;
             _sides = sides;
@@ -456,6 +476,9 @@ namespace ModStudioEventSetup
             _harvesting = harvesting;
             if (_harvesting != null)
                 *_harvesting = 0;
+            _palette = palette;
+            if (_palette != null)
+                *_palette = 0;
             *_alive = 0;
             for (int row = 0, end = 0; row < Shown; row++)
                 _sides[row] = end += GameRows[row];
@@ -489,6 +512,9 @@ namespace ModStudioEventSetup
         {
             // (1.49.0) The filling run for the mods' jobs alone: its own list, nothing of the rows touched.
             // (1.49.1) The game's own list, as its lister left it.
+            // (2.0.5) Place 0 holds the unit's first job in every list but the framework's rows moved down (below).
+            if (_palette != null)
+                *_palette = 0;
             if (_all)
                 return count;
             if (_harvest >= 0)
@@ -570,6 +596,12 @@ namespace ModStudioEventSetup
             _unit = unit;
             _screen = screen;
             _own = true;
+            // (2.0.5, his report of 18 November) With rows moved down, place 0 holds the first job of the rows shown,
+            // not the unit's first: it is given palette 0 as every other place, not the unit's own (Ramza's colors);
+            // (2.0.6, his test 131) and its figure's record is made as every other place's, not as the unit's own
+            // (the record maker's flag, which gave it Ramza's chosen color: JobRoom's "OwnFigure").
+            if (_palette != null)
+                *_palette = _from > 0 ? 1 : 0;
             if (screen != 0)
                 Arrange(screen);
             return listed;

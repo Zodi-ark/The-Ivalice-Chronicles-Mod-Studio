@@ -93,6 +93,42 @@ static class JobChecks
         report["itemsHookedBytes"] = itemsHookedBytes;
         report["withItemsHooked"] = new Dictionary<string, object> { ["missing"] = again.Missing,
                                                                      ["moved"] = movedWithItems };
+        // (2.0.7, his report of 18 November: WotL Restoration 3.1.0) The jobs' and the abilities' places found again
+        // where another mod has hooked first: each place the request names ("theirHooks") given a jump of 14 bytes, as
+        // a hook writes one, and JobRoom.Find and AbilityRoom.Find run over that.
+        var abilityRoutines = AbilityRoom.Find(image, sections);
+        report["abilityEntries"] = abilityRoutines.At;
+        report["abilityMissing"] = abilityRoutines.Missing;
+        if (r.TryGetProperty("theirHooks", out var theirList))
+        {
+            var withTheirs = (byte[])image.Clone();
+            var theirBytes = new List<string>();
+            foreach (var item in theirList.EnumerateArray())
+            {
+                int at = item.GetInt32();
+                withTheirs[at] = 0xFF;
+                withTheirs[at + 1] = 0x25;
+                for (int k = 2; k < 14; k++)
+                    withTheirs[at + k] = (byte)(0x20 + k);
+                theirBytes.Add(Convert.ToHexString(withTheirs, at, 14));
+            }
+            var theirSections = Finder.Sections(withTheirs);
+            var jobsThere = JobRoom.Find(withTheirs, theirSections);
+            var abilitiesThere = AbilityRoom.Find(withTheirs, theirSections);
+            var jobsMoved = new List<string>();
+            foreach (var (name, at) in found.At)
+                if (jobsThere.At.TryGetValue(name, out int there) && there != at)
+                    jobsMoved.Add(name);
+            var abilitiesMoved = new List<string>();
+            foreach (var (name, at) in abilityRoutines.At)
+                if (abilitiesThere.At.TryGetValue(name, out int there) && there != at)
+                    abilitiesMoved.Add(name);
+            report["withTheirHooks"] = new Dictionary<string, object>
+            {
+                ["bytes"] = theirBytes, ["jobsMissing"] = jobsThere.Missing, ["jobsMoved"] = jobsMoved,
+                ["abilitiesMissing"] = abilitiesThere.Missing, ["abilitiesMoved"] = abilitiesMoved,
+            };
+        }
         report["at"] = found.At;
         report["records"] = found.Records;
         report["levelOf"] = found.LevelOf;
@@ -930,9 +966,12 @@ static class JobChecks
         // the holder holds; with "harvest" the framework is told of each record so handed on (the job's place among the
         // mods' jobs, the job and whether it is closed as the record says, whether the tree is the holder's).
         int* harvesting = (int*)Block(8);
+        // (2.0.5) The number the native code reads before each place is given its job: not 0 while place 0 holds another
+        // job than the unit's first, which then gets palette 0 as every other place (his report of 18 November).
+        int* palette = (int*)Block(8);
         byte* treeBlock = Block(16);
         var harvested = new List<int[]>();
-        var rows = new JobScreen(mods, root, list, index, table, Records, gameCount, sides, alive, harvesting);
+        var rows = new JobScreen(mods, root, list, index, table, Records, gameCount, sides, alive, harvesting, palette);
         bool inUse = true;
         rows.InUse = _ => inUse;
         var calls = new List<string>();
@@ -1093,7 +1132,7 @@ static class JobChecks
                 ["ends"] = new[] { *(int*)(screen + JobScreen.RowEnds), *(int*)(screen + JobScreen.RowEnds + 4),
                                    *(int*)(screen + JobScreen.RowEnds + 8) },
                 ["cursor"] = *(int*)(screen + JobScreen.Cursor), ["hover"] = *(int*)(screen + JobScreen.Hover),
-                ["sides"] = new[] { sides[0], sides[1], sides[2] }, ["alive"] = *alive,
+                ["sides"] = new[] { sides[0], sides[1], sides[2] }, ["alive"] = *alive, ["palette"] = *palette,
             };
             var through = new List<int>();
             for (int k = 0; k < *(int*)(piece + JobScreen.CycleCount) && k < JobScreen.Places; k++)

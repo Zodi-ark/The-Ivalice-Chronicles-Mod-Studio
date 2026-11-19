@@ -116,6 +116,12 @@ namespace ModStudioEventSetup
         /// <summary>Each kind's record's bytes, as the game's kind tables hold them (ItemWeapon 8, ItemShield 2,
         /// ItemArmor 2 for a head and a body, ItemAccessory 2, ItemChemist 3).</summary>
         public static readonly int[] KindBytes = { 8, 2, 2, 2, 2, 3 };
+        /// <summary>An item's own icon's path, as the Icon table's two give the game's (under the UI's texture parts of
+        /// ui/ffto/icon/, as a town's own art's path is made, PlaceHooks.BaseArt): its Art Texture's, or (`small`) its
+        /// Sprite Texture's. (2.0.6: here, where the checks reach it, from ItemHooks.)</summary>
+        public static string IconPath(string picture, bool small)
+            => small ? $"UITextureParts://ui/ffto/icon/equip_item_s/textureparts/{picture}_s"
+                     : $"UITextureParts://ui/ffto/icon/equip_item/textureparts/{picture}";
         /// <summary>Each kind's type flag in its record's + 3 (the game's: a weapon 0x80, a shield 0x40, a head 0x20, a
         /// body 0x10, an accessory 0x08; an item none).</summary>
         public static readonly byte[] KindFlags = { 0x80, 0x40, 0x20, 0x10, 0x08, 0 };

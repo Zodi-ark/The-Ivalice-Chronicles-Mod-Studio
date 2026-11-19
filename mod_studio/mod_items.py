@@ -774,6 +774,23 @@ NUMBERS = {
     ITEM: [("Power", "kind", 1, 1, 255)],
 }
 PRICE = ("Price", "record", PRICE_AT, 2, 65535)
+#: (2.0.6, his answer of 18 November) An item's required level (its record's byte 2: Random equipment gives it only to a
+#: unit of at least that level, the game's own rule) and its Rare flag (byte 3's bit 2: Random equipment never gives a
+#: Rare item), as the Items page has them for the game's items (Required Level 0 to 255, Rare one of the type flags).
+LEVEL_AT, RARE = 2, 0x02
+LEVEL = ("Required Level", "record", LEVEL_AT, 1, 255)
+
+
+def is_rare(item: ModItem) -> bool:
+    """Whether an item is Rare (its record's byte 3, bit 2): never given by Random equipment."""
+    return bool(item.record[FLAGS_AT] & RARE)
+
+
+def set_rare(item: ModItem, rare: bool) -> None:
+    """An item made Rare or not (its record's byte 3, bit 2), nothing else of it changed."""
+    record = bytearray(item.record)
+    record[FLAGS_AT] = (record[FLAGS_AT] | RARE) if rare else (record[FLAGS_AT] & ~RARE & 0xFF)
+    item.record = bytes(record)
 BONUSES = [("PA Bonus", "bonus", 0, 1, 255), ("MA Bonus", "bonus", 1, 1, 255), ("Speed Bonus", "bonus", 2, 1, 255),
            ("Move Bonus", "bonus", 3, 1, 255), ("Jump Bonus", "bonus", 4, 1, 255)]
 
